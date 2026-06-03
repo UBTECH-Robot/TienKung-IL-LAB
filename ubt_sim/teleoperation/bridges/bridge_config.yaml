@@ -6,6 +6,7 @@ zmq:
   cmd_port: 5555      # Control commands (PUB from bridge)
   status_port: 5556   # Robot status (SUB from sim)
   image_port: 5557    # Camera images (SUB from sim, handled by C++ bridge)
+  jpeg_image_port: 5558  # JPEG images for image_client.py (direct connect, no bridge needed)
 
 topics:
   # ---- ROS2 → Sim (bridge subscribes, forwards via ZMQ) ----

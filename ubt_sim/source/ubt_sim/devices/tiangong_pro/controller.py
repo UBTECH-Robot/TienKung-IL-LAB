@@ -1,5 +1,6 @@
 from typing import Any
 import time
+import struct
 import torch
 import json
 import numpy as np
@@ -56,14 +57,24 @@ class TiangongProController(DeviceBase):
             self.pub_socket.setsockopt(zmq.SNDHWM, 1)
             self.pub_socket.bind("tcp://*:5556")
 
-            # Publisher for camera images
+            # Publisher for camera images (raw multipart, for C++ bridge -> ROS2)
             self.img_socket = self.context.socket(zmq.PUB)
             self.img_socket.setsockopt(zmq.SNDHWM, 1) # Only keep latest image
             self.img_socket.bind("tcp://*:5557")
-            
+
+            # Publisher for JPEG images (single-part, for image_client.py)
+            self.jpeg_socket = self.context.socket(zmq.PUB)
+            self.jpeg_socket.setsockopt(zmq.SNDHWM, 1)
+            self.jpeg_socket.bind("tcp://*:5558")
+
+            # Unit_Test mode for JPEG port: prepend struct header for latency/frame-loss evaluation
+            self.jpeg_unit_test = kwargs.get('jpeg_unit_test', True)
+            self._jpeg_frame_count = 0
+
             print("[INFO] ZMQ Subscriber connected to tcp://127.0.0.1:5555")
             print("[INFO] ZMQ Publisher bound to tcp://*:5556")
             print("[INFO] ZMQ Image Publisher bound to tcp://*:5557")
+            print("[INFO] ZMQ JPEG Image Publisher bound to tcp://*:5558")
         else:
             print("[WARNING] zmq not found. ZMQ control will not be available.")
 
@@ -161,6 +172,34 @@ class TiangongProController(DeviceBase):
             self.img_socket.send(depth_bytes, flags=zmq.NOBLOCK)
 
             return
+        except Exception:
+            return
+
+    def _send_jpeg_camera_data(self):
+        """Send JPEG-encoded camera data on port 5558 (image_client.py compatible)."""
+        if "camera" not in self.env.scene.keys():
+            return
+
+        camera = self.env.scene["camera"]
+        try:
+            rgb_tensor = camera.data.output["rgb"]
+            if rgb_tensor is None or rgb_tensor.shape[0] == 0:
+                return
+
+            rgb = rgb_tensor[0].cpu().numpy()  # (H, W, 3), RGB order
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+            # JPEG encode
+            ret, buf = cv2.imencode('.jpg', bgr)
+            if not ret:
+                return
+
+            msg = buf.tobytes()
+            if self.jpeg_unit_test:
+                msg = struct.pack('dI', time.time(), self._jpeg_frame_count) + msg
+                self._jpeg_frame_count += 1
+
+            self.jpeg_socket.send(msg, flags=zmq.NOBLOCK)
         except Exception:
             return
 
@@ -320,6 +359,10 @@ class TiangongProController(DeviceBase):
                 self._send_camera_data()
             except Exception:
                 pass
+            try:
+                self._send_jpeg_camera_data()
+            except Exception:
+                pass
 
         return {"tiangong_pro": to_controller_data(self._action,self.env)}
 
@@ -329,3 +372,5 @@ class TiangongProController(DeviceBase):
             print("Tiangong Pro Controller: Full ROS Interface enabled via ZMQ Bridge")
             print("  - Command Sub: tcp://127.0.0.1:5555")
             print("  - Status Pub:  tcp://127.0.0.1:5556")
+            print("  - Image Pub:   tcp://*:5557 (raw multipart)")
+            print("  - JPEG Pub:    tcp://*:5558 (image_client compatible)")
