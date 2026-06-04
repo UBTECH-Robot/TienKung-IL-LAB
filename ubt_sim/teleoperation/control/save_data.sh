@@ -10,7 +10,7 @@ else
     exit 1
 fi
 
-export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-146}"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 
 # bodyctrl_msgs 已通过 deb 包安装在 /opt/ros/<distro>/share/bodyctrl_msgs
 # 无需额外 source，ROS2 会自动发现
