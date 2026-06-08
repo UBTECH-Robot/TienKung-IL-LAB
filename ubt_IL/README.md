@@ -113,6 +113,22 @@ HF_HUB_OFFLINE=1 lerobot-dataset-viz \
 ```
 > **注意**：`--root` 须指向包含 `meta/` 目录的数据集路径（即 `repo_id` 目录本身），而非父目录。`HF_HUB_OFFLINE=1` 用于禁止访问 HuggingFace Hub。
 
+
+### 真机回放数据集 action（replay.py）
+
+将数据集的 action 原样发回真机/仿真。容器内运行，先跑 `reset.py` 复位。
+
+```bash
+# --rate 需匹配数据集 fps：真机 30，仿真 15
+/usr/bin/python3 /ubt_IL/scripts/deploy/replay.py \
+  --dataset /ubt_IL/dataset/real_grasp_bottle --episode 0 --rate 30
+```
+
+常用参数：`--episode N`、`--rate Hz`、`--start/--end` 限帧、`--dry-run` 只打印不发。首次试跑可加 `--rate 10 --end 100` 低速验证前 100 帧。
+
+依赖：`/usr/bin/python3 -m pip install --user pyarrow pandas`。
+
+
 ---
 
 ## 3. 模型训练

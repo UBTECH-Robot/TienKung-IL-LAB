@@ -20,7 +20,7 @@ cd /ubt_IL/lerobot
     --policy.path="$POLICY_PATH" \
     --robot.type=tienkung \
     --robot.bridge_enabled=true \
-    --robot.cameras="{camera_head: {type: image_server, server_address: '${ZMQ_HOST}', port: 5558, offset_x: 0, width: 640, height: 360, fps: $FPS, display: true}}" \
+    --robot.cameras="{head: {type: image_server, server_address: '${ZMQ_HOST}', port: 5558, offset_x: 0, width: 640, height: 360, fps: $FPS, display: true}}" \
     --task="$TASK" \
     --fps="$FPS" \
     --duration="$DURATION"

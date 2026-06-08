@@ -3,8 +3,7 @@
 Communicates with the robot backend via ZMQ through ros2_deploy_bridge.py,
 which bridges to the robot through ROS2 DDS.
 
-26-DOF action/observation layout (must match training data):
-    [left_arm(7), left_hand(6), right_arm(7), right_hand(6)]
+Joint layout is configured via TienKungRobotConfig.all_joints (default: arms_then_hands).
 """
 
 from __future__ import annotations
@@ -25,13 +24,6 @@ from .config_tienkung import TienKungRobotConfig
 
 logger = logging.getLogger(__name__)
 
-# 26 joint feature names, in the exact order the model expects
-LEFT_ARM_JOINTS = [f"left_arm_j{i}.pos" for i in range(1, 8)]    # 7
-LEFT_HAND_JOINTS = [f"left_hand_j{i}.pos" for i in range(1, 7)]  # 6
-RIGHT_ARM_JOINTS = [f"right_arm_j{i}.pos" for i in range(1, 8)]  # 7
-RIGHT_HAND_JOINTS = [f"right_hand_j{i}.pos" for i in range(1, 7)]  # 6
-ALL_JOINTS = LEFT_ARM_JOINTS + LEFT_HAND_JOINTS + RIGHT_ARM_JOINTS + RIGHT_HAND_JOINTS  # 26
-
 
 class TienKungRobot(Robot):
     config_class = TienKungRobotConfig
@@ -42,6 +34,13 @@ class TienKungRobot(Robot):
         self.config = config
         self.cameras = make_cameras_from_configs(config.cameras)
 
+        # Joint definitions from config (replace module-level constants)
+        self._left_arm_joints = config.left_arm_joints
+        self._right_arm_joints = config.right_arm_joints
+        self._left_hand_joints = config.left_hand_joints
+        self._right_hand_joints = config.right_hand_joints
+        self._all_joints = config.all_joints
+
         # ZMQ state (populated in connect)
         self._zmq_context: zmq.Context | None = None
         self._cmd_socket: zmq.Socket | None = None
@@ -50,10 +49,10 @@ class TienKungRobot(Robot):
 
         # Thread-safe state caches
         self._state_lock = threading.Lock()
-        self._left_arm_jpos: list[float] = [0.0] * 7
-        self._right_arm_jpos: list[float] = [0.0] * 7
-        self._left_hand_pos: list[float] = [0.0] * 6
-        self._right_hand_pos: list[float] = [0.0] * 6
+        self._left_arm_jpos: list[float] = [0.0] * len(config.left_arm_joints)
+        self._right_arm_jpos: list[float] = [0.0] * len(config.right_arm_joints)
+        self._left_hand_pos: list[float] = [0.0] * len(config.left_hand_joints)
+        self._right_hand_pos: list[float] = [0.0] * len(config.right_hand_joints)
         self._state_ready = threading.Event()
 
         # Status receive thread
@@ -64,7 +63,7 @@ class TienKungRobot(Robot):
 
     @property
     def observation_features(self) -> dict[str, type | tuple]:
-        motors_ft = {name: float for name in ALL_JOINTS}
+        motors_ft = {name: float for name in self._all_joints}
         camera_ft = {
             cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3)
             for cam in self.cameras
@@ -73,7 +72,7 @@ class TienKungRobot(Robot):
 
     @property
     def action_features(self) -> dict[str, type]:
-        return {name: float for name in ALL_JOINTS}
+        return {name: float for name in self._all_joints}
 
     @property
     def is_connected(self) -> bool:
@@ -175,16 +174,16 @@ class TienKungRobot(Robot):
         right_arm = data.get("right_arm", [])
         right_hand = data.get("right_hand", [])
 
-        if len(left_arm) >= 7 and len(right_arm) >= 7:
+        if len(left_arm) >= len(self._left_arm_joints) and len(right_arm) >= len(self._right_arm_joints):
             with self._state_lock:
-                self._left_arm_jpos[:] = left_arm[:7]
-                self._right_arm_jpos[:] = right_arm[:7]
-        if len(left_hand) >= 6:
+                self._left_arm_jpos[:] = left_arm[:len(self._left_arm_joints)]
+                self._right_arm_jpos[:] = right_arm[:len(self._right_arm_joints)]
+        if len(left_hand) >= len(self._left_hand_joints):
             with self._state_lock:
-                self._left_hand_pos[:] = left_hand[:6]
-        if len(right_hand) >= 6:
+                self._left_hand_pos[:] = left_hand[:len(self._left_hand_joints)]
+        if len(right_hand) >= len(self._right_hand_joints):
             with self._state_lock:
-                self._right_hand_pos[:] = right_hand[:6]
+                self._right_hand_pos[:] = right_hand[:len(self._right_hand_joints)]
 
         self._state_ready.set()
 
@@ -193,13 +192,13 @@ class TienKungRobot(Robot):
         obs: RobotObservation = {}
 
         with self._state_lock:
-            for i, name in enumerate(LEFT_ARM_JOINTS):
+            for i, name in enumerate(self._left_arm_joints):
                 obs[name] = self._left_arm_jpos[i]
-            for i, name in enumerate(LEFT_HAND_JOINTS):
+            for i, name in enumerate(self._left_hand_joints):
                 obs[name] = self._left_hand_pos[i]
-            for i, name in enumerate(RIGHT_ARM_JOINTS):
+            for i, name in enumerate(self._right_arm_joints):
                 obs[name] = self._right_arm_jpos[i]
-            for i, name in enumerate(RIGHT_HAND_JOINTS):
+            for i, name in enumerate(self._right_hand_joints):
                 obs[name] = self._right_hand_pos[i]
 
         # Capture images from cameras
@@ -210,11 +209,11 @@ class TienKungRobot(Robot):
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
-        # Extract 26-dim action values in order
-        left_arm = [action[name] for name in LEFT_ARM_JOINTS]
-        left_hand = [action[name] for name in LEFT_HAND_JOINTS]
-        right_arm = [action[name] for name in RIGHT_ARM_JOINTS]
-        right_hand = [action[name] for name in RIGHT_HAND_JOINTS]
+        # Extract action values by joint group
+        left_arm = [action[name] for name in self._left_arm_joints]
+        left_hand = [action[name] for name in self._left_hand_joints]
+        right_arm = [action[name] for name in self._right_arm_joints]
+        right_hand = [action[name] for name in self._right_hand_joints]
 
         # Apply safety clipping if configured
         if self.config.max_relative_target is not None:
@@ -242,13 +241,13 @@ class TienKungRobot(Robot):
         # Apply Inspire hand clip to returned values so they match what Bridge2
         # will send to the robot (clip [0,1], subtract 0.2 if < 0.9, round to 0.1).
         sent_action: RobotAction = {}
-        for i, name in enumerate(LEFT_ARM_JOINTS):
+        for i, name in enumerate(self._left_arm_joints):
             sent_action[name] = left_arm[i]
-        for i, name in enumerate(LEFT_HAND_JOINTS):
+        for i, name in enumerate(self._left_hand_joints):
             sent_action[name] = self._inspire_clip_value(left_hand[i])
-        for i, name in enumerate(RIGHT_ARM_JOINTS):
+        for i, name in enumerate(self._right_arm_joints):
             sent_action[name] = right_arm[i]
-        for i, name in enumerate(RIGHT_HAND_JOINTS):
+        for i, name in enumerate(self._right_hand_joints):
             sent_action[name] = self._inspire_clip_value(right_hand[i])
         return sent_action
 
@@ -284,9 +283,9 @@ class TienKungRobot(Robot):
             # Hand values [1,1,1,1,1,0] open the Inspire hand (matching reset.py).
             # After Bridge2 Inspire clip: clip(1.0)=1.0, 1.0>=0.9 → no subtract → hand open.
             home_action = {
-                "left_arm": self.config.home_position[:7],
+                "left_arm": self.config.home_position[:len(self._left_arm_joints)],
                 "left_hand": [1.0, 1.0, 1.0, 1.0, 1.0, 0.0],
-                "right_arm": self.config.home_position[7:14],
+                "right_arm": self.config.home_position[len(self._left_arm_joints):len(self._left_arm_joints) + len(self._right_arm_joints)],
                 "right_hand": [1.0, 1.0, 1.0, 1.0, 1.0, 0.0],
                 "ts": time.time(),
             }
