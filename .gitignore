@@ -52,7 +52,7 @@ ubt_IL/.gitignore
 ubt_IL/dataset/real_grasp_bottle/
 ubt_IL/dataset/real_merged/
 ubt_IL/dataset/real_pick_place/
-ubt_IL/dataset/dataset/
+ubt_IL/dataset/
 
 # 模型权重与训练状态
 ubt_IL/model/
