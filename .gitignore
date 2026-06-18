@@ -58,3 +58,6 @@ ubt_IL/dataset/
 ubt_IL/model/
 
 # lerobot 已作为 submodule 管理，不需要忽略
+ubt_sim/docker/isaac_sim/.codegraph/
+.codegraph/
+ubt_sim/dataset/

@@ -1,0 +1,629 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/10.onemodel/indoor/6.table/table_17/SubUSDs/textures/texture_pbr_20250901.png",
+            "source_hash": "0c71bcb020acd4274fec32c8476906204e02ed4d",
+            "target_url": "./SubUSDs/textures/texture_pbr_20250901.png",
+            "target_hash": "9530de09e1230a509f1e83c228ff9dad568501f6"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/10.onemodel/indoor/6.table/table_17/SubUSDs/textures/texture_pbr_20250901_metallic-texture_pbr_20250901_roughness.png",
+            "source_hash": "6354729de198afda9dd5727eb7c3ffa77e4b1f72",
+            "target_url": "./SubUSDs/textures/texture_pbr_20250901_metallic-texture_pbr_20250901_roughness.png",
+            "target_hash": "79dfbc20c20a1cf382b8af11b0b77b742d0a0bdd"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/10.onemodel/indoor/6.table/table_17/SubUSDs/textures/texture_pbr_20250901_normal.png",
+            "source_hash": "3b41325c45cde27cc4f477c5675be8db1c20fa4d",
+            "target_url": "./SubUSDs/textures/texture_pbr_20250901_normal.png",
+            "target_hash": "c3acfe5b971db6de926de32d3c5af4f5e804cba2"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_CeilingA_D.png",
+            "source_hash": "f4c50a39fc6f45d7563835797a70997129d6d0d0",
+            "target_url": "./SubUSDs/textures/T_CeilingA_D.png",
+            "target_hash": "7b91f56c2d8be06882b318d8f337a9bca4ee940f"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_CeilingA_M.png",
+            "source_hash": "8c7443aca5ef6db8d058c8b7e9e4bd901e8f20bd",
+            "target_url": "./SubUSDs/textures/T_CeilingA_M.png",
+            "target_hash": "00216a69c160c1c5f91f54ba48cddcd4317e23b3"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_CeilingA_N.png",
+            "source_hash": "b7aa338bf1c98a4489416aa0977231337c74976d",
+            "target_url": "./SubUSDs/textures/T_CeilingA_N.png",
+            "target_hash": "19d57b921b1971d437b6ccead47029862514aec9"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_CeilingA_ORM.png",
+            "source_hash": "312381283edfe869f1cc93ee260b1e7329b9111c",
+            "target_url": "./SubUSDs/textures/T_CeilingA_ORM.png",
+            "target_hash": "ddb73122fa9a1eeef7a8758ca3d8f6dfcfbde686"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_01_D.png",
+            "source_hash": "0d86dc10bba032bec69b5a0e712abbd9873dbf1f",
+            "target_url": "./SubUSDs/textures/T_RackSetA_01_D.png",
+            "target_hash": "f36ac227369aedc93ab6f7805eb75268c2f5cdce"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_01_M.png",
+            "source_hash": "7ac071452fffa170ee8e808b9929618719979c0e",
+            "target_url": "./SubUSDs/textures/T_RackSetA_01_M.png",
+            "target_hash": "c1f9bf351c5dff0cbe3d6a6358123cb9d8472957"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_01_N.png",
+            "source_hash": "796fc29247c6a0d25a685eddd323ff132f3ddfdc",
+            "target_url": "./SubUSDs/textures/T_RackSetA_01_N.png",
+            "target_hash": "a14be25b96dc0096a5fdcc69dfb95157a406bc80"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_01_ORM.png",
+            "source_hash": "8d2df6daaef63c26d5b0b0d764ca44069d31986b",
+            "target_url": "./SubUSDs/textures/T_RackSetA_01_ORM.png",
+            "target_hash": "7822b004cc5f84c8694f32d7f227680e5c42b7ed"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_03_D.png",
+            "source_hash": "355b46df7beaed47793bd0e71e9d7dcb339c31d0",
+            "target_url": "./SubUSDs/textures/T_RackSetA_03_D.png",
+            "target_hash": "7f4b7ccd54bf11b3c72565b2707c27238b71655a"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_03_M.png",
+            "source_hash": "db48bf6b451a3884b02053630b9784d92f556333",
+            "target_url": "./SubUSDs/textures/T_RackSetA_03_M.png",
+            "target_hash": "c5a65dc5d1fedfda553e8085988fe46e54cff2cb"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_03_N.png",
+            "source_hash": "ed1cdd27fb9ee98977cf9ab133b614489939b500",
+            "target_url": "./SubUSDs/textures/T_RackSetA_03_N.png",
+            "target_hash": "4bff569be35b86120cb02517c9fe7f00a1d16602"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_03_ORM.png",
+            "source_hash": "f50929fc99da18a91388b77fe04b53589e74b4a1",
+            "target_url": "./SubUSDs/textures/T_RackSetA_03_ORM.png",
+            "target_hash": "6212c08b36002502ebc2ade77e68f627674ac505"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_04_D.png",
+            "source_hash": "4450f4a63c293a29978df92b54ee65f1dc70dda3",
+            "target_url": "./SubUSDs/textures/T_RackSetA_04_D.png",
+            "target_hash": "c3eda9cc15b44b22da6ac3fdea63714c528a354e"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_04_M.png",
+            "source_hash": "3b7e9bcf5c51d76f07c06d82f3d9fe695efbd17a",
+            "target_url": "./SubUSDs/textures/T_RackSetA_04_M.png",
+            "target_hash": "237d68d8fa678b62af2e82a1dd4b9177d105ffa6"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_04_N.png",
+            "source_hash": "870591ad3d3a8b542027a8358148bbfefdadacfd",
+            "target_url": "./SubUSDs/textures/T_RackSetA_04_N.png",
+            "target_hash": "0bc12245e9d1af3529c489fce2a00b31f053eea9"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_04_ORM.png",
+            "source_hash": "d0f810efc752077ec3463bdfab076c9d55be6f65",
+            "target_url": "./SubUSDs/textures/T_RackSetA_04_ORM.png",
+            "target_hash": "9cd4ecf2186bf47bcec5f77828a4d1cccaa7b7a0"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/0001.png",
+            "source_hash": "ec474a99986335a7ce804843712aa46be826546c",
+            "target_url": "./SubUSDs/textures/0001.png",
+            "target_hash": "3c18433607d8addbebc090ae08c4cdc6bbbe33f7"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_BeamsA_D.png",
+            "source_hash": "4036c7bd12a4e8d77794882ad0dac6dc3d3b59b9",
+            "target_url": "./SubUSDs/textures/T_BeamsA_D.png",
+            "target_hash": "109199c76a63fa41196041a1873a3d8c03885a78"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_BeamsA_M.png",
+            "source_hash": "d40d14638b884f5de085e8c6eca2473a304d120a",
+            "target_url": "./SubUSDs/textures/T_BeamsA_M.png",
+            "target_hash": "60033589bc8d677883eb13ca0f225de4b5cf810b"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_BeamsA_N.png",
+            "source_hash": "ef5cace762e486cfe676c446966990d112835fc1",
+            "target_url": "./SubUSDs/textures/T_BeamsA_N.png",
+            "target_hash": "82264f7c91f49e163a5c8fd3db13827f91edd52d"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_BeamsA_ORM.png",
+            "source_hash": "4fc6a6d22508a1b4d0261d449289f5ad59d3f220",
+            "target_url": "./SubUSDs/textures/T_BeamsA_ORM.png",
+            "target_hash": "4b658f4e9b18e668f7a65af428a18cfc5337d2be"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FrameA_D.png",
+            "source_hash": "587612556dcedc06d21e1373bec67fd652e20781",
+            "target_url": "./SubUSDs/textures/T_FrameA_D.png",
+            "target_hash": "88a950f29973abb9f9eea425d7c546772325093d"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FrameA_M.png",
+            "source_hash": "1bddf83396bd834e9eccf974729efe4e5cc3f022",
+            "target_url": "./SubUSDs/textures/T_FrameA_M.png",
+            "target_hash": "9ef2265be052a0b3b295f06736c80c74ea511416"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FrameA_N.png",
+            "source_hash": "bbf0e42f309dc01760e3fba123e2c41819d861de",
+            "target_url": "./SubUSDs/textures/T_FrameA_N.png",
+            "target_hash": "211f0bf9be12a7c797f525f371816fd1879e91fd"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FrameA_ORM.png",
+            "source_hash": "5e3f1d5a3952fa36e022a005f95e9a68cc32ba43",
+            "target_url": "./SubUSDs/textures/T_FrameA_ORM.png",
+            "target_hash": "5471fef685e68323a817942a49fc948f32e6068d"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FloorStripes_D.png",
+            "source_hash": "e8ae4a609f66338c763e798db1c334925fe62607",
+            "target_url": "./SubUSDs/textures/T_FloorStripes_D.png",
+            "target_hash": "7f343480ed7a7e3fe2f307e32ed6cf6ea1c64f4b"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FloorStripes_M.png",
+            "source_hash": "8e91f6826f6a8323089ccb59bc193f2db6ffaa14",
+            "target_url": "./SubUSDs/textures/T_FloorStripes_M.png",
+            "target_hash": "22b4995b9839c7ec6a885f63932c9fb44c1a2c65"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FloorStripes_N.png",
+            "source_hash": "7fb2894ad11045636301eb2f19707af3fda623b2",
+            "target_url": "./SubUSDs/textures/T_FloorStripes_N.png",
+            "target_hash": "5f9f5c49692017b8859dc435a5a46aa3f5afcc18"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FloorStripes_ORM.png",
+            "source_hash": "665c909565b66d43097dc6fe031095b9b148b2b7",
+            "target_url": "./SubUSDs/textures/T_FloorStripes_ORM.png",
+            "target_hash": "2b54789d49c271d187f8bbbb042c3935a972871f"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_Floor_01_D.png",
+            "source_hash": "71c9cce59642ea306514f1839bd22572705fa739",
+            "target_url": "./SubUSDs/textures/T_Floor_01_D.png",
+            "target_hash": "ab2e46c61bd46b409430054ee8c35d85fa190111"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_Floor_01_M.png",
+            "source_hash": "d4d7af0f63a2382de1a4505c7e289fa01a6e87aa",
+            "target_url": "./SubUSDs/textures/T_Floor_01_M.png",
+            "target_hash": "d96ee96f91b7ec86c26856f4205bcbb3df8b4039"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_Floor_01_N.png",
+            "source_hash": "d854297e77b4782db58e8fbec0c299c8f85da67c",
+            "target_url": "./SubUSDs/textures/T_Floor_01_N.png",
+            "target_hash": "fbbeb45ed728e70330279dfbe09a28fecd86235e"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_Floor_01_ORM.png",
+            "source_hash": "1edca387236e043c131d4483b74b247de4d05af7",
+            "target_url": "./SubUSDs/textures/T_Floor_01_ORM.png",
+            "target_hash": "921bf9f309956f26a584d05a0bf28266d0638daf"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_SignsB_D.png",
+            "source_hash": "7871a787ffe9a291ef6bf7594a5da1abab289674",
+            "target_url": "./SubUSDs/textures/T_SignsB_D.png",
+            "target_hash": "f77edbd71e9b0d260b4339a4f8e31bcd0e52d83b"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_SignsC_D.png",
+            "source_hash": "9af8c1089fde98ff50278b28d845836afe79c107",
+            "target_url": "./SubUSDs/textures/T_SignsC_D.png",
+            "target_hash": "80cbf825e01d2f96efa386d478dd8e003e362a08"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_SignsC_ORM.png",
+            "source_hash": "47a681dc73f5b6e96d91b65bc7a6051392beae7f",
+            "target_url": "./SubUSDs/textures/T_SignsC_ORM.png",
+            "target_hash": "96aa7b73eae86dd130124e9b45836b43a9c9659e"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_CardBoxA_D.png",
+            "source_hash": "2b820bfcb808ef67f83b29099c50b110bd410b0b",
+            "target_url": "./SubUSDs/textures/T_CardBoxA_D.png",
+            "target_hash": "efee461b67e3b634755b56bf115e9af651b7f4ab"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_CardBoxA_N.png",
+            "source_hash": "6d5eacffb155b8356bc7b891975ba3d3ea919f90",
+            "target_url": "./SubUSDs/textures/T_CardBoxA_N.png",
+            "target_hash": "8dbcca769a5735cc0d01097f0e679e73b39e0d70"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_CardBoxA_ORM.png",
+            "source_hash": "0d1969bca00c6c064af0942d3a878a49a8ee611d",
+            "target_url": "./SubUSDs/textures/T_CardBoxA_ORM.png",
+            "target_hash": "4e43bdb7630d86f507dab7ce54efe31e9597f312"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackShield_D.png",
+            "source_hash": "2d00bb2df22982ce59a72075f8337e172915026a",
+            "target_url": "./SubUSDs/textures/T_RackShield_D.png",
+            "target_hash": "c283375c057f60dfd13ef9882196599ffe14ca99"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackShield_N.png",
+            "source_hash": "0dd3ccb8f639728fb6256d162116e81ced9d7b71",
+            "target_url": "./SubUSDs/textures/T_RackShield_N.png",
+            "target_hash": "94995724d6c8047b968a149d2c174f311db78c21"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackShield_ORM.png",
+            "source_hash": "731fb67ea877cec763e1941b48aec641979f2b79",
+            "target_url": "./SubUSDs/textures/T_RackShield_ORM.png",
+            "target_hash": "6e63ad2e80f873178ce9e45edcdc6547b3b320f9"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_PaletteA_01_D.png",
+            "source_hash": "5ab3d0e0a3d35e0d8e3fa2c44b09883f8ffbd53f",
+            "target_url": "./SubUSDs/textures/T_PaletteA_01_D.png",
+            "target_hash": "658db52361162d501f8119d19b7fe8fa32c93cda"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_PaletteA_01_M.png",
+            "source_hash": "2e6a1607ad93a7967ea6b7d32abb5466de8bf85c",
+            "target_url": "./SubUSDs/textures/T_PaletteA_01_M.png",
+            "target_hash": "69290538b1b63a8c45751963d2775f951e8d5a44"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_PaletteA_01_N.png",
+            "source_hash": "946bb2766cb85ad05ed99b054e3ce8a3b60e46de",
+            "target_url": "./SubUSDs/textures/T_PaletteA_01_N.png",
+            "target_hash": "91790193ca6a059d3926ba7a81f4e4d633a27730"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_PaletteA_01_ORM.png",
+            "source_hash": "79dd6cd2b71d579311c832397ac7a009bb4079f6",
+            "target_url": "./SubUSDs/textures/T_PaletteA_01_ORM.png",
+            "target_hash": "b9065fcdbe57c4e357e3a5823f2d3c43633d2aa7"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallDetails_D.png",
+            "source_hash": "bf64acce9b56a72b9e503530d2b2933ef2e84961",
+            "target_url": "./SubUSDs/textures/T_WallDetails_D.png",
+            "target_hash": "5dc5bb8bfcbe4356f2cadf9f5e609504d4da8674"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallDetails_N.png",
+            "source_hash": "68b9e9687c22e63b3888214da6f782135d277f7e",
+            "target_url": "./SubUSDs/textures/T_WallDetails_N.png",
+            "target_hash": "f994debadcb875ebef5d40f65b447bd5ce7d23ed"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallDetails_ORM.png",
+            "source_hash": "0dec4a4fe6bafbd6a4b95877772c638a45bef46f",
+            "target_url": "./SubUSDs/textures/T_WallDetails_ORM.png",
+            "target_hash": "a7da1cd9b301f5459351e606ef19c8a14388021d"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_LampCeilingA_D.png",
+            "source_hash": "583316029fabfce4df50f220e34bc8037a1641df",
+            "target_url": "./SubUSDs/textures/T_LampCeilingA_D.png",
+            "target_hash": "6255affadcf952139a242722f71e659218ef3981"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_LampCeilingA_N.png",
+            "source_hash": "fb6d6059a64b09987b7de1cf1eaaea7540ee4356",
+            "target_url": "./SubUSDs/textures/T_LampCeilingA_N.png",
+            "target_hash": "99cc87c4176a493b030a0308301f2b1eaffe3078"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_LampCeilingA_ORM.png",
+            "source_hash": "b97dc019d0a96cd90458a6e7d2ea8b366950cff3",
+            "target_url": "./SubUSDs/textures/T_LampCeilingA_ORM.png",
+            "target_hash": "68f455a725d274aa4afbb21652624fd6412d1e81"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_BlankMask_M.png",
+            "source_hash": "48afa48df90d882656b70298cc4ca7f6fee3406a",
+            "target_url": "./SubUSDs/textures/T_BlankMask_M.png",
+            "target_hash": "3f1d3712c1f48fb9904e194333500ec35398dee6"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallA_02_D.png",
+            "source_hash": "4a854b580e2e4e39364e6a536aaf831bb301c03e",
+            "target_url": "./SubUSDs/textures/T_WallA_02_D.png",
+            "target_hash": "c213f815282dc2623af048608b522a211bbd8091"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallA_02_N.png",
+            "source_hash": "86a04c47500a400d90383d414b0488d4c39283ae",
+            "target_url": "./SubUSDs/textures/T_WallA_02_N.png",
+            "target_hash": "186a06887b52526f10946979a6eea1db2b3b421c"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallA_02_ORM.png",
+            "source_hash": "6b58f28b8154eb80cb6fdf52df83a34148b64e40",
+            "target_url": "./SubUSDs/textures/T_WallA_02_ORM.png",
+            "target_hash": "17a634e6eb43be2f61e9964f9a42ca0a7b485046"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FireExtinguisher_D.png",
+            "source_hash": "0d2a436380ba1c193f3dee48dfe18c9d2c8c8ca5",
+            "target_url": "./SubUSDs/textures/T_FireExtinguisher_D.png",
+            "target_hash": "6f9188fe3efe5f76e388587f116c720e093a387b"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FireExtinguisher_N.png",
+            "source_hash": "8cec00cc774edefff6902495da3536623361bfa5",
+            "target_url": "./SubUSDs/textures/T_FireExtinguisher_N.png",
+            "target_hash": "136ba6aa8ae36c291e98709b16f4e09201381903"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_FireExtinguisher_ORM.png",
+            "source_hash": "2091cf01f820bb46840c2c28d2b5fea559df8a11",
+            "target_url": "./SubUSDs/textures/T_FireExtinguisher_ORM.png",
+            "target_hash": "442f44fc216311630218351f7eb13f4227397a08"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/MI_CeilingA_06b.mdl",
+            "source_hash": "5e779fc63e19726d03fef7b2700107817a073246",
+            "target_url": "./SubUSDs/materials/MI_CeilingA_06b.mdl",
+            "target_hash": "9d058a6b18b6fb73e47316ec787185cd7859c486"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/MI_Barcode_0001.mdl",
+            "source_hash": "400955a8260afd830db6ce31f3bf3185dd8471a8",
+            "target_url": "./SubUSDs/materials/MI_Barcode_0001.mdl",
+            "target_hash": "1a141c89fb23e350a4eba134a195c11a53e2bd44"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/MI_FrameA_01.mdl",
+            "source_hash": "82109f085e65d89ed56ba0fda569ed7a9bf32eff",
+            "target_url": "./SubUSDs/materials/MI_FrameA_01.mdl",
+            "target_hash": "f80df89388755a46e386eb2f93ac8a37323c1abe"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/M_WallBoard_01.mdl",
+            "source_hash": "e0384af1e93854b367c38b4093732f9e2710c21d",
+            "target_url": "./SubUSDs/materials/M_WallBoard_01.mdl",
+            "target_hash": "162e778813a5973cc0a73c1cd5bee014c39f1e5c"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/MI_Floor_01.mdl",
+            "source_hash": "35b818b253ef5c6cde2552d67230fc37df2a9630",
+            "target_url": "./SubUSDs/materials/MI_Floor_01.mdl",
+            "target_hash": "f629f9dbc240ce32f9d7c00585d25ff38c2d4821"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/MI_SignB.mdl",
+            "source_hash": "ef62acec98f6f3b24d442753e492127045d31269",
+            "target_url": "./SubUSDs/materials/MI_SignB.mdl",
+            "target_hash": "8f6d1e94e0567e45134f27efce8125227841630d"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/MI_LampCeilingA.mdl",
+            "source_hash": "87c1b0480d5308bfd3448b3542637ee134bb7304",
+            "target_url": "./SubUSDs/materials/MI_LampCeilingA.mdl",
+            "target_hash": "d7734f20b91d54bf844ec8a8e648fd000c893bc0"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/MI_RackShield_01.mdl",
+            "source_hash": "1ea895c983c0daefa7c826b88c1cf7a0990601bb",
+            "target_url": "./SubUSDs/materials/MI_RackShield_01.mdl",
+            "target_hash": "c1022f982a11d3c9781e6d854c54d5555b05d6df"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/M_Glow.mdl",
+            "source_hash": "514c4235d2236c9939a441eb8c39cc776af0df7a",
+            "target_url": "./SubUSDs/materials/M_Glow.mdl",
+            "target_hash": "d16cc70f1138107fead6faa322ea572f3f92b388"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/MI_WallB_01.mdl",
+            "source_hash": "8147da0882564b79502f318f05b38e881ff66033",
+            "target_url": "./SubUSDs/materials/MI_WallB_01.mdl",
+            "target_hash": "e09b46f002b0493f05d29215a805cc38ceee4f13"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallA_01_D.png",
+            "source_hash": "b67d1fe16424add2679a0ad5a6117beaf9af0694",
+            "target_url": "./SubUSDs/textures/T_WallA_01_D.png",
+            "target_hash": "547a2eb934bf92e017add581d6b0943f7e70c1a3"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallA_01_N.png",
+            "source_hash": "5215275c6f41c3b954dd0c871f6d2256c0b3137d",
+            "target_url": "./SubUSDs/textures/T_WallA_01_N.png",
+            "target_hash": "6f7c6e27c8c146191a9622d9482ce023e40d7270"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallA_01_ORM.png",
+            "source_hash": "b555ba539e18ca0ae27e427b3abfc78a32f4eafe",
+            "target_url": "./SubUSDs/textures/T_WallA_01_ORM.png",
+            "target_hash": "401c5631b1a6b93482efd73a4e546d5611ab6e09"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_02_D.png",
+            "source_hash": "5d27de209c9e3cb1168dbbaff5b75f57165c116a",
+            "target_url": "./SubUSDs/textures/T_RackSetA_02_D.png",
+            "target_hash": "04eab7eee91b5f62c8ebdfe23ddd49240edb6a27"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_02_M.png",
+            "source_hash": "3e3f3ece86b8df848699bc5008c2c5a14b91ef95",
+            "target_url": "./SubUSDs/textures/T_RackSetA_02_M.png",
+            "target_hash": "6eb5be312a9e3ad2d361eaf88fe966b2b4757503"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_02_N.png",
+            "source_hash": "f8d990d4d472872e875e3a0c47d0238946152971",
+            "target_url": "./SubUSDs/textures/T_RackSetA_02_N.png",
+            "target_hash": "3b84bfb00652f2bcf5266b3482da559face8d0e5"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_RackSetA_02_ORM.png",
+            "source_hash": "6f1a1d8b6d99cb9dc44544b8d878f9d279f1e080",
+            "target_url": "./SubUSDs/textures/T_RackSetA_02_ORM.png",
+            "target_hash": "a99ebbda31345c5b784c9562b50f6298ef62c5a6"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_PushcartA_D.png",
+            "source_hash": "fe206631286535d2675cbb0f70820bfdd7c0a2d9",
+            "target_url": "./SubUSDs/textures/T_PushcartA_D.png",
+            "target_hash": "a7ac8fa8893d14038384824c405f9d4d17403b2c"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_PushcartA_M.png",
+            "source_hash": "a2ac782706b37dd53bd46f89170722153994a77f",
+            "target_url": "./SubUSDs/textures/T_PushcartA_M.png",
+            "target_hash": "1860eccb4791928d64f96cf3c2390a31d2c28b14"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_PushcartA_N.png",
+            "source_hash": "4d0646cf46587e0b3ce2164bc7178a80bec1ddb9",
+            "target_url": "./SubUSDs/textures/T_PushcartA_N.png",
+            "target_hash": "ce19607b2f686fd7c66ac463c1e840388d5b99d3"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_PushcartA_ORM.png",
+            "source_hash": "64cab54ff555caeccea395c001a81c1c5530cdfa",
+            "target_url": "./SubUSDs/textures/T_PushcartA_ORM.png",
+            "target_hash": "231086f1a414aa24e8d47bd4cabe96563e5d0c64"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/M_AisleSign.mdl",
+            "source_hash": "786131cb5679a91d008c44d6777a0d992fbd0c46",
+            "target_url": "./SubUSDs/materials/M_AisleSign.mdl",
+            "target_hash": "6129b54c1a25d5c3f81c2778dca5f9964cbb469a"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/MI_PushcartA_01.mdl",
+            "source_hash": "19be8650e34cf44e0e88bd9831423883dfd7d542",
+            "target_url": "./SubUSDs/materials/MI_PushcartA_01.mdl",
+            "target_hash": "217c978a39d28b130c5e285cfb383343f5b732f2"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/OmniUe4Function.mdl",
+            "source_hash": "a4cc29756552342157ff7bc2c60b5ffdc94a6db7",
+            "target_url": "./SubUSDs/materials/OmniUe4Function.mdl",
+            "target_hash": "9e7b5d087c29c8e185aec5e3d4fb41e7a189cf31"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/OmniUe4Base.mdl",
+            "source_hash": "da866cf3d206bed3782594015b4fd82be0eaf973",
+            "target_url": "./SubUSDs/materials/OmniUe4Base.mdl",
+            "target_hash": "909085cffa6cefa5fec6f1c3accfc04b595c741c"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_SignsA_D.png",
+            "source_hash": "77b315f39ae412d918304a87426dea1ee999f675",
+            "target_url": "./SubUSDs/textures/MI_SignB/T_SignsA_D.png",
+            "target_hash": "aad781f625fd5dba7916960fe72cfadcca129864"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/Alum_Anodized_roughness.png",
+            "source_hash": "666404422cfcd9575ce7c829cd3b74f46fcab2da",
+            "target_url": "./SubUSDs/textures/MI_LampCeilingA/Alum_Anodized_roughness.png",
+            "target_hash": "2f31d906d44cdb9b1633c1239773297e39c4fd27"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallBoard_01_N.png",
+            "source_hash": "de8f343a9e486939ff60325c53ab6edf8477e247",
+            "target_url": "./SubUSDs/textures/M_WallBoard_01/T_WallBoard_01_N.png",
+            "target_hash": "832a10aa85b8abf458171cd0a4f37e9028e9e5ec"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallBoard_01_D.png",
+            "source_hash": "9313d68486fa07bab967d69c5eb95d31b329c5f1",
+            "target_url": "./SubUSDs/textures/M_WallBoard_01/T_WallBoard_01_D.png",
+            "target_hash": "6e657edce87954fe292f8ee3167a0bae33c341dd"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallBoard_01_ORM.png",
+            "source_hash": "3324fd146b77c88fc908a17c063973128a323299",
+            "target_url": "./SubUSDs/textures/M_WallBoard_01/T_WallBoard_01_ORM.png",
+            "target_hash": "47b0ecb63c88361a16f87c73b25e354ac560b1b0"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_WallBoard_01_M.png",
+            "source_hash": "7fbf85085e017b5b960402ff47a9090e505e5779",
+            "target_url": "./SubUSDs/textures/M_WallBoard_01/T_WallBoard_01_M.png",
+            "target_hash": "84f3a4b93cb1ac5d40afefefaa6f40517b35db1c"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Props/KLT_Bin/Materials/Textures/FOF_Map_Labels_D.png",
+            "source_hash": "00a14e5d7001fb5b19256b210fa5d60e0860c64c",
+            "target_url": "./SubUSDs/textures/FOF_Map_Labels_D.png",
+            "target_hash": "0e5a00d1d9c6a2041bd28a58ad0424501e7648b8"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Props/KLT_Bin/Materials/Textures/FOF_Map_Magenta_Box_D.png",
+            "source_hash": "f5b21865920919cbb4067c33a503a2b8b160d45c",
+            "target_url": "./SubUSDs/textures/FOF_Map_Magenta_Box_D.png",
+            "target_hash": "8a9aa597d75eba784c7fe03eaf57901dc67275f0"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Props/KLT_Bin/Materials/Textures/FOF_Mesh_Labels_D.png",
+            "source_hash": "51cdc4e4960e2123299f7b19e34d337ec1603645",
+            "target_url": "./SubUSDs/textures/FOF_Mesh_Labels_D.png",
+            "target_hash": "a99426774f22a76eb394f254495ecb8758b92dbf"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_BarelPlasticA_N.png",
+            "source_hash": "ffdd5ab69f823a5ab355cfa8019ee51bdb00ffb5",
+            "target_url": "./SubUSDs/textures/MI_PushcartA_01/T_BarelPlasticA_N.png",
+            "target_hash": "d402e5a142b8ff6ce88d423c1efa771aa0de9319"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_BarelPlasticA_M.png",
+            "source_hash": "0750bbde6e692c97dbed75d14ac0ff65add87367",
+            "target_url": "./SubUSDs/textures/MI_PushcartA_01/T_BarelPlasticA_M.png",
+            "target_hash": "18a7b59b1e4ac6114f7cef882e103b7d0c96abbc"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/AisleSign_Text_01.png",
+            "source_hash": "32fcb814bdd92c1b5c5e609becda2bbcd7c994c0",
+            "target_url": "./SubUSDs/textures/M_AisleSign/AisleSign_Text_01.png",
+            "target_hash": "a0129dc804289f1ad8739ab568ab9db56859e189"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_BarelPlasticA_D.png",
+            "source_hash": "3dd09213bd2743e04b8998e482807e38aedbe38f",
+            "target_url": "./SubUSDs/textures/MI_PushcartA_01/T_BarelPlasticA_D.png",
+            "target_hash": "a688329c658b17dcee50f3e8b626ddc3b0c9c17d"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_AisleSign_N.png",
+            "source_hash": "8cf5e1c7d1b88c6462c3b81eca8d4bb7aa20195f",
+            "target_url": "./SubUSDs/textures/M_AisleSign/T_AisleSign_N.png",
+            "target_hash": "f06004856532a3c4da0b36881dd0f679269b805b"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_BarelPlasticA_ORM.png",
+            "source_hash": "8ca0dd8ddf2d1a7b162c88deefae048f9c520c2f",
+            "target_url": "./SubUSDs/textures/MI_PushcartA_01/T_BarelPlasticA_ORM.png",
+            "target_hash": "8358561fa08258c7536443c5d2f582f89060a4eb"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_AisleSign_D.png",
+            "source_hash": "c59f5ba81de80872295a65281c2b352732ae6868",
+            "target_url": "./SubUSDs/textures/M_AisleSign/T_AisleSign_D.png",
+            "target_hash": "ef47ba187bea30d72fa0026f23697eba64cce160"
+        },
+        {
+            "source_url": "/home/user/isaacdata/0.ISAAC/2.Env/Environments/Simple_Warehouse/Materials/Textures/T_AisleSign_ORM.png",
+            "source_hash": "6a3970209ad701e45fda798afd5fb4ac8fbccb24",
+            "target_url": "./SubUSDs/textures/M_AisleSign/T_AisleSign_ORM.png",
+            "target_hash": "37f23fed713b9315c21de5795eca0d71d38a7bbf"
+        }
+    ]
+}

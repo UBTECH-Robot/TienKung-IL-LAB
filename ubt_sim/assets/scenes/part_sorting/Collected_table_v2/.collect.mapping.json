@@ -1,0 +1,29 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/media/user/WD_BLACK/ecbg/assets/table_v2/textures/texture_pbr_20250901.png",
+            "source_hash": "16d1b0018b063e56cf35829a987321b0f520c87f",
+            "target_url": "./SubUSDs/textures/texture_pbr_20250901.png",
+            "target_hash": "07510285f991e5a773042654c6f39549bd1ba685"
+        },
+        {
+            "source_url": "/media/user/WD_BLACK/ecbg/assets/table_v2/textures/texture_pbr_20250901_metallic-texture_pbr_20250901_roughness.png",
+            "source_hash": "dfa2e5e64b11729797dbaf98de8f677a1bf52656",
+            "target_url": "./SubUSDs/textures/texture_pbr_20250901_metallic-texture_pbr_20250901_roughness.png",
+            "target_hash": "539d0ebd4378bcebf89b52df096643f4076f8411"
+        },
+        {
+            "source_url": "/media/user/WD_BLACK/ecbg/assets/table_v2/textures/texture_pbr_20250901_normal.png",
+            "source_hash": "ef283747c207219ffaabae4a9c75ccb1f3410624",
+            "target_url": "./SubUSDs/textures/texture_pbr_20250901_normal.png",
+            "target_hash": "9545d2fa8d33363f8b54eb72c7663c1cb31ca124"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Plastics/Plastic.mdl",
+            "source_hash": "8fc244453baa8f640dc60b95b273d0cff214158f",
+            "target_url": "./SubUSDs/materials/Plastic.mdl",
+            "target_hash": "b09c2ce01a5564751af01f58d800b545ba9f8fc1"
+        }
+    ]
+}

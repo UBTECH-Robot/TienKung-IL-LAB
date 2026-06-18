@@ -1,0 +1,17 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/media/user/WD_BLACK/ecbg/assets/Box/SubUSDs/textures/0.png",
+            "source_hash": "9e794507b5234eba4aa8daf370975cb7a25546f9",
+            "target_url": "./SubUSDs/textures/0.png",
+            "target_hash": "fae56945f96459112ca8996eb21341b320b40480"
+        },
+        {
+            "source_url": "/media/user/WD_BLACK/ecbg/assets/Box/SubUSDs/textures/FOF_Map_Labels_D.png",
+            "source_hash": "e5ead80f95237a99a6be2f2523f4cb46650c3187",
+            "target_url": "./SubUSDs/textures/FOF_Map_Labels_D.png",
+            "target_hash": "409fbb756f4d53059fe3b03398d6d2ae32471d90"
+        }
+    ]
+}

@@ -1,0 +1,35 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Aluminum_Anodized.mdl",
+            "source_hash": "bb83df52c93a250d14c218a7c52598dfb63009b0",
+            "target_url": "./SubUSDs/materials/Aluminum_Anodized.mdl",
+            "target_hash": "0cdec0364e5c16e42e8b533fce82392ad478b7c7"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Plastics/Plastic.mdl",
+            "source_hash": "8fc244453baa8f640dc60b95b273d0cff214158f",
+            "target_url": "./SubUSDs/materials/Plastic.mdl",
+            "target_hash": "0fa4611c43852bcc414698110a7b43996f806c09"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Aluminum_Anodized/Aluminum_Anodized_BaseColor.png",
+            "source_hash": "ddaf3504e02938a44494708522b76640244c2911",
+            "target_url": "./SubUSDs/textures/Aluminum_Anodized/Aluminum_Anodized_BaseColor.png",
+            "target_hash": "f9c819d2a2b943dbaf00f16de83eb91a68937c99"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Aluminum_Anodized/Aluminum_Anodized_ORM.png",
+            "source_hash": "87e938954b3b8083c342fb1c14642f48b6505320",
+            "target_url": "./SubUSDs/textures/Aluminum_Anodized/Aluminum_Anodized_ORM.png",
+            "target_hash": "7e0e6cbd74738690222c48ea726349433cd76d92"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Aluminum_Anodized/Aluminum_Anodized_Normal.png",
+            "source_hash": "407dec985bf9e656691f92c82f77bcfb24beeb89",
+            "target_url": "./SubUSDs/textures/Aluminum_Anodized/Aluminum_Anodized_Normal.png",
+            "target_hash": "57eb2cf7a439f21c7a1065451cddc12c812865c8"
+        }
+    ]
+}

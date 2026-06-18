@@ -1,0 +1,239 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Cast_Metal_Silver_Vein.mdl",
+            "source_hash": "1029482a7a738fb21753da538d5234c751f48e9b",
+            "target_url": "./SubUSDs/materials/Cast_Metal_Silver_Vein.mdl",
+            "target_hash": "cf861fc22e01aa9e6c7d562725c43cc07811097f"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Iron.mdl",
+            "source_hash": "028c77732850250e8823f72f3f88c89a6b3dde0d",
+            "target_url": "./SubUSDs/materials/Iron.mdl",
+            "target_hash": "13b835583fc2c9b8897463a163ae9139d261f7f2"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Paint_Gloss_Finish.mdl",
+            "source_hash": "2ececa86b5e3babaf473443ed673740505c9beb5",
+            "target_url": "./SubUSDs/materials/Paint_Gloss_Finish.mdl",
+            "target_hash": "685c5619bce512241310c1cbe0763e80ab2e669d"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Paint_Matte.mdl",
+            "source_hash": "22c3419615a2085e46abf6e4f6cc61f643ac5200",
+            "target_url": "./SubUSDs/materials/Paint_Matte.mdl",
+            "target_hash": "90de840994d027e5dff798713cb62793de97b772"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Paint_Matte_Finish.mdl",
+            "source_hash": "f3af769c477b4b5d5a42d3812f66fefb6e282bda",
+            "target_url": "./SubUSDs/materials/Paint_Matte_Finish.mdl",
+            "target_hash": "c3f3b4b051b99cab4879f52c13078cdd27f46e9a"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Plastic.mdl",
+            "source_hash": "c652b64b4fd88be5dd0dfdbe71d6d1c77ee813b1",
+            "target_url": "./SubUSDs/materials/Plastic.mdl",
+            "target_hash": "c83f7d7eb9cf650a3ce9e9c9a182c979cf38d3aa"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Silver.mdl",
+            "source_hash": "54d3795bbb01f2429d0591aefb4a4e627403e100",
+            "target_url": "./SubUSDs/materials/Silver.mdl",
+            "target_hash": "24fbb32667fe5d8ec55ee06f86ef3f2f5532dd91"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Steel_Blued.mdl",
+            "source_hash": "be3ac5a8259fb7c9534c720e6e7191d596273bbe",
+            "target_url": "./SubUSDs/materials/Steel_Blued.mdl",
+            "target_hash": "8d4eb1259e732acc56fc2be5fb03256ec14f7c78"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Steel_Carbon.mdl",
+            "source_hash": "8cdeda0dafe101aa2ff85ad1d71e8d74a58f961f",
+            "target_url": "./SubUSDs/materials/Steel_Carbon.mdl",
+            "target_hash": "e0042344d1d58a1418d562c03520aa9afc119790"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/Tinted_Glass_R02.mdl",
+            "source_hash": "b626acc346e57822c52efc61586517964b9b6853",
+            "target_url": "./SubUSDs/materials/Tinted_Glass_R02.mdl",
+            "target_hash": "fab8d56c7dc4c8952cd3bd1b6cece7045b546a78"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/WireframeBlur_basecolor.png",
+            "source_hash": "7898de2b66120b4d254b4128f86c5d97155c8d9a",
+            "target_url": "./SubUSDs/textures/WireframeBlur_basecolor.png",
+            "target_hash": "9b6a215b59766c675d79e6806f30022d10505ddf"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/WireframeBlur_blue.png",
+            "source_hash": "d4d79ac087b3e63557c64db7734f826953cfa931",
+            "target_url": "./SubUSDs/textures/WireframeBlur_blue.png",
+            "target_hash": "541dc365238234c2354d4614a072024b8731eeab"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Wireframe_blue.png",
+            "source_hash": "577df17b9dc8ba547f83d467c0af5de7d3640fe6",
+            "target_url": "./SubUSDs/textures/Wireframe_blue.png",
+            "target_hash": "6e9b0d743b288ef39b52b9f7c303aabc8eda3790"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Paint_Matte/Paint_Matte_Finish_BaseColor.png",
+            "source_hash": "23cac873397b7f18a47fc785beeaf082d1b57a9a",
+            "target_url": "./SubUSDs/textures/Paint_Matte/Paint_Matte_Finish_BaseColor.png",
+            "target_hash": "4b5eab1d03bef7991548c447755396d3c911a691"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Cast_Metal_Silver_Vein/Cast_Metal_Silver_Vein_BaseColor.png",
+            "source_hash": "91d0292ceb2697b6312b9eb7e50659ac34035293",
+            "target_url": "./SubUSDs/textures/Cast_Metal_Silver_Vein/Cast_Metal_Silver_Vein_BaseColor.png",
+            "target_hash": "630c3c79f0be45ea1658a8f060aae48e5f207f5f"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Paint_Gloss_Finish/Paint_Gloss_Finish_BaseColor.png",
+            "source_hash": "b3a383ad6a5ba250dbb344acf05399d37978ba5f",
+            "target_url": "./SubUSDs/textures/Paint_Gloss_Finish/Paint_Gloss_Finish_BaseColor.png",
+            "target_hash": "00b36afb7d1afe45a2711508792ae8b1d3522556"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Iron/Iron_BaseColor.png",
+            "source_hash": "85a17a721952a3b04b6975d6220abc282cb68d8c",
+            "target_url": "./SubUSDs/textures/Iron/Iron_BaseColor.png",
+            "target_hash": "ad3cfad346cccd6e72d56b02bd2246917f305972"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Steel_Blued/Steel_Blued_BaseColor.png",
+            "source_hash": "8fc53fbd35c1729089b54c898e993fd41940abdf",
+            "target_url": "./SubUSDs/textures/Steel_Blued/Steel_Blued_BaseColor.png",
+            "target_hash": "ac20107ea13e3774ca1d0379291da7e9ea546ba7"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Paint_Matte_Finish/Paint_Matte_Finish_BaseColor.png",
+            "source_hash": "23cac873397b7f18a47fc785beeaf082d1b57a9a",
+            "target_url": "./SubUSDs/textures/Paint_Matte_Finish/Paint_Matte_Finish_BaseColor.png",
+            "target_hash": "4d56593f66ac8e8a1dde40d195ed4e5c7d60d80e"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Steel_Carbon/Steel_Carbon_BaseColor.png",
+            "source_hash": "0eedf499c39a6f20ea72f5fd84511fa2b494ea40",
+            "target_url": "./SubUSDs/textures/Steel_Carbon/Steel_Carbon_BaseColor.png",
+            "target_hash": "d073be0ac6e61fdab2cf030e0f09ca9167fc71cf"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Silver/Silver_BaseColor.png",
+            "source_hash": "3b821b6234bc3e4f9ae4b1039433717ac9016582",
+            "target_url": "./SubUSDs/textures/Silver/Silver_BaseColor.png",
+            "target_hash": "e2994bbe1283d19b1f45484d00b671a364f1bc29"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Paint_Matte/Paint_Matte_Finish_ORM.png",
+            "source_hash": "10432f64a97fe6cb5970bcc594a0616d6239b291",
+            "target_url": "./SubUSDs/textures/Paint_Matte/Paint_Matte_Finish_ORM.png",
+            "target_hash": "580977af5f5999e5433a73d41efe1d41d3d38ae1"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Cast_Metal_Silver_Vein/Cast_Metal_Silver_Vein_ORM.png",
+            "source_hash": "ffd653b9adbfde9993e641eb75e055b275769609",
+            "target_url": "./SubUSDs/textures/Cast_Metal_Silver_Vein/Cast_Metal_Silver_Vein_ORM.png",
+            "target_hash": "e42def2a557525d6d5afd7ecc88efc4c0be1a0bc"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Paint_Gloss_Finish/Paint_Gloss_Finish_ORM.png",
+            "source_hash": "3e534cde9e151937efecd6fcbae1ab80bb97ce1a",
+            "target_url": "./SubUSDs/textures/Paint_Gloss_Finish/Paint_Gloss_Finish_ORM.png",
+            "target_hash": "151bf2d3146406a9eaf94f3c44ba70e111c4c798"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Iron/Iron_ORM.png",
+            "source_hash": "368f305550b11b3c5327e45e20a0451a3aac1570",
+            "target_url": "./SubUSDs/textures/Iron/Iron_ORM.png",
+            "target_hash": "c1db0b7e76602a732bdadb7f0c8a3ce0274e09a3"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Steel_Blued/Steel_Blued_ORM.png",
+            "source_hash": "df6f9d133251da7934cd1c76f7c913c97b518af0",
+            "target_url": "./SubUSDs/textures/Steel_Blued/Steel_Blued_ORM.png",
+            "target_hash": "da04b3cc1ce6f7af3feba6a52b789fe1ca6de5d6"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/GlassWithVolume.mdl",
+            "source_hash": "78870b7ec8268ba5785c5d8b44991ca61f02b77a",
+            "target_url": "./SubUSDs/materials/GlassWithVolume.mdl",
+            "target_hash": "7331f4e4df64005579df3de2a44a585ae3545c92"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Paint_Matte_Finish/Paint_Matte_Finish_ORM.png",
+            "source_hash": "10432f64a97fe6cb5970bcc594a0616d6239b291",
+            "target_url": "./SubUSDs/textures/Paint_Matte_Finish/Paint_Matte_Finish_ORM.png",
+            "target_hash": "9baac46f606c286e16678b82b588e55baf6a7654"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Steel_Carbon/Steel_Carbon_ORM.png",
+            "source_hash": "f1ae21d77e50a62105a2cf0c9b8f6b9ffcd28d83",
+            "target_url": "./SubUSDs/textures/Steel_Carbon/Steel_Carbon_ORM.png",
+            "target_hash": "75fe082e9a88b6d0a2f2f6e5c4d804c2f1d3e24a"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Silver/Silver_ORM.png",
+            "source_hash": "02d66bf7fde65da7f45fc1e1af2cce812ed8c0dd",
+            "target_url": "./SubUSDs/textures/Silver/Silver_ORM.png",
+            "target_hash": "a7b8f066004a00fe85119a3c4b3e0f080fef5cf1"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Paint_Matte/Paint_Matte_Finish_N.png",
+            "source_hash": "edd45df79441cc8fe8b204d787f53f17b8f7ae32",
+            "target_url": "./SubUSDs/textures/Paint_Matte/Paint_Matte_Finish_N.png",
+            "target_hash": "3a00209a0355b5bbe86e9a48a18fc734c2159088"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Cast_Metal_Silver_Vein/Cast_Metal_Silver_Vein_N.png",
+            "source_hash": "17dba9b387e2471393cb11487a3f0f54a2dccaab",
+            "target_url": "./SubUSDs/textures/Cast_Metal_Silver_Vein/Cast_Metal_Silver_Vein_N.png",
+            "target_hash": "3a235faa078fe95fd9f41a39e8e877e947378547"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Paint_Gloss_Finish/Paint_Gloss_Finish_N.png",
+            "source_hash": "628338f50add59a3ba8a186c1ef76aaab32c34c4",
+            "target_url": "./SubUSDs/textures/Paint_Gloss_Finish/Paint_Gloss_Finish_N.png",
+            "target_hash": "26ce17d58de8e36a00b93dd1cb209b941ef4b493"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Iron/Iron_N.png",
+            "source_hash": "6dddbad2ce5862f198d7bfa9d589c9f60f720b09",
+            "target_url": "./SubUSDs/textures/Iron/Iron_N.png",
+            "target_hash": "f44b0e950bfa340518eabef148bad05843a49757"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Steel_Blued/Steel_Blued_N.png",
+            "source_hash": "b6fff9c775dad84831ad608a5d6efafc529a2abc",
+            "target_url": "./SubUSDs/textures/Steel_Blued/Steel_Blued_N.png",
+            "target_hash": "9265cac75c1cc648c097f7d5ef89198d3038c8e3"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Paint_Matte_Finish/Paint_Matte_Finish_N.png",
+            "source_hash": "edd45df79441cc8fe8b204d787f53f17b8f7ae32",
+            "target_url": "./SubUSDs/textures/Paint_Matte_Finish/Paint_Matte_Finish_N.png",
+            "target_hash": "46d2e68e1a17853fabe6fe7341fcaf3120788194"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Steel_Carbon/Steel_Carbon_N.png",
+            "source_hash": "523c6044e1eefdadf1206f56f8519bb18c458c62",
+            "target_url": "./SubUSDs/textures/Steel_Carbon/Steel_Carbon_N.png",
+            "target_hash": "b4e6002c8d56d9ce00fe49e0fd6a13e0dd2f2a3d"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/textures/Silver/Silver_N.png",
+            "source_hash": "d9afe11a53d01a61cd63a345d6456b06b3c40057",
+            "target_url": "./SubUSDs/textures/Silver/Silver_N.png",
+            "target_hash": "333ac124c3c353db8770cdab0466bd1b4ef79562"
+        },
+        {
+            "source_url": "/home/ubt/Documents/github/GlobalHumanoidRobotChallenge2026_Baseline/assets/resources/Collected_s2_v1_ecbg/SubUSDs/materials/GlassUtils.mdl",
+            "source_hash": "6d16885f81a338040f08d1ac43cfba7001c9b616",
+            "target_url": "./SubUSDs/materials/GlassUtils.mdl",
+            "target_hash": "27e722e4dcf2503995bce9b898d7bbdaacedf890"
+        }
+    ]
+}

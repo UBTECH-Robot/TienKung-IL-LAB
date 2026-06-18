@@ -40,8 +40,19 @@ if [ -z "$UBT_SIM_NO_BRIDGE" ]; then
 fi
 
 # Launch simulation
+UBT_SIM_TASK="${UBT_SIM_TASK:-UBTSim-TiangongPro-Parlor-v0}"
+UBT_SIM_NUM_ENVS="${UBT_SIM_NUM_ENVS:-1}"
+EXTRA_ARGS=()
+if [ -n "$UBT_SIM_LOAD_ONLY" ]; then
+    EXTRA_ARGS+=(--load_only)
+    if [ -z "$UBT_SIM_LOAD_ONLY_KEEP_DEVICE" ]; then
+        EXTRA_ARGS+=(--device "${UBT_SIM_LOAD_ONLY_DEVICE:-cpu}")
+    fi
+fi
+
 /isaac-sim/python.sh "$SCRIPT_DIR/sim_runner.py" \
-    --task UBTSim-TiangongPro-Parlor-v0 \
+    --task "$UBT_SIM_TASK" \
     --enable_cameras \
-    --num_envs 1 \
+    --num_envs "$UBT_SIM_NUM_ENVS" \
+    "${EXTRA_ARGS[@]}" \
     "$@"

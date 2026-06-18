@@ -1,0 +1,59 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Brushed_Antique_Copper.mdl",
+            "source_hash": "a19033c5836daac73bd47fee141df0bbbae7fb06",
+            "target_url": "./SubUSDs/materials/Brushed_Antique_Copper.mdl",
+            "target_hash": "c90322167217c17b8f3157edc652efca8009f4ad"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Gold.mdl",
+            "source_hash": "f0627d20ab28a74f61c54fcd23079648f174a0c7",
+            "target_url": "./SubUSDs/materials/Gold.mdl",
+            "target_hash": "66f2b7671a0a00b93a31fbb7b57051a9a952823f"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Plastics/Plastic.mdl",
+            "source_hash": "8fc244453baa8f640dc60b95b273d0cff214158f",
+            "target_url": "./SubUSDs/materials/Plastic.mdl",
+            "target_hash": "5df620dbd597454c0e90a2466b6fd59c1d57a76f"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Brushed_Antique_Copper/Brushed_Antique_Copper_BaseColor.png",
+            "source_hash": "e26985b4310c54618ec04096aa762e7559fc6bc2",
+            "target_url": "./SubUSDs/textures/Brushed_Antique_Copper/Brushed_Antique_Copper_BaseColor.png",
+            "target_hash": "63fe314be67c73df198e7ad2dcf7d3c693a0770c"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Gold/Gold_BaseColor.png",
+            "source_hash": "83c8a81f4ecaf6be76acc7ef0efa67d0a032d03e",
+            "target_url": "./SubUSDs/textures/Gold/Gold_BaseColor.png",
+            "target_hash": "9b6126557da8cea35099d31e767a262ec21544fa"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Brushed_Antique_Copper/Brushed_Antique_Copper_ORM.png",
+            "source_hash": "0b0c4dfb359d7ee0a952768e7bef9551492a81a8",
+            "target_url": "./SubUSDs/textures/Brushed_Antique_Copper/Brushed_Antique_Copper_ORM.png",
+            "target_hash": "457d52a8d2c79693197eba85da3535b36722fdac"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Gold/Gold_ORM.png",
+            "source_hash": "2e39f17ccc428ca0e91b1c51961a525e61380b06",
+            "target_url": "./SubUSDs/textures/Gold/Gold_ORM.png",
+            "target_hash": "5e6ec5f72af7bd8cfb31f2b6a56ce476d62abe8e"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Brushed_Antique_Copper/Brushed_Antique_Copper_N.png",
+            "source_hash": "633e8666a0d6c795fe8e6262ebfb2f150c3ae2da",
+            "target_url": "./SubUSDs/textures/Brushed_Antique_Copper/Brushed_Antique_Copper_N.png",
+            "target_hash": "c6703baca01657b7aa02b2dc5fe680b4b4dfda25"
+        },
+        {
+            "source_url": "/home/user/isaacsim_assets/Assets/Isaac/4.5/NVIDIA/Materials/Base/Metals/Gold/Gold_N.png",
+            "source_hash": "61fe5e15584bcc1590c4c6edbbd8824a8e6255ac",
+            "target_url": "./SubUSDs/textures/Gold/Gold_N.png",
+            "target_hash": "21aa12bd20c200a7d67352027298ae9d93141488"
+        }
+    ]
+}
