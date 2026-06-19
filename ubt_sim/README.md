@@ -39,10 +39,11 @@ bash scripts/start_sim.sh
 # 跳过桥接：UBT_SIM_NO_BRIDGE=1 bash scripts/start_sim.sh
 # 按R机器人可复位
 
-# 3. 数据采集（同一容器内，用系统 Python 3.10）
-/usr/bin/python3 /ubt_sim/teleoperation/control/reset.py  # 机器人回零
-/usr/bin/python3 /ubt_sim/teleoperation/control/pick_place_save_data.py  # 单次
-bash /ubt_sim/teleoperation/control/save_data.sh                         # 批量
+# 3. 天工数据采集（同一容器内，用系统 Python 3.10）
+/usr/bin/python3 /ubt_sim/teleoperation/control/tienkung/reset.py  # 机器人回零
+/usr/bin/python3 /ubt_sim/teleoperation/control/tienkung/pick_place_save_data.py  # 单次
+bash /ubt_sim/teleoperation/control/tienkung/save_data.sh                         # 批量
+# 旧路径 /ubt_sim/teleoperation/control/{reset.py,pick_place_save_data.py,save_data.sh} 仍保留兼容入口
 ```
 注意：使用echo $ROS_DOMAIN_ID和ros2 topic list检查当前模式仿真/真机，以及桥接是否启动。
 

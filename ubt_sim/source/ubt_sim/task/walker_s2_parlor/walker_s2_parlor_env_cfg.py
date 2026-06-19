@@ -12,6 +12,8 @@ from ubt_sim.devices.walker_s2.config import (
     WALKER_S2_HOME_POSE,
     WALKER_S2_LEFT_ARM_JOINTS,
     WALKER_S2_RIGHT_ARM_JOINTS,
+    WALKER_S2_LEFT_HAND_JOINTS,
+    WALKER_S2_RIGHT_HAND_JOINTS,
     WALKER_S2_HEAD_JOINTS,
     WALKER_S2_WAIST_JOINTS,
     WALKER_S2_LEFT_LEG_JOINTS,
@@ -83,6 +85,18 @@ class ActionsCfg:
         asset_name="robot",
         joint_names=WALKER_S2_RIGHT_ARM_JOINTS,
         scale=1.0,
+    )
+    left_gripper_action = mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=WALKER_S2_LEFT_HAND_JOINTS,
+        scale=1.0,
+        use_default_offset=False,
+    )
+    right_gripper_action = mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=WALKER_S2_RIGHT_HAND_JOINTS,
+        scale=1.0,
+        use_default_offset=False,
     )
     head_action = mdp.JointPositionActionCfg(
         asset_name="robot",
@@ -163,4 +177,6 @@ class WalkerS2ParlorEnvCfg(ManagerBasedRLDigitalTwinEnvCfg):
         self.task_type = teleop_device
 
     def preprocess_device_action(self, action, teleop_device):
+        if isinstance(action, dict) and "walker_s2" in action:
+            return action["walker_s2"]
         return action

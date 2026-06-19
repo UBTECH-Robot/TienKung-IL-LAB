@@ -108,6 +108,7 @@ case "${1:-}" in
         fi
         docker exec -it "$CONTAINER_NAME" bash -c "\
             source /opt/ros/humble/setup.bash 2>/dev/null || true; \
+            source /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash 2>/dev/null || true; \
             export ROS_DOMAIN_ID=$ROS_DOMAIN_ID; \
             export FASTRTPS_DEFAULT_PROFILES_FILE=$FASTRTPS_DEFAULT_PROFILES_FILE; \
             bash"
@@ -153,6 +154,17 @@ case "${1:-}" in
         echo "[INFO] Installing bodyctrl_msgs..."
         docker exec "$CONTAINER_NAME" bash -c "\
             dpkg -i /ubt_sim/teleoperation/msgs/ros-humble-bodyctrl-msgs_0.0.1-1_amd64.deb 2>/dev/null || true"
+
+        # Build Walker S2 ROS2 SDK message packages
+        echo "[INFO] Building Walker S2 ROS2 SDK message packages..."
+        docker exec "$CONTAINER_NAME" bash -c "\
+            source /opt/ros/humble/setup.bash && \
+            colcon --log-base /opt/ubt_sim/walker_sdk_ros2_msgs/log build \
+              --base-paths /ubt_sim/teleoperation/msgs/walker_sdk_ros2_msgs_src/src \
+              --build-base /opt/ubt_sim/walker_sdk_ros2_msgs/build \
+              --install-base /opt/ubt_sim/walker_sdk_ros2_msgs/install \
+              --merge-install \
+              --packages-up-to rosa_msgs shm_msgs mc_task_msgs mc_state_msgs ecat_task_msgs"
 
         # Build C++ image bridge
         echo "[INFO] Building C++ image bridge..."
@@ -289,6 +301,26 @@ case "${1:-}" in
         else
             echo "[WARN] bodyctrl_msgs: NOT installed (run: bash run.sh init)"
             ((WARNINGS++))
+        fi
+
+        # Walker S2 ROS2 SDK messages
+        if docker exec "$CONTAINER_NAME" test -f /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash 2>/dev/null; then
+            echo "[OK] Walker SDK ROS2 messages: install setup found"
+        else
+            echo "[FAIL] Walker SDK ROS2 messages: NOT built (run: bash run.sh init)"
+            ((ERRORS++))
+        fi
+        if docker exec "$CONTAINER_NAME" bash -c "source /opt/ros/humble/setup.bash && source /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash && for pkg in rosa_msgs shm_msgs mc_task_msgs mc_state_msgs ecat_task_msgs; do ros2 pkg list | grep -qx \"\$pkg\" || exit 1; done" 2>/dev/null; then
+            echo "[OK] Walker SDK ROS2 packages: available"
+        else
+            echo "[FAIL] Walker SDK ROS2 packages: unavailable (run: bash run.sh init)"
+            ((ERRORS++))
+        fi
+        if docker exec "$CONTAINER_NAME" bash -c "source /opt/ros/humble/setup.bash && source /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash && /usr/bin/python3 -c 'from mc_task_msgs.msg import JointCmd, JointCommand, RobotCommand; from mc_state_msgs.msg import RobotState; from ecat_task_msgs.msg import GripCmd, GripStatus'" 2>/dev/null; then
+            echo "[OK] Walker SDK Python message imports: available"
+        else
+            echo "[FAIL] Walker SDK Python message imports: unavailable (run: bash run.sh init)"
+            ((ERRORS++))
         fi
 
         # GPU

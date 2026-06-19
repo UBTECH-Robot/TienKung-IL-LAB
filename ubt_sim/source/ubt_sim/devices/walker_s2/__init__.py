@@ -11,3 +11,4 @@ from .config import (
     WALKER_S2_RIGHT_LEG_JOINTS,
     WALKER_S2_USD_PATH,
 )
+from .controller import WalkerS2Controller

@@ -1,0 +1,279 @@
+from __future__ import annotations
+
+from typing import Any
+
+import torch
+
+from ubt_sim.devices.walker_s2.config import (
+    WALKER_S2_GRIPPER_HOME_OPENING_M,
+    WALKER_S2_GRIPPER_JOINT_CLOSING_M,
+    WALKER_S2_GRIPPER_JOINT_SIGNS,
+    WALKER_S2_GRIPPER_OPENING_MAX_M,
+    WALKER_S2_GRIPPER_OPENING_MIN_M,
+    WALKER_S2_HOME_POSE,
+    WALKER_S2_LEFT_HAND_JOINTS,
+    WALKER_S2_RIGHT_HAND_JOINTS,
+)
+
+WALKER_S2_ARM_JOINT_ORDER = [
+    "L_shoulder_pitch_joint",
+    "L_shoulder_roll_joint",
+    "L_shoulder_yaw_joint",
+    "L_elbow_roll_joint",
+    "L_elbow_yaw_joint",
+    "L_wrist_pitch_joint",
+    "L_wrist_roll_joint",
+    "R_shoulder_pitch_joint",
+    "R_shoulder_roll_joint",
+    "R_shoulder_yaw_joint",
+    "R_elbow_roll_joint",
+    "R_elbow_yaw_joint",
+    "R_wrist_pitch_joint",
+    "R_wrist_roll_joint",
+]
+
+WALKER_S2_SDK_BODY_JOINT_ORDER = [
+    "L_elbow_roll_joint",
+    "L_elbow_yaw_joint",
+    "L_shoulder_pitch_joint",
+    "L_shoulder_roll_joint",
+    "L_shoulder_yaw_joint",
+    "L_wrist_pitch_joint",
+    "L_wrist_roll_joint",
+    "R_elbow_roll_joint",
+    "R_elbow_yaw_joint",
+    "R_shoulder_pitch_joint",
+    "R_shoulder_roll_joint",
+    "R_shoulder_yaw_joint",
+    "R_wrist_pitch_joint",
+    "R_wrist_roll_joint",
+    "head_pitch_joint",
+    "head_yaw_joint",
+    "waist_yaw_joint",
+]
+
+_ALIAS_TO_SIM_JOINT = {
+    name.removesuffix("_joint"): name for name in WALKER_S2_HOME_POSE
+}
+_ALIAS_TO_SIM_JOINT.update({name: name for name in WALKER_S2_HOME_POSE})
+
+action_joint_names = None
+_mapping_logged = False
+_gripper_mapping_logged = set()
+_hold_joint_targets = None
+
+
+def reset_hold_targets() -> None:
+    global _hold_joint_targets
+    _hold_joint_targets = None
+
+
+def normalize_joint_name(name: str) -> str | None:
+    return _ALIAS_TO_SIM_JOINT.get(name)
+
+
+def get_action_joint_names(env) -> list[str]:
+    robot = env.unwrapped.scene["robot"]
+    action_manager = env.unwrapped.action_manager
+    indices = []
+    terms_dict = {}
+
+    for attr_name in ["_terms", "_action_terms", "terms"]:
+        if hasattr(action_manager, attr_name):
+            val = getattr(action_manager, attr_name)
+            if isinstance(val, dict):
+                terms_dict = val
+                break
+            if isinstance(val, list):
+                terms_dict = {f"term_{i}": term for i, term in enumerate(val)}
+                break
+
+    for _, term in terms_dict.items():
+        for attr in ["joint_indices", "_joint_indices", "joint_ids", "_joint_ids"]:
+            if hasattr(term, attr):
+                indices += list(getattr(term, attr))
+                break
+
+    return [robot.joint_names[idx] for idx in indices]
+
+
+def _current_joint_map(env) -> dict[str, float]:
+    robot = env.scene["robot"]
+    joint_names = robot.data.joint_names
+    joint_pos = robot.data.joint_pos[0].detach().cpu().tolist()
+    return dict(zip(joint_names, joint_pos))
+
+
+def _extract_body_command(command: dict[str, Any]) -> dict[str, float]:
+    body = command.get("body", command)
+    if body is None:
+        return {}
+
+    mapped = {}
+    if isinstance(body, dict):
+        for name, value in body.items():
+            joint_name = normalize_joint_name(str(name))
+            if joint_name is not None:
+                mapped[joint_name] = float(value)
+        return mapped
+
+    if isinstance(body, (list, tuple)):
+        for name, value in zip(WALKER_S2_SDK_BODY_JOINT_ORDER, body):
+            mapped[name] = float(value)
+        return mapped
+
+    return mapped
+
+
+def _clamp_grip_opening(value: Any) -> float:
+    opening = float(value)
+    return max(WALKER_S2_GRIPPER_OPENING_MIN_M, min(WALKER_S2_GRIPPER_OPENING_MAX_M, opening))
+
+
+def _configured_gripper_joints(side: str, joint_names: list[str]) -> list[str]:
+    configured = WALKER_S2_LEFT_HAND_JOINTS if side == "left" else WALKER_S2_RIGHT_HAND_JOINTS
+    return [name for name in configured if name in joint_names]
+
+
+def _discover_gripper_joints(env, side: str) -> list[str]:
+    global _gripper_mapping_logged
+
+    robot_joint_names = list(env.scene["robot"].data.joint_names)
+    joints = _configured_gripper_joints(side, robot_joint_names)
+    if not joints:
+        side_tokens = ("l_", "left") if side == "left" else ("r_", "right")
+        grip_tokens = ("finger", "grip", "pgc")
+        joints = sorted(
+            name for name in robot_joint_names
+            if any(token in name.lower() for token in side_tokens)
+            and any(token in name.lower() for token in grip_tokens)
+        )
+
+    log_key = (side, tuple(joints))
+    if log_key not in _gripper_mapping_logged:
+        if joints:
+            missing = [name for name in joints if action_joint_names is not None and name not in action_joint_names]
+            print(f"[INFO] Walker S2 {side} gripper joints: {joints}")
+            if missing:
+                print(
+                    f"[WARN] Walker S2 {side} gripper joints not in action order: {missing}. "
+                    "Add them to the task ActionsCfg to actuate them."
+                )
+        else:
+            candidates = [name for name in robot_joint_names if any(token in name.lower() for token in ("finger", "grip", "pgc"))]
+            print(f"[WARN] Walker S2 {side} gripper joints not found. Gripper candidates: {candidates}")
+        _gripper_mapping_logged.add(log_key)
+
+    return joints
+
+
+def _grip_cmd_to_joint_targets(side: str, grip_cmd: Any, env) -> dict[str, float]:
+    if not isinstance(grip_cmd, dict):
+        return {}
+    if int(grip_cmd.get("stop", 0)) != 0:
+        return {}
+
+    target_opening = WALKER_S2_GRIPPER_HOME_OPENING_M
+    if int(grip_cmd.get("reset", 0)) == 0 and int(grip_cmd.get("homing", 0)) == 0:
+        target_opening = grip_cmd.get("pos", target_opening)
+    opening = _clamp_grip_opening(target_opening)
+
+    joints = _discover_gripper_joints(env, side)
+    active_joints = [name for name in joints if action_joint_names is None or name in action_joint_names]
+    if not active_joints:
+        return {}
+
+    closing = WALKER_S2_GRIPPER_OPENING_MAX_M - opening
+    joint_closing = (closing / WALKER_S2_GRIPPER_OPENING_MAX_M) * WALKER_S2_GRIPPER_JOINT_CLOSING_M
+    return {
+        name: float(WALKER_S2_GRIPPER_JOINT_SIGNS.get(name, 1.0)) * joint_closing
+        for name in active_joints
+    }
+
+
+def _grip_status_from_joints(side: str, pos_map: dict[str, float], cached_command: dict[str, Any] | None) -> dict[str, float] | None:
+    joints = _configured_gripper_joints(side, list(pos_map.keys()))
+    if not joints:
+        return None
+
+    closings = [
+        abs(float(WALKER_S2_GRIPPER_JOINT_SIGNS.get(name, 1.0)) * float(pos_map[name]))
+        for name in joints
+    ]
+    joint_closing = sum(closings) / float(len(closings))
+    closing = (joint_closing / WALKER_S2_GRIPPER_JOINT_CLOSING_M) * WALKER_S2_GRIPPER_OPENING_MAX_M
+    opening = WALKER_S2_GRIPPER_OPENING_MAX_M - closing
+    opening = max(WALKER_S2_GRIPPER_OPENING_MIN_M, min(WALKER_S2_GRIPPER_OPENING_MAX_M, opening))
+    grip_cmd = (cached_command or {}).get(f"{side}_grip", {})
+    cur = float(grip_cmd.get("cur", 0.0)) if isinstance(grip_cmd, dict) else 0.0
+    return {"pos": opening, "vel": 0.0, "cur": cur}
+
+
+def to_controller_data(command: dict[str, Any], env) -> torch.Tensor:
+    global action_joint_names, _mapping_logged, _hold_joint_targets
+
+    if action_joint_names is None:
+        action_joint_names = get_action_joint_names(env)
+
+    if not _mapping_logged:
+        print("[INFO] Walker S2 action joint order:")
+        for idx, name in enumerate(action_joint_names):
+            print(f"  [{idx:02d}] {name}")
+        _mapping_logged = True
+
+    body_cmd = _extract_body_command(command)
+    if _hold_joint_targets is None:
+        current_joint_pos = _current_joint_map(env)
+        _hold_joint_targets = {
+            name: float(current_joint_pos.get(name, WALKER_S2_HOME_POSE.get(name, 0.0)))
+            for name in action_joint_names
+        }
+        print("[INFO] Walker S2 startup hold targets captured from current joint positions.")
+
+    _hold_joint_targets.update(body_cmd)
+    _hold_joint_targets.update(_grip_cmd_to_joint_targets("left", command.get("left_grip"), env))
+    _hold_joint_targets.update(_grip_cmd_to_joint_targets("right", command.get("right_grip"), env))
+    values = [float(_hold_joint_targets.get(name, WALKER_S2_HOME_POSE.get(name, 0.0))) for name in action_joint_names]
+
+    return torch.tensor(values, device=env.device, dtype=torch.float32).unsqueeze(0).repeat(env.num_envs, 1)
+
+
+def to_ros_data(env, cached_command: dict[str, Any] | None = None) -> dict[str, Any]:
+    robot = env.scene["robot"]
+    joint_names = list(robot.data.joint_names)
+    joint_pos = robot.data.joint_pos[0].detach().cpu().tolist()
+    # Avoid reading robot.data.joint_vel here. On the Walker S2 task it can trigger
+    # PhysX getVelocities device-mismatch spam when the sim is running on CUDA and
+    # a CPU velocity tensor is requested. The bridge only needs position feedback
+    # for the current control loop, so publish zero velocities until we add a safe
+    # velocity read path.
+    joint_vel = [0.0] * len(joint_names)
+    pos_map = dict(zip(joint_names, joint_pos))
+
+    sdk_body_pos = [float(pos_map.get(name, WALKER_S2_HOME_POSE.get(name, 0.0))) for name in WALKER_S2_SDK_BODY_JOINT_ORDER]
+    sdk_body_vel = [0.0] * len(WALKER_S2_SDK_BODY_JOINT_ORDER)
+
+    status = {
+        "joint_names": joint_names,
+        "joint_pos": joint_pos,
+        "joint_vel": joint_vel,
+        "sdk_body_joint_names": WALKER_S2_SDK_BODY_JOINT_ORDER,
+        "sdk_body_pos": sdk_body_pos,
+        "sdk_body_vel": sdk_body_vel,
+    }
+    if cached_command:
+        for key in ["left_hand", "right_hand"]:
+            if key in cached_command:
+                status[key] = cached_command[key]
+
+    left_grip = _grip_status_from_joints("left", pos_map, cached_command)
+    right_grip = _grip_status_from_joints("right", pos_map, cached_command)
+    if left_grip is not None:
+        status["left_grip"] = left_grip
+    elif cached_command and "left_grip" in cached_command:
+        status["left_grip"] = cached_command["left_grip"]
+    if right_grip is not None:
+        status["right_grip"] = right_grip
+    elif cached_command and "right_grip" in cached_command:
+        status["right_grip"] = cached_command["right_grip"]
+    return status
