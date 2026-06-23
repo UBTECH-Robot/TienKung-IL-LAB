@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 安装 Python 依赖（必须使用系统 Python）
 RUN /usr/bin/python3 -m pip install --no-cache-dir \
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    'numpy<2' h5py ikpy 'opencv-python-headless<4.10' pyyaml empy lark protobuf
+    'numpy<2' h5py ikpy 'pin<3' 'opencv-python-headless<4.10' pyyaml empy lark protobuf
 
 # 安装预编译的 bodyctrl 消息包
 COPY teleoperation/msgs/ros-humble-bodyctrl-msgs_0.0.1-1_amd64.deb /tmp/

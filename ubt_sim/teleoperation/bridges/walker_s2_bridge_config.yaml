@@ -14,6 +14,7 @@ topics:
     left_grip_command: {topic: "/ecat/left_grip/cmd", type: "GripCmd", qos: 5}
     right_grip_command: {topic: "/ecat/right_grip/cmd", type: "GripCmd", qos: 5}
     reset: {topic: "/sim/cmd_reset", type: "Bool", qos: 1}
+    randomize_parts: {topic: "/sim/cmd_randomize_parts", type: "String", qos: 1}
 
   pub:
     state: {topic: "/mc/sdk/robot_state", type: "RobotState", qos: 10}
@@ -21,5 +22,7 @@ topics:
     right_hand_state: {topic: "/mc/right_hand/joint_states", type: "JointState", qos: 10}
     left_grip_state: {topic: "/ecat/left_grip/state", type: "GripStatus", qos: 10}
     right_grip_state: {topic: "/ecat/right_grip/state", type: "GripStatus", qos: 10}
+    part_states: {topic: "/sim/part_states", type: "String", qos: 10}
+    finger_link_states: {topic: "/sim/finger_link_states", type: "String", qos: 10}
     image_rgb: {topic: "/sensor/camera/stereo/color/raw", type: "Image", compressed: true}
     image_depth: {topic: "/sensor/camera/stereo/depth/raw", type: "Image", compressed: true}

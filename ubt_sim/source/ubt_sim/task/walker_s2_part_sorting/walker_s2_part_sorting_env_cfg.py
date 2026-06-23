@@ -1,3 +1,10 @@
+import math
+import random
+from typing import Any
+
+import torch
+from pxr import Gf, Usd, UsdGeom
+
 import isaaclab.sim as sim_utils
 import isaaclab.envs.mdp as mdp
 from isaaclab.assets import AssetBaseCfg, ArticulationCfg
@@ -45,6 +52,253 @@ def _usd_asset_cfg(asset_cfg: dict) -> AssetBaseCfg:
 
 
 _PART_CFGS = {part_cfg["name"]: part_cfg for part_cfg in _OBJECTS_CFG["parts"]}
+PART_SORTING_PART_KEYS = ("part_a_ori", "part_a_red", "part_b_blue", "part_b_ori")
+_PART_PRIM_NAMES = {
+    "part_a_ori": "PartA_Ori",
+    "part_a_red": "PartA_Red",
+    "part_b_blue": "PartB_Blue",
+    "part_b_ori": "PartB_Ori",
+}
+_DEFAULT_PART_RANDOMIZATION_CFG = {
+    "parts": list(PART_SORTING_PART_KEYS),
+    "relative_to": "initial",
+    "range": {
+        "x": [-0.05, 0.05],
+        "y": [-0.05, 0.05],
+        "z": [0.0, 0.0],
+        "roll": [0.0, 0.0],
+        "pitch": [0.0, 0.0],
+        "yaw": [-0.785398, 0.785398],
+    },
+}
+
+
+def _to_float_list(value: Any) -> list[float]:
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().tolist()
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    return [float(v) for v in value]
+
+
+def _quat_normalize(rot: list[float]) -> list[float]:
+    norm = math.sqrt(sum(float(v) * float(v) for v in rot))
+    if norm <= 0.0:
+        return [1.0, 0.0, 0.0, 0.0]
+    return [float(v) / norm for v in rot]
+
+
+def _quat_multiply(lhs: list[float], rhs: list[float]) -> list[float]:
+    lw, lx, ly, lz = lhs
+    rw, rx, ry, rz = rhs
+    return _quat_normalize([
+        lw * rw - lx * rx - ly * ry - lz * rz,
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+    ])
+
+
+def _euler_xyz_to_quat(roll: float, pitch: float, yaw: float) -> list[float]:
+    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+    return _quat_normalize([
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    ])
+
+
+def _quat_to_euler_xyz(rot: list[float]) -> tuple[float, float, float]:
+    w, x, y, z = _quat_normalize(rot)
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+    sinp = 2.0 * (w * y - z * x)
+    pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return roll, pitch, yaw
+
+
+def _range_pair(value: Any, axis: str) -> list[float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"part randomization range.{axis} must be a two-number list")
+    low, high = float(value[0]), float(value[1])
+    if low > high:
+        low, high = high, low
+    return [low, high]
+
+
+def _normalize_part_randomization_request(request: dict[str, Any] | None) -> dict[str, Any]:
+    cfg = _OBJECTS_CFG.get("part_randomization", _DEFAULT_PART_RANDOMIZATION_CFG)
+    request = request or {}
+    if not isinstance(request, dict):
+        raise ValueError("part randomization request must be a JSON object")
+
+    part_names = request.get("parts", cfg.get("parts", PART_SORTING_PART_KEYS))
+    if isinstance(part_names, str):
+        part_names = [part_names]
+    part_names = [str(name) for name in part_names]
+    unknown = [name for name in part_names if name not in PART_SORTING_PART_KEYS]
+    if unknown:
+        raise ValueError(f"unknown part names for randomization: {unknown}")
+
+    base_range = dict(cfg.get("range", {}))
+    base_range.update(request.get("range", {}) or {})
+    pose_range = {axis: _range_pair(base_range.get(axis, [0.0, 0.0]), axis) for axis in ("x", "y", "z", "roll", "pitch", "yaw")}
+
+    return {
+        "parts": part_names,
+        "range": pose_range,
+        "seed": request.get("seed", cfg.get("seed")),
+        "relative_to": str(request.get("relative_to", cfg.get("relative_to", "initial"))),
+    }
+
+
+def _part_initial_pose(part_name: str) -> tuple[list[float], list[float]]:
+    cfg = _PART_CFGS[part_name]
+    return _to_float_list(cfg.get("pos", (0.0, 0.0, 0.0))), _quat_normalize(_to_float_list(cfg.get("rot", (1.0, 0.0, 0.0, 0.0))))
+
+
+def _asset_from_scene(env, part_name: str):
+    try:
+        return env.scene[part_name]
+    except Exception:
+        return None
+
+
+def _prim_from_asset_or_stage(env, part_name: str):
+    asset = _asset_from_scene(env, part_name)
+    for attr in ("prim", "_prim"):
+        prim = getattr(asset, attr, None) if asset is not None else None
+        if prim is not None and prim.IsValid():
+            return prim
+    prims = getattr(asset, "prims", None) if asset is not None else None
+    if prims:
+        prim = prims[0]
+        if prim is not None and prim.IsValid():
+            return prim
+
+    stage = env.sim.stage
+    prim_name = _PART_PRIM_NAMES[part_name]
+    for path in (f"/World/envs/env_0/{prim_name}", f"/World/{prim_name}"):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            return prim
+    for prim in stage.Traverse():
+        if prim.GetName() == prim_name:
+            return prim
+    return None
+
+
+def _usd_prim_pose(prim) -> tuple[list[float], list[float]]:
+    transform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    translation = transform.ExtractTranslation()
+    rotation = transform.ExtractRotation().GetQuat()
+    imag = rotation.GetImaginary()
+    return [float(translation[0]), float(translation[1]), float(translation[2])], _quat_normalize([
+        float(rotation.GetReal()),
+        float(imag[0]),
+        float(imag[1]),
+        float(imag[2]),
+    ])
+
+
+def _get_scene_asset_pose(env, part_name: str) -> tuple[list[float], list[float]]:
+    asset = _asset_from_scene(env, part_name)
+    data = getattr(asset, "data", None)
+    if data is not None and hasattr(data, "root_pos_w") and hasattr(data, "root_quat_w"):
+        return _to_float_list(data.root_pos_w[0]), _quat_normalize(_to_float_list(data.root_quat_w[0]))
+    if hasattr(asset, "get_world_pose"):
+        pos, rot = asset.get_world_pose()
+        return _to_float_list(pos), _quat_normalize(_to_float_list(rot))
+    if hasattr(asset, "get_world_poses"):
+        positions, orientations = asset.get_world_poses()
+        return _to_float_list(positions[0]), _quat_normalize(_to_float_list(orientations[0]))
+
+    prim = _prim_from_asset_or_stage(env, part_name)
+    if prim is None:
+        return _part_initial_pose(part_name)
+    return _usd_prim_pose(prim)
+
+
+def _set_usd_prim_pose(prim, pos: list[float], rot: list[float]) -> None:
+    xform = UsdGeom.XformCommonAPI(prim)
+    roll, pitch, yaw = _quat_to_euler_xyz(rot)
+    xform.SetTranslate(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+    xform.SetRotate(
+        Gf.Vec3f(math.degrees(roll), math.degrees(pitch), math.degrees(yaw)),
+        UsdGeom.XformCommonAPI.RotationOrderXYZ,
+    )
+
+
+def _set_scene_asset_pose(env, part_name: str, pos: list[float], rot: list[float]) -> None:
+    asset = _asset_from_scene(env, part_name)
+    pos_tensor = torch.tensor([pos], dtype=torch.float32, device=env.device)
+    rot_tensor = torch.tensor([rot], dtype=torch.float32, device=env.device)
+    root_pose = torch.cat((pos_tensor, rot_tensor), dim=-1)
+
+    if hasattr(asset, "write_root_pose_to_sim"):
+        asset.write_root_pose_to_sim(root_pose)
+        if hasattr(asset, "write_root_velocity_to_sim"):
+            asset.write_root_velocity_to_sim(torch.zeros((1, 6), dtype=torch.float32, device=env.device))
+        return
+    if hasattr(asset, "set_world_pose"):
+        asset.set_world_pose(position=pos, orientation=rot)
+        if hasattr(asset, "set_velocities"):
+            asset.set_velocities([0.0] * 6)
+        return
+    if hasattr(asset, "set_world_poses"):
+        asset.set_world_poses(positions=pos_tensor, orientations=rot_tensor)
+        if hasattr(asset, "set_velocities"):
+            asset.set_velocities(torch.zeros((1, 6), dtype=torch.float32, device=env.device))
+        return
+
+    prim = _prim_from_asset_or_stage(env, part_name)
+    if prim is None:
+        raise RuntimeError(f"Could not find prim for part '{part_name}'")
+    _set_usd_prim_pose(prim, pos, rot)
+
+
+def get_part_sorting_piece_states(env) -> dict[str, Any]:
+    parts = {}
+    for part_name in PART_SORTING_PART_KEYS:
+        pos, rot = _get_scene_asset_pose(env, part_name)
+        parts[part_name] = {"pos": pos, "rot": rot}
+    return {"frame": "world", "parts": parts}
+
+
+def randomize_part_sorting_pieces(env, request: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = _normalize_part_randomization_request(request)
+    rng = random.Random(cfg["seed"])
+    pose_range = cfg["range"]
+    result = {"frame": "world", "seed": cfg["seed"], "parts": {}}
+
+    for part_name in cfg["parts"]:
+        if cfg["relative_to"] == "current":
+            base_pos, base_rot = _get_scene_asset_pose(env, part_name)
+        else:
+            base_pos, base_rot = _part_initial_pose(part_name)
+
+        pos = [
+            base_pos[0] + rng.uniform(*pose_range["x"]),
+            base_pos[1] + rng.uniform(*pose_range["y"]),
+            base_pos[2] + rng.uniform(*pose_range["z"]),
+        ]
+        delta_rot = _euler_xyz_to_quat(
+            rng.uniform(*pose_range["roll"]),
+            rng.uniform(*pose_range["pitch"]),
+            rng.uniform(*pose_range["yaw"]),
+        )
+        rot = _quat_multiply(base_rot, delta_rot)
+        _set_scene_asset_pose(env, part_name, pos, rot)
+        result["parts"][part_name] = {"pos": pos, "rot": rot}
+
+    return result
 
 
 @configclass
@@ -203,3 +457,9 @@ class WalkerS2PartSortingEnvCfg(ManagerBasedRLDigitalTwinEnvCfg):
         if isinstance(action, dict) and "walker_s2" in action:
             return action["walker_s2"]
         return action
+
+    def randomize_part_positions(self, env, request: dict[str, Any] | None = None) -> dict[str, Any]:
+        return randomize_part_sorting_pieces(env, request)
+
+    def get_part_states(self, env) -> dict[str, Any]:
+        return get_part_sorting_piece_states(env)

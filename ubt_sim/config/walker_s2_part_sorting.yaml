@@ -46,6 +46,17 @@ objects:
       pos: [0.85, 0.38, 1.08]
       rot: [1.0, 0.0, 0.0, 0.0]
 
+  part_randomization:
+    parts: ["part_a_ori", "part_a_red", "part_b_blue", "part_b_ori"]
+    relative_to: "initial"
+    range:
+      x: [-0.05, 0.05]
+      y: [-0.05, 0.05]
+      z: [0.0, 0.0]
+      roll: [0.0, 0.0]
+      pitch: [0.0, 0.0]
+      yaw: [-0.785398, 0.785398]
+
 cameras:
   head_rgb:
     prim_path: "{ENV_REGEX_NS}/Robot/Camera_RGB"

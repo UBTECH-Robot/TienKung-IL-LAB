@@ -36,7 +36,7 @@ RUN set -eux; \
 # ---- ROS2 子进程所需 Python 3.10 包 ----
 RUN apt-get update && apt-get install -y --no-install-recommends python3-pip && rm -rf /var/lib/apt/lists/* && \
     /usr/bin/python3 -m pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    "numpy<2" pyzmq h5py ikpy "opencv-python-headless<4.10" pyyaml empy lark protobuf
+    "numpy<2" pyzmq h5py ikpy "pin<3" "opencv-python-headless<4.10" pyyaml empy lark protobuf
 
 # ---- C++ 图像桥接编译依赖 ----
 RUN apt-get update && apt-get install -y --no-install-recommends g++ make libzmq3-dev && \

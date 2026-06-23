@@ -27,6 +27,7 @@ class WalkerS2Controller(DeviceBase):
         self.env = env
         self.device = env.device
         self.reset_requested = False
+        self.part_randomization_request: dict[str, Any] | None = None
         self._action: dict[str, Any] = {"body": {}}
         self._jpeg_frame_count = 0
         self.jpeg_unit_test = kwargs.get("jpeg_unit_test", True)
@@ -69,6 +70,7 @@ class WalkerS2Controller(DeviceBase):
     def reset(self):
         self._action = {"body": {}}
         self.reset_requested = False
+        self.part_randomization_request = None
         reset_hold_targets()
 
     def add_callback(self, key, func):
@@ -77,6 +79,16 @@ class WalkerS2Controller(DeviceBase):
     def _merge_command(self, msg: dict[str, Any]) -> None:
         if msg.get("reset"):
             self.reset_requested = True
+            return
+
+        if "randomize_part_sorting_pieces" in msg:
+            payload = msg.get("randomize_part_sorting_pieces")
+            if payload is True or payload is None:
+                payload = {}
+            if isinstance(payload, dict):
+                self.part_randomization_request = payload
+            else:
+                print("[WARN] Ignoring invalid part randomization payload; expected object or true.")
             return
 
         if "body" in msg:
@@ -89,6 +101,11 @@ class WalkerS2Controller(DeviceBase):
         for key in ["left_hand", "right_hand", "left_grip", "right_grip"]:
             if key in msg:
                 self._action[key] = msg[key]
+
+    def pop_part_randomization_request(self) -> dict[str, Any] | None:
+        request = self.part_randomization_request
+        self.part_randomization_request = None
+        return request
 
     def _send_status(self) -> None:
         status = to_ros_data(self.env, self._action)

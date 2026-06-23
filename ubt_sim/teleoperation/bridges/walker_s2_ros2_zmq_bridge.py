@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import threading
@@ -10,7 +11,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import JointState, Image
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 import yaml
 import zmq
 
@@ -76,6 +77,7 @@ MSG_TYPES = {
     "JointCommand": JointCommand,
     "GripCmd": GripCmd,
     "Bool": Bool,
+    "String": String,
     "RobotState": RobotState,
     "JointState": JointState,
     "GripStatus": GripStatus,
@@ -121,6 +123,7 @@ class WalkerS2RosBridge(Node):
             "left_grip_command": lambda msg: self.grip_cb(msg, "left"),
             "right_grip_command": lambda msg: self.grip_cb(msg, "right"),
             "reset": self.reset_cb,
+            "randomize_parts": self.randomize_parts_cb,
         }
         for key, spec in self.cfg["topics"]["sub"].items():
             msg_type = MSG_TYPES[spec["type"]]
@@ -242,6 +245,27 @@ class WalkerS2RosBridge(Node):
         if msg.data:
             self.cmd_socket.send_json({"reset": True})
 
+    def randomize_parts_cb(self, msg: String):
+        data = msg.data.strip()
+        try:
+            payload = {} if not data else json.loads(data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().error(f"Invalid randomize_parts JSON: {exc}")
+            return
+
+        if payload is True or payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            self.get_logger().error("randomize_parts payload must be a JSON object or true.")
+            return
+
+        self.cmd_socket.send_json(
+            {
+                "randomize_part_sorting_pieces": payload,
+                "source": "walker_s2_ros_bridge_randomize_parts",
+            }
+        )
+
     def _poll_loop(self):
         poller = zmq.Poller()
         poller.register(self.status_socket, zmq.POLLIN)
@@ -269,6 +293,19 @@ class WalkerS2RosBridge(Node):
         self.pubs["right_hand_state"].publish(self._make_hand_state("right", data.get("right_hand", self.latest_right_hand)))
         self.pubs["left_grip_state"].publish(self._make_grip_state(data.get("left_grip", self.latest_left_grip)))
         self.pubs["right_grip_state"].publish(self._make_grip_state(data.get("right_grip", self.latest_right_grip)))
+
+        if "part_states" in data and "part_states" in self.pubs:
+            msg = String()
+            msg.data = json.dumps(data["part_states"], ensure_ascii=False)
+            self.pubs["part_states"].publish(msg)
+        if "part_states_error" in data:
+            self.get_logger().warning(f"Failed to read part states: {data['part_states_error']}")
+        if "finger_link_states" in data and "finger_link_states" in self.pubs:
+            msg = String()
+            msg.data = json.dumps(data["finger_link_states"], ensure_ascii=False)
+            self.pubs["finger_link_states"].publish(msg)
+        if "finger_link_states_error" in data:
+            self.get_logger().warning(f"Failed to read finger_link states: {data['finger_link_states_error']}")
 
     def _make_hand_state(self, side: str, hand_data: dict | None) -> JointState:
         msg = JointState()

@@ -105,6 +105,23 @@ def _head_material_mode() -> str:
     return "stable"
 
 
+def _apply_part_randomization_if_requested(env, teleop_interface) -> None:
+    request = teleop_interface.pop_part_randomization_request()
+    if request is None:
+        return
+
+    randomizer = getattr(env.cfg, "randomize_part_positions", None)
+    if randomizer is None:
+        print("[WARN] Current task does not support part randomization.")
+        return
+
+    try:
+        result = randomizer(env, request)
+        print(f"[INFO] Randomized Walker S2 part positions: {result}")
+    except Exception as exc:
+        print(f"[WARN] Failed to randomize Walker S2 part positions: {exc}")
+
+
 def _fix_walker_s2_head_material(stage) -> None:
     """Repair Walker S2 head material bindings after the robot USD is instantiated."""
     fixed = False
@@ -209,10 +226,12 @@ def main():
                     t_0 = time.perf_counter()
                     actions = teleop_interface.advance()
                     t_1 = time.perf_counter()
+                    _apply_part_randomization_if_requested(env, teleop_interface)
                     actions = env.cfg.preprocess_device_action(actions, teleop_interface)
                     t_2 = time.perf_counter()
                 else:
                     actions = teleop_interface.advance()
+                    _apply_part_randomization_if_requested(env, teleop_interface)
                     actions = env.cfg.preprocess_device_action(actions, teleop_interface)
 
                 if actions is None:

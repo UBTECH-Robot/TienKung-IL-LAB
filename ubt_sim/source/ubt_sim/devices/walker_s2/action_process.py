@@ -62,6 +62,11 @@ _mapping_logged = False
 _gripper_mapping_logged = set()
 _hold_joint_targets = None
 
+# 仿真 PGC 手指关节的 0 位在中间附近；用 [-closing, +closing] 覆盖完整张合行程。
+# 外部 GripCmd 开口仍保持 [0, 0.05] m，只在这里改变开口到仿真关节的映射。
+WALKER_S2_GRIPPER_SIM_OPEN_JOINT_M = -WALKER_S2_GRIPPER_JOINT_CLOSING_M
+WALKER_S2_GRIPPER_SIM_CLOSE_JOINT_M = WALKER_S2_GRIPPER_JOINT_CLOSING_M
+
 
 def reset_hold_targets() -> None:
     global _hold_joint_targets
@@ -183,10 +188,15 @@ def _grip_cmd_to_joint_targets(side: str, grip_cmd: Any, env) -> dict[str, float
     if not active_joints:
         return {}
 
-    closing = WALKER_S2_GRIPPER_OPENING_MAX_M - opening
-    joint_closing = (closing / WALKER_S2_GRIPPER_OPENING_MAX_M) * WALKER_S2_GRIPPER_JOINT_CLOSING_M
+    open_ratio = (opening - WALKER_S2_GRIPPER_OPENING_MIN_M) / (
+        WALKER_S2_GRIPPER_OPENING_MAX_M - WALKER_S2_GRIPPER_OPENING_MIN_M
+    )
+    joint_target = (
+        WALKER_S2_GRIPPER_SIM_CLOSE_JOINT_M
+        + open_ratio * (WALKER_S2_GRIPPER_SIM_OPEN_JOINT_M - WALKER_S2_GRIPPER_SIM_CLOSE_JOINT_M)
+    )
     return {
-        name: float(WALKER_S2_GRIPPER_JOINT_SIGNS.get(name, 1.0)) * joint_closing
+        name: float(WALKER_S2_GRIPPER_JOINT_SIGNS.get(name, 1.0)) * joint_target
         for name in active_joints
     }
 
@@ -196,17 +206,56 @@ def _grip_status_from_joints(side: str, pos_map: dict[str, float], cached_comman
     if not joints:
         return None
 
-    closings = [
-        abs(float(WALKER_S2_GRIPPER_JOINT_SIGNS.get(name, 1.0)) * float(pos_map[name]))
+    joint_targets = [
+        float(WALKER_S2_GRIPPER_JOINT_SIGNS.get(name, 1.0)) * float(pos_map[name])
         for name in joints
     ]
-    joint_closing = sum(closings) / float(len(closings))
-    closing = (joint_closing / WALKER_S2_GRIPPER_JOINT_CLOSING_M) * WALKER_S2_GRIPPER_OPENING_MAX_M
-    opening = WALKER_S2_GRIPPER_OPENING_MAX_M - closing
+    joint_target = sum(joint_targets) / float(len(joint_targets))
+    open_ratio = (joint_target - WALKER_S2_GRIPPER_SIM_CLOSE_JOINT_M) / (
+        WALKER_S2_GRIPPER_SIM_OPEN_JOINT_M - WALKER_S2_GRIPPER_SIM_CLOSE_JOINT_M
+    )
+    opening = WALKER_S2_GRIPPER_OPENING_MIN_M + open_ratio * (
+        WALKER_S2_GRIPPER_OPENING_MAX_M - WALKER_S2_GRIPPER_OPENING_MIN_M
+    )
     opening = max(WALKER_S2_GRIPPER_OPENING_MIN_M, min(WALKER_S2_GRIPPER_OPENING_MAX_M, opening))
     grip_cmd = (cached_command or {}).get(f"{side}_grip", {})
     cur = float(grip_cmd.get("cur", 0.0)) if isinstance(grip_cmd, dict) else 0.0
     return {"pos": opening, "vel": 0.0, "cur": cur}
+
+
+def _to_float_list(value: Any) -> list[float]:
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().tolist()
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    return [float(v) for v in value]
+
+
+def _get_finger_link_states(env) -> dict[str, Any]:
+    robot = env.scene["robot"]
+    body_names = getattr(robot, "body_names", None) or getattr(robot.data, "body_names", None) or []
+    link_indices = [idx for idx, name in enumerate(body_names) if "finger_link" in str(name).lower()]
+    if not link_indices:
+        link_indices = [
+            idx for idx, name in enumerate(body_names)
+            if "finger" in str(name).lower() and "link" in str(name).lower()
+        ]
+
+    required_links = {"R_sixforce_link", "R_finger1_link"}
+    seen = set(link_indices)
+    for idx, name in enumerate(body_names):
+        if str(name) in required_links and idx not in seen:
+            link_indices.append(idx)
+            seen.add(idx)
+
+    links = {}
+    for idx in link_indices:
+        name = str(body_names[idx])
+        links[name] = {
+            "pos": _to_float_list(robot.data.body_pos_w[0, idx]),
+            "rot": _to_float_list(robot.data.body_quat_w[0, idx]),
+        }
+    return {"frame": "world", "links": links}
 
 
 def to_controller_data(command: dict[str, Any], env) -> torch.Tensor:
@@ -261,6 +310,17 @@ def to_ros_data(env, cached_command: dict[str, Any] | None = None) -> dict[str, 
         "sdk_body_pos": sdk_body_pos,
         "sdk_body_vel": sdk_body_vel,
     }
+    get_part_states = getattr(env.cfg, "get_part_states", None)
+    if get_part_states is not None:
+        try:
+            status["part_states"] = get_part_states(env)
+        except Exception as exc:
+            status["part_states_error"] = str(exc)
+    try:
+        status["finger_link_states"] = _get_finger_link_states(env)
+    except Exception as exc:
+        status["finger_link_states_error"] = str(exc)
+
     if cached_command:
         for key in ["left_hand", "right_hand"]:
             if key in cached_command:

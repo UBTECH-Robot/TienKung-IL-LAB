@@ -53,6 +53,7 @@ Walker S2 机器人直接控制脚本
 """
 
 import argparse
+import json
 import os
 import threading
 import time
@@ -82,7 +83,7 @@ except ImportError as exc:
     ) from exc
 
 from sensor_msgs.msg import JointState, Image
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 # ============================================================================
 # 常量
@@ -99,6 +100,7 @@ DEFAULT_RIGHT_GRIP_COMMAND_TOPIC = "/ecat/right_grip/cmd"
 DEFAULT_LEFT_GRIP_STATE_TOPIC = "/ecat/left_grip/state"
 DEFAULT_RIGHT_GRIP_STATE_TOPIC = "/ecat/right_grip/state"
 DEFAULT_RESET_TOPIC = "/sim/cmd_reset"
+DEFAULT_FINGER_LINK_STATES_TOPIC = "/sim/finger_link_states"
 DEFAULT_IMAGE_RGB_TOPIC = "/sensor/camera/stereo/color/raw"
 DEFAULT_IMAGE_DEPTH_TOPIC = "/sensor/camera/stereo/depth/raw"
 DEFAULT_CONTROL_HZ = 200
@@ -325,6 +327,9 @@ class WalkerS2Controller(Node):
         enable_safety_check: bool = True,
         enable_limit_check: bool = True,
         subscribe_images: bool = True,
+        enable_ik: bool = False,
+        ik_urdf_path: Optional[str] = None,
+        ik_auto_initialize: bool = True,
     ):
         super().__init__(node_name)
 
@@ -340,6 +345,7 @@ class WalkerS2Controller(Node):
         left_grip_state_topic = self._get_topic("pub", "left_grip_state", DEFAULT_LEFT_GRIP_STATE_TOPIC)
         right_grip_state_topic = self._get_topic("pub", "right_grip_state", DEFAULT_RIGHT_GRIP_STATE_TOPIC)
         reset_topic = self._get_topic("sub", "reset", DEFAULT_RESET_TOPIC)
+        finger_link_states_topic = self._get_topic("pub", "finger_link_states", DEFAULT_FINGER_LINK_STATES_TOPIC)
         image_rgb_topic = self._get_topic("pub", "image_rgb", DEFAULT_IMAGE_RGB_TOPIC)
         image_depth_topic = self._get_topic("pub", "image_depth", DEFAULT_IMAGE_DEPTH_TOPIC)
 
@@ -421,6 +427,15 @@ class WalkerS2Controller(Node):
             "left": threading.Event(),
             "right": threading.Event(),
         }
+        self._finger_link_states = None
+        self._finger_link_states_lock = threading.Lock()
+        self._finger_link_states_received = threading.Event()
+
+        self.ik_solver = None
+        self._ik_initialized = False
+        self._ik_lock = threading.Lock()
+        self._ik_urdf_path = ik_urdf_path
+
         self.left_hand_state_sub = self.create_subscription(
             JointState, left_hand_state_topic,
             lambda msg: self._hand_state_callback("left", msg),
@@ -441,6 +456,10 @@ class WalkerS2Controller(Node):
             lambda msg: self._grip_state_callback("right", msg),
             qos_sub, callback_group=MutuallyExclusiveCallbackGroup(),
         )
+        self.finger_link_states_sub = self.create_subscription(
+            String, finger_link_states_topic, self._finger_link_state_callback,
+            qos_sub, callback_group=MutuallyExclusiveCallbackGroup(),
+        )
         self.reset_pub = self.create_publisher(Bool, reset_topic, 1)
         self.latest_img = None
         self.latest_depth = None
@@ -459,6 +478,10 @@ class WalkerS2Controller(Node):
             self.timer_period, self._control_callback,
             callback_group=ReentrantCallbackGroup(),
         )
+
+        if enable_ik and ik_auto_initialize:
+            if not self.initialize_ik():
+                self.get_logger().warning("Walker S2 IK auto-initialization failed; joint-space control remains available")
 
         self.get_logger().info(
             f"WalkerS2Controller initialized: {self.n_joints} joints, "
@@ -516,6 +539,118 @@ class WalkerS2Controller(Node):
             if len(self.robot_states_buffer) > 0:
                 return self.robot_states_buffer[-1].copy()
         return None
+
+    @staticmethod
+    def _default_ik_urdf_path():
+        return os.path.abspath(
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                os.pardir, os.pardir, os.pardir,
+                "assets", "robots", "walker_s2", "s2.urdf",
+            )
+        )
+
+    @staticmethod
+    def _xyzrpy_dict(xyzrpy):
+        values = [float(v) for v in xyzrpy]
+        return dict(zip(["x", "y", "z", "roll", "pitch", "yaw"], values))
+
+    def _current_arm_values(self, joint_names):
+        current = self.get_current_position()
+        if current is not None:
+            pos_map = dict(zip(self.all_joints, current))
+            return [float(pos_map.get(name, READY_POSE.get(name, 0.0))) for name in joint_names]
+        return [float(READY_POSE.get(name, 0.0)) for name in joint_names]
+
+    def initialize_ik(self, urdf_path=None, left_neutral=None, right_neutral=None, save_current_as_initial=True):
+        """初始化 Walker S2 双臂 IK。
+
+        IK 目标格式为 [x, y, z, roll, pitch, yaw]，单位 m/rad，坐标系为
+        Walker S2 URDF 机器人基座坐标系，不是 /sim/finger_link_states 的 world 坐标系。
+        """
+        resolved_urdf = (
+            urdf_path
+            or self._ik_urdf_path
+            or os.environ.get("WALKER_S2_IK_URDF")
+            or self._default_ik_urdf_path()
+        )
+        resolved_urdf = os.path.abspath(resolved_urdf)
+        if not os.path.exists(resolved_urdf):
+            self.get_logger().error(f"Walker S2 IK URDF not found: {resolved_urdf}")
+            return False
+
+        try:
+            try:
+                from .walker_s2_ik import WalkerS2IK
+            except ImportError:
+                from walker_s2_ik import WalkerS2IK
+            solver = WalkerS2IK(resolved_urdf)
+        except Exception as exc:
+            self.get_logger().error(f"Failed to initialize Walker S2 IK: {exc}")
+            return False
+
+        with self._ik_lock:
+            self.ik_solver = solver
+            self._ik_urdf_path = resolved_urdf
+            self._ik_initialized = True
+            self._sync_ik_from_current_state_locked()
+            left = left_neutral if left_neutral is not None else self._current_arm_values(LEFT_ARM_JOINTS)
+            right = right_neutral if right_neutral is not None else self._current_arm_values(RIGHT_ARM_JOINTS)
+            self.ik_solver.set_neutral_config(left, right)
+            if save_current_as_initial:
+                self.ik_solver.save_initial_q()
+        self.get_logger().info(f"Walker S2 IK initialized with URDF: {resolved_urdf}")
+        return True
+
+    def reset_ik(self, save_current_as_initial=True):
+        if self.ik_solver is None:
+            return self.initialize_ik(save_current_as_initial=save_current_as_initial)
+        with self._ik_lock:
+            self.ik_solver.reset_runtime_state()
+            self._sync_ik_from_current_state_locked()
+            if save_current_as_initial:
+                self.ik_solver.save_initial_q()
+        return True
+
+    def _sync_ik_from_current_state_locked(self):
+        if self.ik_solver is None:
+            return False
+        current = self.get_current_position()
+        if current is None:
+            return False
+        self.ik_solver.sync_joint_positions(self.all_joints, current.tolist())
+        return True
+
+    def _sync_ik_from_current_state(self):
+        with self._ik_lock:
+            return self._sync_ik_from_current_state_locked()
+
+    def _ensure_ik_initialized(self):
+        if self.ik_solver is not None and self._ik_initialized:
+            return True
+        return self.initialize_ik()
+
+    def get_ee_pose(self, side, as_dict=False):
+        """获取当前单臂末端 [x,y,z,roll,pitch,yaw]（URDF base frame）。"""
+        if side not in ("left", "right"):
+            raise ValueError(f"Invalid arm side: {side}")
+        if not self._ensure_ik_initialized():
+            return None
+        with self._ik_lock:
+            self._sync_ik_from_current_state_locked()
+            pose = self.ik_solver.get_ee_pose(side)
+        return self._xyzrpy_dict(pose) if as_dict else pose
+
+    def get_ee_poses(self, as_dict=False):
+        """获取左右臂末端 [x,y,z,roll,pitch,yaw]（URDF base frame）。"""
+        if not self._ensure_ik_initialized():
+            return None
+        with self._ik_lock:
+            self._sync_ik_from_current_state_locked()
+            poses = self.ik_solver.get_both_ee_poses()
+        if as_dict:
+            return {side: self._xyzrpy_dict(pose) for side, pose in poses.items()}
+        return poses
 
     def wait_until_position(self, target_position, timeout=5.0, tolerance=0.05, ignored_joints=None):
         """等待实际关节位置收敛到目标附近。
@@ -932,6 +1067,229 @@ class WalkerS2Controller(Node):
             self._grip_states[side] = state
         self._grip_state_received[side].set()
 
+    def _finger_link_state_callback(self, msg: String):
+        """缓存仿真发布的 finger_link world pose JSON。"""
+        try:
+            state = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warning(f"Invalid finger_link_states JSON: {exc}")
+            return
+        with self._finger_link_states_lock:
+            self._finger_link_states = state
+        self._finger_link_states_received.set()
+
+    def wait_for_finger_link_states(self, timeout=5.0):
+        """等待 /sim/finger_link_states；该状态为 world frame，仅用于验证/debug。"""
+        ok = self._finger_link_states_received.wait(timeout=timeout)
+        if not ok:
+            self.get_logger().warning(f"Timeout waiting for finger_link_states ({timeout:.1f}s)")
+        return ok
+
+    def get_finger_link_states(self):
+        """获取最新 finger_link world pose JSON，None 表示无数据。"""
+        with self._finger_link_states_lock:
+            if self._finger_link_states is not None:
+                return json.loads(json.dumps(self._finger_link_states))
+        return None
+
+    def get_finger_link_pose(self, link_name: str):
+        """获取指定 finger link 的 world pose 字典，None 表示无数据或 link 不存在。"""
+        states = self.get_finger_link_states()
+        if not states:
+            return None
+        return (states.get("links") or {}).get(link_name)
+
+    def solve_arm_ik(self, side, target_xyzrpy, sync_state=True, **ik_kwargs):
+        """只求解单臂 IK，不下发控制。目标为 URDF base frame 的 [x,y,z,r,p,y]。
+
+        传 unlock_waist=True 时，返回的关节目标会包含 waist_yaw_joint。
+        """
+        if side not in ("left", "right"):
+            raise ValueError(f"Invalid arm side: {side}")
+        if not self._ensure_ik_initialized():
+            return None, False, {"error": "ik_not_initialized"}
+        with self._ik_lock:
+            if sync_state:
+                self._sync_ik_from_current_state_locked()
+            if side == "left":
+                result = self.ik_solver.solve_dual_arm(left_target_xyzrpy=target_xyzrpy, **ik_kwargs)
+                joints = result.get("left_joint_positions")
+                ok = bool(result.get("left_success", False))
+                names = result.get("left_joint_names", LEFT_ARM_JOINTS)
+            else:
+                result = self.ik_solver.solve_dual_arm(right_target_xyzrpy=target_xyzrpy, **ik_kwargs)
+                joints = result.get("right_joint_positions")
+                ok = bool(result.get("right_success", False))
+                names = result.get("right_joint_names", RIGHT_ARM_JOINTS)
+        diagnostics = result.get("diagnostics", {})
+        return dict(zip(names, [float(v) for v in joints])) if joints is not None else None, ok, diagnostics
+
+    def solve_dual_arm_ik(self, left_target_xyzrpy=None, right_target_xyzrpy=None, sync_state=True, **ik_kwargs):
+        """只求解双臂 IK，不下发控制。目标为 URDF base frame 的 [x,y,z,r,p,y]。
+
+        传 unlock_waist=True 时，仅支持单臂目标，返回的关节列表会包含 waist_yaw_joint。
+        """
+        if left_target_xyzrpy is None and right_target_xyzrpy is None:
+            return {}
+        if not self._ensure_ik_initialized():
+            return {"error": "ik_not_initialized"}
+        with self._ik_lock:
+            if sync_state:
+                self._sync_ik_from_current_state_locked()
+            result = self.ik_solver.solve_dual_arm(
+                left_target_xyzrpy=left_target_xyzrpy,
+                right_target_xyzrpy=right_target_xyzrpy,
+                **ik_kwargs,
+            )
+        return result
+
+    def move_arm_ik(self, side, target_xyzrpy, duration_sec=1.5, wait=True, require_success=True, **ik_kwargs):
+        """单臂 Cartesian IK 控制。目标为 URDF base frame 的 [x,y,z,r,p,y]。
+
+        传 unlock_waist=True 时，会在下发 waist_yaw_joint 目标时临时解锁腰部。
+        """
+        joint_targets, ok, diagnostics = self.solve_arm_ik(side, target_xyzrpy, **ik_kwargs)
+        if joint_targets is None:
+            return False
+        if require_success and not ok:
+            self.get_logger().warning(f"{side} arm IK did not converge: {diagnostics}")
+            return False
+        return self.move_to_pose(joint_targets, duration_sec=duration_sec, wait=wait, unlock_required_joints=True)
+
+    def move_arm_ee_delta(
+        self,
+        side,
+        delta_xyz=(0.0, 0.0, 0.0),
+        delta_rpy=(0.0, 0.0, 0.0),
+        duration_sec=1.5,
+        wait=True,
+        require_success=True,
+        **ik_kwargs,
+    ):
+        """控制单侧末端相对当前位置位移。
+
+        delta_xyz / delta_rpy 均定义在 Walker S2 URDF base frame 下，单位 m/rad。
+        例如 delta_xyz=(0, 0, 0.02) 表示末端在 base frame 的 z 方向移动 2cm。
+        """
+        current = self.get_ee_pose(side)
+        if current is None:
+            return False
+        delta = np.concatenate([
+            np.asarray(delta_xyz, dtype=float),
+            np.asarray(delta_rpy, dtype=float),
+        ])
+        if delta.shape != (6,):
+            self.get_logger().error(f"EE delta must have 3 xyz + 3 rpy values, got shape {delta.shape}")
+            return False
+        target = np.asarray(current, dtype=float) + delta
+        self.get_logger().info(
+            f"Move {side} EE delta xyz={delta[:3].tolist()} rpy={delta[3:].tolist()} "
+            f"target={target.tolist()}"
+        )
+        return self.move_arm_ik(
+            side,
+            target,
+            duration_sec=duration_sec,
+            wait=wait,
+            require_success=require_success,
+            **ik_kwargs,
+        )
+
+    def move_left_ee_delta(self, delta_xyz=(0.0, 0.0, 0.0), delta_rpy=(0.0, 0.0, 0.0), **kwargs):
+        return self.move_arm_ee_delta("left", delta_xyz=delta_xyz, delta_rpy=delta_rpy, **kwargs)
+
+    def move_right_ee_delta(self, delta_xyz=(0.0, 0.0, 0.0), delta_rpy=(0.0, 0.0, 0.0), **kwargs):
+        return self.move_arm_ee_delta("right", delta_xyz=delta_xyz, delta_rpy=delta_rpy, **kwargs)
+
+    def move_dual_arm_ik(
+        self,
+        left_target_xyzrpy=None,
+        right_target_xyzrpy=None,
+        duration_sec=1.5,
+        wait=True,
+        require_success=True,
+        **ik_kwargs,
+    ):
+        """双臂 Cartesian IK 控制。目标为 URDF base frame 的 [x,y,z,r,p,y]。
+
+        传 unlock_waist=True 时，仅支持单臂目标。
+        """
+        result = self.solve_dual_arm_ik(left_target_xyzrpy, right_target_xyzrpy, **ik_kwargs)
+        if not result or "error" in result:
+            return False
+
+        pose_dict = {}
+        waist_target = None
+        if left_target_xyzrpy is not None:
+            ok = bool(result.get("left_success", False))
+            if require_success and not ok:
+                self.get_logger().warning(f"left arm IK did not converge: {result.get('diagnostics', {})}")
+                return False
+            left_targets = dict(zip(result["left_joint_names"], [float(v) for v in result["left_joint_positions"]]))
+            waist_target = left_targets.get("waist_yaw_joint")
+            pose_dict.update(left_targets)
+        if right_target_xyzrpy is not None:
+            ok = bool(result.get("right_success", False))
+            if require_success and not ok:
+                self.get_logger().warning(f"right arm IK did not converge: {result.get('diagnostics', {})}")
+                return False
+            right_targets = dict(zip(result["right_joint_names"], [float(v) for v in result["right_joint_positions"]]))
+            right_waist_target = right_targets.get("waist_yaw_joint")
+            if waist_target is not None and right_waist_target is not None and abs(waist_target - right_waist_target) > 1e-6:
+                self.get_logger().error("Conflicting waist_yaw_joint targets from left/right IK results")
+                return False
+            pose_dict.update(right_targets)
+
+        return self.move_to_pose(pose_dict, duration_sec=duration_sec, wait=wait, unlock_required_joints=True)
+
+    def move_dual_ee_delta(
+        self,
+        left_delta_xyz=None,
+        right_delta_xyz=None,
+        left_delta_rpy=None,
+        right_delta_rpy=None,
+        duration_sec=1.5,
+        wait=True,
+        require_success=True,
+        **ik_kwargs,
+    ):
+        """控制双臂末端相对当前位置位移。
+
+        delta 均定义在 Walker S2 URDF base frame 下，单位 m/rad。传 None 表示该侧不动。
+        """
+        poses = self.get_ee_poses()
+        if poses is None:
+            return False
+
+        left_target = None
+        right_target = None
+        if left_delta_xyz is not None or left_delta_rpy is not None:
+            left_target = np.asarray(poses["left"], dtype=float).copy()
+            left_target += np.concatenate([
+                np.asarray(left_delta_xyz if left_delta_xyz is not None else (0.0, 0.0, 0.0), dtype=float),
+                np.asarray(left_delta_rpy if left_delta_rpy is not None else (0.0, 0.0, 0.0), dtype=float),
+            ])
+        if right_delta_xyz is not None or right_delta_rpy is not None:
+            right_target = np.asarray(poses["right"], dtype=float).copy()
+            right_target += np.concatenate([
+                np.asarray(right_delta_xyz if right_delta_xyz is not None else (0.0, 0.0, 0.0), dtype=float),
+                np.asarray(right_delta_rpy if right_delta_rpy is not None else (0.0, 0.0, 0.0), dtype=float),
+            ])
+        if left_target is None and right_target is None:
+            self.get_logger().warning("move_dual_ee_delta called with no left/right delta")
+            return False
+
+        return self.move_dual_arm_ik(
+            left_target_xyzrpy=left_target,
+            right_target_xyzrpy=right_target,
+            duration_sec=duration_sec,
+            wait=wait,
+            require_success=require_success,
+            **ik_kwargs,
+        )
+
+    control_dual_arm_ik = move_dual_arm_ik
+
     def move_to_position(self, target_position, duration_sec=3.0, wait=True):
         """平滑移动到目标位置（从当前位置线性插值）。
 
@@ -1165,13 +1523,63 @@ class WalkerS2Controller(Node):
                     f"values will be silently dropped"
                 )
 
+        target_joint_names = list(pose_dict.keys())
+
+        def log_target_joint_errors(prefix):
+            pos = self.get_current_position()
+            if pos is None:
+                return
+            errors = []
+            for name in target_joint_names:
+                idx = self.all_joints.index(name)
+                actual = float(pos[idx])
+                desired = float(target[idx])
+                errors.append((name, actual, desired, abs(actual - desired)))
+            errors.sort(key=lambda item: item[3], reverse=True)
+            error_text = ", ".join(
+                f"{name}: actual={actual:+.4f}, target={desired:+.4f}, err={err:.4f}"
+                for name, actual, desired, err in errors
+            )
+            self.get_logger().info(f"{prefix}: {error_text}")
+
         result = self.move_to_position(target, duration_sec=duration_sec, wait=wait)
+
+        settled = True
+        # execute_trajectory(wait=True) 只表示轨迹点发布完毕；之后用闭环补偿重发目标，避免多关节动作停在中间状态。
+        if result and wait:
+            settle_timeout = max(2.0, min(float(duration_sec), 3.0))
+            settle_tolerance = 0.03
+            max_settle_retries = 2
+            settled = False
+            for attempt in range(max_settle_retries + 1):
+                arrived, misses = self.wait_until_position(
+                    target,
+                    timeout=settle_timeout,
+                    tolerance=settle_tolerance,
+                )
+                log_target_joint_errors(f"Settle check {attempt + 1}/{max_settle_retries + 1}")
+                if arrived:
+                    settled = True
+                    break
+                if attempt >= max_settle_retries:
+                    self.get_logger().warning(
+                        f"Position did not settle before relock: {misses[:5]}"
+                    )
+                    break
+                self.get_logger().warning(
+                    f"Position did not settle, corrective retry {attempt + 1}/{max_settle_retries}: {misses[:5]}"
+                )
+                correction_duration = max(1.0, min(float(duration_sec) * 0.5, 2.0))
+                result = self.move_to_position(target, duration_sec=correction_duration, wait=True)
+                if not result:
+                    settled = False
+                    break
 
         # 自动恢复锁定（仅 wait=True 时可安全恢复）
         if original_lock is not None and wait:
             self.set_lock_joints(list(original_lock))
 
-        return result
+        return bool(result and settled)
 
     def move_to_ready_pose(self, duration_sec=15.0, wait=True):
         """分段移动到预备姿态（先 shoulder pitch / elbow roll，再 elbow yaw，最后 READY_POSE）。
@@ -1828,6 +2236,30 @@ def main(args=None):
         help="判定预备姿态到位的最大关节误差（rad），默认 0.08",
     )
     parser.add_argument(
+        "--move-joint", action="store_true",
+        help="移动单个身体关节到指定角度，用于诊断关节控制",
+    )
+    parser.add_argument(
+        "--joint", choices=BODY_JOINT_NAMES, default=None,
+        help="--move-joint 使用的关节名",
+    )
+    parser.add_argument(
+        "--pos", type=float, default=None,
+        help="--move-joint 使用的目标角度（rad）",
+    )
+    parser.add_argument(
+        "--duration", type=float, default=3.0,
+        help="--move-joint 运动时长（秒），默认 3.0",
+    )
+    parser.add_argument(
+        "--tolerance", type=float, default=0.03,
+        help="--move-joint 到位判定阈值（rad），默认 0.03",
+    )
+    parser.add_argument(
+        "--settle-timeout", type=float, default=3.0,
+        help="--move-joint 额外等待实际关节收敛的超时时间（秒），默认 3.0",
+    )
+    parser.add_argument(
         "--demo", action="store_true",
         help="运行安全演示：右臂 elbow_yaw ±0.05 rad",
     )
@@ -1941,6 +2373,32 @@ def main(args=None):
 
         if cli_args.print_state:
             cmd_print_state(controller)
+        elif cli_args.move_joint:
+            if cli_args.joint is None or cli_args.pos is None:
+                print("[ERROR] --move-joint requires --joint and --pos")
+                return
+            cmd_print_state(controller)
+            print(
+                f"\n=== 单关节测试: {cli_args.joint} -> {cli_args.pos:+.4f} rad "
+                f"({cli_args.duration:.1f}s) ==="
+            )
+            ok = controller.move_to_pose(
+                {cli_args.joint: cli_args.pos},
+                duration_sec=cli_args.duration,
+                wait=True,
+                unlock_required_joints=True,
+            )
+            current = controller.get_current_position()
+            if current is not None:
+                idx = controller.joint_index(cli_args.joint)
+                actual = float(current[idx])
+                err = abs(actual - float(cli_args.pos))
+                print(f"{cli_args.joint}: actual={actual:+.4f}, target={cli_args.pos:+.4f}, err={err:.4f}")
+            if ok:
+                print("✓ 单关节命令完成并收敛")
+            else:
+                print("✗ 单关节命令未收敛")
+            cmd_print_state(controller)
         elif cli_args.init:
             cmd_print_state(controller)
             print(f"\n=== 分段移动到预备姿态（{cli_args.init_duration:.1f}s）===")
@@ -2023,7 +2481,7 @@ def main(args=None):
             spin_thread.join()
         else:
             cmd_print_state(controller)
-            print("\n用法: --print-state | --init | --demo | --head-test | --hand-test | --grip-state | --grip-open | --grip-close | --grip-pos POS | --interactive")
+            print("\n用法: --print-state | --init | --move-joint --joint JOINT --pos POS | --demo | --head-test | --hand-test | --grip-state | --grip-open | --grip-close | --grip-pos POS | --interactive")
 
     except KeyboardInterrupt:
         controller.get_logger().info("Interrupted, shutting down")
