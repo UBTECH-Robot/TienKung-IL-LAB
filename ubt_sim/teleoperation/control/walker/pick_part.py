@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import threading
+import time
 from copy import deepcopy
 
 import numpy as np
@@ -32,24 +33,33 @@ from walker_s2_controller import BODY_JOINT_LIMITS, READY_POSE, WalkerS2Controll
 
 
 DEFAULT_PART_STATES_TOPIC = "/sim/part_states"
+DEFAULT_RANDOMIZE_PARTS_TOPIC = "/sim/cmd_randomize_parts"
 DEFAULT_PART_NAME = "part_a_red"
+DEFAULT_PART_SEQUENCE = ("part_a_ori", "part_a_red", "part_b_blue", "part_b_ori")
 DEFAULT_APPROACH_OFFSET_WORLD = (0.0, 0.0, 0.12)
 DEFAULT_DESCEND_OFFSET_WORLD = (0.0, 0.0, 0.035)
 DEFAULT_LIFT_OFFSET_WORLD = (0.0, 0.0, 0.14)
 DEFAULT_ROT_WEIGHT = 0.10
 DEFAULT_POSITION_TOLERANCE = 0.01
 DEFAULT_JOINT_LIMIT_MARGIN = 0.0
+DEFAULT_REQUIRE_IK_OK = True
 DEFAULT_AUTO_GRASP = True
 DEFAULT_UNCONSTRAIN_ROT_Z = True
 DEFAULT_UNLOCK_WAIST = True
 DEFAULT_GRASP_RADIUS = 0.0
 DEFAULT_GRASP_MIN_TABLE_ANGLE_DEG = 10.0
 DEFAULT_GRASP_LIFT_HEIGHT = 0.15
-DEFAULT_GRASP_PREGRASP_HEIGHT = 0.05
-DEFAULT_GRASP_TARGET_OFFSET_WORLD = (0.0, 0.0, 0.0)
-DEFAULT_GRASP_DESCEND_AFTER_TARGET_WORLD = (0.0, 0.0, -0.03)
+DEFAULT_GRASP_PREGRASP_HEIGHT = 0.10
+DEFAULT_GRASP_TARGET_OFFSET_WORLD = (0.0, 0.0, 0.02)
+DEFAULT_GRASP_DESCEND_AFTER_TARGET_WORLD = (0.0, 0.0, -0.01)
 DEFAULT_GRASP_SAMPLE_AZIMUTH_COUNT = 32
 DEFAULT_GRASP_SAMPLE_ELEVATION_COUNT = 5
+DEFAULT_GRASP_MAX_ATTEMPTS = 3
+DEFAULT_GRASP_SUCCESS_CHECK = True
+DEFAULT_GRASP_SUCCESS_MIN_LIFT_DELTA = 0.04
+DEFAULT_GRASP_SUCCESS_MAX_PART_TO_EE_DIST = 0.18
+DEFAULT_GRASP_SUCCESS_PART_STATE_TIMEOUT = 0.3
+DEFAULT_GRASP_SUCCESS_FINGER_TIMEOUT = 0.2
 DEFAULT_GRIPPER_FORWARD_AXIS_EE = (-1.0, 0.0, 0.0)
 
 # walker_s2_part_sorting.yaml 中机器人 init_state.rot = [0.7071068, 0, 0, 0.7071068]。
@@ -57,7 +67,12 @@ DEFAULT_GRIPPER_FORWARD_AXIS_EE = (-1.0, 0.0, 0.0)
 DEFAULT_BASE_IN_WORLD_POS = (0.7, -0.2, 0.9)
 DEFAULT_BASE_TO_WORLD_QUAT_WXYZ = (0.7071068, 0.0, 0.0, 0.7071068)
 DEFAULT_WORLD_TO_BASE_QUAT_WXYZ = (0.7071068, 0.0, 0.0, -0.7071068)
-DEFAULT_RIGHT_BOX_WORLD_POS = (1.2, 0.3, 1.05)
+DEFAULT_RIGHT_BOX_WORLD_POS1 = (1.2, 0.3 - 0.06, 1.05)
+DEFAULT_RIGHT_BOX_WORLD_POS2 = (1.2, 0.3 + 0.07, 1.05)
+DEFAULT_RIGHT_BOX_WORLD_POS = DEFAULT_RIGHT_BOX_WORLD_POS1
+DEFAULT_PLACE_APPROACH_HEIGHT = 0.18
+DEFAULT_PLACE_RELEASE_HEIGHT = 0.10
+DEFAULT_PLACE_LIFT_HEIGHT = 0.20
 DEFAULT_PLACE_EXIT_LEFT_OFFSET_WORLD = (-0.25, 0.0, 0.05)
 
 
@@ -67,8 +82,10 @@ class PartStateMonitor(Node):
     def __init__(self, topic=DEFAULT_PART_STATES_TOPIC):
         super().__init__("walker_s2_part_state_monitor")
         self._part_states = None
+        self._seq = 0
         self._lock = threading.Lock()
         self._received = threading.Event()
+        self._updated = threading.Condition(self._lock)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -89,9 +106,11 @@ class PartStateMonitor(Node):
         except json.JSONDecodeError as exc:
             self.get_logger().warning(f"Invalid part_states JSON: {exc}")
             return
-        with self._lock:
+        with self._updated:
             self._part_states = data
+            self._seq += 1
             self._received.set()
+            self._updated.notify_all()
 
     def wait_for_part_states(self, timeout=5.0):
         ok = self._received.wait(timeout=timeout)
@@ -102,6 +121,17 @@ class PartStateMonitor(Node):
     def get_part_states(self):
         with self._lock:
             return deepcopy(self._part_states)
+
+    def get_update_seq(self):
+        with self._lock:
+            return self._seq
+
+    def wait_for_new_part_states(self, last_seq, timeout=0.3):
+        with self._updated:
+            ok = self._updated.wait_for(lambda: self._seq > int(last_seq), timeout=timeout)
+            if not ok:
+                self.get_logger().warning(f"Timeout waiting for new part_states ({timeout:.2f}s)")
+            return ok
 
     def get_part_pose(self, part_name):
         states = self.get_part_states()
@@ -429,6 +459,7 @@ def _solve_ee_target(
     joint_limit_margin,
     seed_joint_targets=None,
     unconstrain_rot_z=False,
+    position_tolerance=DEFAULT_POSITION_TOLERANCE,
 ):
     seed_names = list(seed_joint_targets.keys()) if seed_joint_targets is not None else None
     seed_positions = list(seed_joint_targets.values()) if seed_joint_targets is not None else None
@@ -444,6 +475,7 @@ def _solve_ee_target(
     pos_err = _ik_pos_err(diagnostics, side, ik_ok=ik_ok)
     rot_err = _ik_rot_err(diagnostics, side, ik_ok=ik_ok)
     violations = _limit_violations(joint_targets, margin=joint_limit_margin)
+    position_tolerance = float(position_tolerance)
     return {
         "label": label,
         "pose": np.asarray(target_pose, dtype=float),
@@ -452,7 +484,8 @@ def _solve_ee_target(
         "diagnostics": diagnostics,
         "pos_err": pos_err,
         "rot_err": rot_err,
-        "position_ok": pos_err <= DEFAULT_POSITION_TOLERANCE,
+        "position_ok": pos_err <= position_tolerance,
+        "position_tolerance": position_tolerance,
         "violations": violations,
     }
 
@@ -466,6 +499,7 @@ def _solve_right_ee_target(
     joint_limit_margin,
     seed_joint_targets=None,
     unconstrain_rot_z=False,
+    position_tolerance=DEFAULT_POSITION_TOLERANCE,
 ):
     return _solve_ee_target(
         controller,
@@ -477,7 +511,24 @@ def _solve_right_ee_target(
         joint_limit_margin,
         seed_joint_targets=seed_joint_targets,
         unconstrain_rot_z=unconstrain_rot_z,
+        position_tolerance=position_tolerance,
     )
+
+
+def _require_stage_labels(stage_map, labels, logger, context):
+    missing = [label for label in labels if label not in stage_map]
+    if missing:
+        logger.error(f"Missing {context} stages: {missing}; available={sorted(stage_map.keys())}")
+        return False
+    return True
+
+
+def _default_place_box_world_pos_for_part(part_name):
+    """A 类零件放入箱内位置 1，B 类零件放入箱内位置 2。"""
+    name = str(part_name).lower()
+    if name.startswith("part_b") or "_b_" in name:
+        return DEFAULT_RIGHT_BOX_WORLD_POS2
+    return DEFAULT_RIGHT_BOX_WORLD_POS1
 
 
 def solve_place_waypoints(
@@ -494,13 +545,17 @@ def solve_place_waypoints(
     base_in_world_pos=DEFAULT_BASE_IN_WORLD_POS,
     gripper_forward_axis_ee=DEFAULT_GRIPPER_FORWARD_AXIS_EE,
     exit_left_offset_world=DEFAULT_PLACE_EXIT_LEFT_OFFSET_WORLD,
+    place_approach_height=DEFAULT_PLACE_APPROACH_HEIGHT,
+    place_release_height=DEFAULT_PLACE_RELEASE_HEIGHT,
+    place_lift_height=DEFAULT_PLACE_LIFT_HEIGHT,
+    position_tolerance=DEFAULT_POSITION_TOLERANCE,
 ):
-    """求解搬运到右侧箱子上方、松爪后抬升并向左离开箱体的 waypoint。"""
+    """求解搬运到箱子上方、松爪后抬升并按偏移离开箱体的 waypoint。"""
     box_world_pos = np.asarray(box_world_pos, dtype=float)
-    lift_world = box_world_pos + np.asarray([0.0, 0.0, 0.20], dtype=float)
+    lift_world = box_world_pos + np.asarray([0.0, 0.0, float(place_lift_height)], dtype=float)
     waypoints = (
-        ("place_approach", box_world_pos + np.asarray([0.0, 0.0, 0.18], dtype=float)),
-        ("place_release", box_world_pos + np.asarray([0.0, 0.0, 0.10], dtype=float)),
+        ("place_approach", box_world_pos + np.asarray([0.0, 0.0, float(place_approach_height)], dtype=float)),
+        ("place_release", box_world_pos + np.asarray([0.0, 0.0, float(place_release_height)], dtype=float)),
         ("place_lift", lift_world),
         ("place_exit_left", lift_world + np.asarray(exit_left_offset_world, dtype=float)),
     )
@@ -519,6 +574,7 @@ def solve_place_waypoints(
             joint_limit_margin=joint_limit_margin,
             seed_joint_targets=seed,
             unconstrain_rot_z=unconstrain_rot_z,
+            position_tolerance=position_tolerance,
         )
         stage["target_world"] = target_world
         stage["target_base"] = target_base
@@ -554,6 +610,8 @@ def choose_suitable_grasp_pose(
     world_to_base_quat_wxyz=DEFAULT_WORLD_TO_BASE_QUAT_WXYZ,
     base_in_world_pos=DEFAULT_BASE_IN_WORLD_POS,
     gripper_forward_axis_ee=DEFAULT_GRIPPER_FORWARD_AXIS_EE,
+    position_tolerance=DEFAULT_POSITION_TOLERANCE,
+    require_ik_ok=DEFAULT_REQUIRE_IK_OK,
 ):
     """采样 TCP 朝向，返回最佳 IK 可达抓取序列。"""
     _ = radius  # 兼容旧参数；当前 IK 末端已经是 TCP，不再额外外推。
@@ -589,7 +647,14 @@ def choose_suitable_grasp_pose(
     directions = sorted(directions, key=direction_priority)
     candidates = []
     fail_stats = {
-        label: {"no_solution": 0, "pos": 0, "limit": 0, "best_pos_err": float("inf"), "best_rot_err": float("inf")}
+        label: {
+            "no_solution": 0,
+            "ik_not_ok": 0,
+            "pos": 0,
+            "limit": 0,
+            "best_pos_err": float("inf"),
+            "best_rot_err": float("inf"),
+        }
         for label in ("pregrasp", "grasp", "descend_after_grasp", "lift")
     }
 
@@ -633,6 +698,7 @@ def choose_suitable_grasp_pose(
                 joint_limit_margin=joint_limit_margin,
                 seed_joint_targets=seed,
                 unconstrain_rot_z=unconstrain_rot_z,
+                position_tolerance=position_tolerance,
             )
             stage["target_world"] = target_world
             stage["target_base"] = target_base
@@ -650,6 +716,10 @@ def choose_suitable_grasp_pose(
             stats["best_rot_err"] = min(stats["best_rot_err"], stage["rot_err"])
             if stage["joint_targets"] is None:
                 stats["no_solution"] += 1
+                valid = False
+                break
+            if require_ik_ok and not stage["ik_ok"]:
+                stats["ik_not_ok"] += 1
                 valid = False
                 break
             if not stage["position_ok"]:
@@ -716,7 +786,627 @@ def choose_suitable_grasp_pose(
     return best
 
 
-def move_right_ee_by_manual_waypoints(
+def _get_part_pose_or_log(part_monitor, part_name, logger):
+    part_pose = part_monitor.get_part_pose(part_name)
+    if part_pose is None:
+        states = part_monitor.get_part_states() or {}
+        available = sorted((states.get("parts") or {}).keys())
+        logger.error(f"Part '{part_name}' not found. Available parts: {available}")
+    return part_pose
+
+
+def _current_ee_world_pos(
+    controller,
+    side,
+    base_in_world_pos=DEFAULT_BASE_IN_WORLD_POS,
+    world_to_base_quat_wxyz=DEFAULT_WORLD_TO_BASE_QUAT_WXYZ,
+):
+    ee_pose = controller.get_ee_pose(side)
+    if ee_pose is None:
+        return None
+    ee_pose = np.asarray(ee_pose, dtype=float)
+    return transform_base_point_to_world(ee_pose[:3], base_in_world_pos, world_to_base_quat_wxyz)
+
+
+def _finger_grasp_reference_world(controller, side, timeout=DEFAULT_GRASP_SUCCESS_FINGER_TIMEOUT):
+    if float(timeout) > 0.0 and hasattr(controller, "wait_for_finger_link_states"):
+        controller.wait_for_finger_link_states(timeout=float(timeout))
+    if not hasattr(controller, "get_finger_link_pose"):
+        return None, "none"
+
+    prefix = "R" if side == "right" else "L"
+    candidates = [f"{prefix}_finger1_link", f"{prefix}_finger2_link"]
+    points = []
+    for link_name in candidates:
+        pose = controller.get_finger_link_pose(link_name)
+        if pose and pose.get("pos") is not None:
+            points.append(np.asarray(pose["pos"], dtype=float))
+    if len(points) >= 2:
+        return sum(points) / float(len(points)), "finger_midpoint"
+    if len(points) == 1:
+        return points[0], "finger_single"
+
+    fallback = controller.get_finger_link_pose(f"{prefix}_sixforce_link")
+    if fallback and fallback.get("pos") is not None:
+        return np.asarray(fallback["pos"], dtype=float), "finger_single"
+    return None, "none"
+
+
+def _check_grasp_success_after_lift(
+    controller,
+    part_monitor,
+    part_name,
+    part_pose_before_lift,
+    side,
+    min_lift_delta=DEFAULT_GRASP_SUCCESS_MIN_LIFT_DELTA,
+    max_part_to_ee_dist=DEFAULT_GRASP_SUCCESS_MAX_PART_TO_EE_DIST,
+    part_state_timeout=DEFAULT_GRASP_SUCCESS_PART_STATE_TIMEOUT,
+    finger_timeout=DEFAULT_GRASP_SUCCESS_FINGER_TIMEOUT,
+    base_in_world_pos=DEFAULT_BASE_IN_WORLD_POS,
+    world_to_base_quat_wxyz=DEFAULT_WORLD_TO_BASE_QUAT_WXYZ,
+    last_part_state_seq=None,
+):
+    logger = controller.get_logger()
+    if last_part_state_seq is not None and float(part_state_timeout) > 0.0:
+        part_monitor.wait_for_new_part_states(last_part_state_seq, timeout=float(part_state_timeout))
+    after_pose = part_monitor.get_part_pose(part_name)
+    if after_pose is None:
+        logger.error(f"Grasp success check failed: part '{part_name}' not found after lift")
+        return {
+            "success": False,
+            "part_pose_after": None,
+            "lift_delta": float("nan"),
+            "part_to_ref_dist": None,
+            "ref_type": "none",
+            "ref_world": None,
+        }
+
+    before_pos = np.asarray(part_pose_before_lift["pos"], dtype=float)
+    after_pos = np.asarray(after_pose["pos"], dtype=float)
+    lift_delta = float(after_pos[2] - before_pos[2])
+
+    ref_world, ref_type = _finger_grasp_reference_world(controller, side, timeout=finger_timeout)
+    if ref_world is None:
+        ref_world = _current_ee_world_pos(controller, side, base_in_world_pos, world_to_base_quat_wxyz)
+        ref_type = "ee" if ref_world is not None else "none"
+
+    part_to_ref_dist = None
+    if ref_world is not None:
+        ref_world = np.asarray(ref_world, dtype=float)
+        part_to_ref_dist = float(np.linalg.norm(after_pos - ref_world))
+
+    lift_ok = lift_delta >= float(min_lift_delta)
+    near_ok = part_to_ref_dist is not None and part_to_ref_dist <= float(max_part_to_ee_dist)
+    success = bool(lift_ok and near_ok)
+    logger.info(
+        f"Grasp success check: before={_format_vec(before_pos)}, after={_format_vec(after_pos)}, "
+        f"lift_delta={lift_delta:.4f}m/{float(min_lift_delta):.4f}m, "
+        f"ref_type={ref_type}, ref_world={_format_vec(ref_world) if ref_world is not None else 'None'}, "
+        f"part_to_ref={part_to_ref_dist if part_to_ref_dist is not None else float('nan'):.4f}m/"
+        f"{float(max_part_to_ee_dist):.4f}m, success={success}"
+    )
+    if not success:
+        reasons = []
+        if not lift_ok:
+            reasons.append("lift_delta_too_small")
+        if not near_ok:
+            reasons.append("part_not_near_gripper")
+        logger.warning(f"Grasp success check failed: {reasons}")
+    return {
+        "success": success,
+        "part_pose_after": after_pose,
+        "lift_delta": lift_delta,
+        "part_to_ref_dist": part_to_ref_dist,
+        "ref_type": ref_type,
+        "ref_world": ref_world,
+    }
+
+
+def _plan_grasp_stages(
+    controller,
+    part_pose,
+    side,
+    auto_grasp,
+    approach_offset_world,
+    descend_offset_world,
+    lift_offset_world,
+    ee_rpy_deg,
+    ee_rpy_delta_deg,
+    tilt_base_x_deg,
+    tilt_base_y_deg,
+    rot_weight,
+    unconstrain_rot_z,
+    unlock_waist,
+    joint_limit_margin,
+    world_to_base_quat_wxyz,
+    base_in_world_pos,
+    grasp_radius,
+    grasp_lift_height,
+    grasp_pregrasp_height,
+    grasp_azimuth_count,
+    grasp_elevation_count,
+    gripper_forward_axis_ee,
+    grasp_target_offset_world,
+    grasp_descend_after_target_world,
+    grasp_min_table_angle_deg,
+    position_tolerance,
+    require_ik_ok,
+):
+    current_ee_pose = controller.get_ee_pose(side)
+    if current_ee_pose is None:
+        controller.get_logger().error(f"No {side} EE pose available from IK")
+        return None
+    current_ee_pose = np.asarray(current_ee_pose, dtype=float)
+    part_pos = np.asarray(part_pose["pos"], dtype=float)
+    part_base = transform_world_point_to_base(part_pos, base_in_world_pos, world_to_base_quat_wxyz)
+    stages = []
+    candidate = None
+
+    if auto_grasp:
+        candidate = choose_suitable_grasp_pose(
+            controller,
+            part_pose,
+            side=side,
+            current_ee_pose=current_ee_pose,
+            radius=grasp_radius,
+            lift_height=grasp_lift_height,
+            pregrasp_height=grasp_pregrasp_height,
+            target_offset_world=grasp_target_offset_world,
+            descend_after_target_world=grasp_descend_after_target_world,
+            min_table_angle_deg=grasp_min_table_angle_deg,
+            azimuth_count=grasp_azimuth_count,
+            elevation_count=grasp_elevation_count,
+            rot_weight=rot_weight,
+            unconstrain_rot_z=unconstrain_rot_z,
+            unlock_waist=unlock_waist,
+            joint_limit_margin=joint_limit_margin,
+            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+            base_in_world_pos=base_in_world_pos,
+            gripper_forward_axis_ee=gripper_forward_axis_ee,
+            position_tolerance=position_tolerance,
+            require_ik_ok=require_ik_ok,
+        )
+        if candidate is None:
+            controller.get_logger().error("No IK-valid auto grasp candidate found")
+            return None
+        stages = candidate["stages"]
+    else:
+        target_rpy = _target_rpy_from_args(
+            current_ee_pose,
+            ee_rpy_deg,
+            ee_rpy_delta_deg,
+            tilt_base_x_deg,
+            tilt_base_y_deg,
+        )
+        offsets = {
+            "approach": np.asarray(approach_offset_world, dtype=float),
+            "descend": np.asarray(descend_offset_world, dtype=float),
+            "lift": np.asarray(lift_offset_world, dtype=float),
+        }
+        seed = None
+        controller.get_logger().info(f"Target EE rpy base: {_format_vec(target_rpy)}")
+        for label, offset in offsets.items():
+            target_world = part_pos + offset
+            target_base = transform_world_point_to_base(target_world, base_in_world_pos, world_to_base_quat_wxyz)
+            target_pose = np.concatenate([target_base, target_rpy])
+            result = _solve_ee_target(
+                controller,
+                side,
+                label,
+                target_pose,
+                rot_weight=rot_weight,
+                unlock_waist=unlock_waist,
+                joint_limit_margin=joint_limit_margin,
+                seed_joint_targets=seed,
+                unconstrain_rot_z=unconstrain_rot_z,
+                position_tolerance=position_tolerance,
+            )
+            result["target_world"] = target_world
+            result["target_base"] = target_base
+            result["debug_pose"] = _tcp_debug_pose(
+                target_base,
+                target_rpy,
+                gripper_forward_axis_ee=gripper_forward_axis_ee,
+                base_in_world_pos=base_in_world_pos,
+                world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+            )
+            stages.append(result)
+            seed = result["joint_targets"]
+
+    return {
+        "part_pose": part_pose,
+        "part_pos": part_pos,
+        "part_base": part_base,
+        "current_ee_pose": current_ee_pose,
+        "stages": stages,
+        "candidate": candidate,
+    }
+
+
+def _log_grasp_plan(
+    controller,
+    plan,
+    part_name,
+    side,
+    rot_weight,
+    unlock_waist,
+    base_in_world_pos,
+    world_to_base_quat_wxyz,
+    gripper_forward_axis_ee,
+    grasp_radius,
+    attempt_index=None,
+    max_attempts=None,
+):
+    prefix = f"Attempt {attempt_index}/{max_attempts}: " if attempt_index is not None else ""
+    controller.get_logger().info(f"{prefix}Target part: {part_name}")
+    controller.get_logger().info(f"{prefix}Part world pos: {_format_vec(plan['part_pos'])}")
+    controller.get_logger().info(f"{prefix}Part base pos: {_format_vec(plan['part_base'])}")
+    controller.get_logger().info(
+        f"{prefix}Base world pos: {_format_vec(base_in_world_pos)}, "
+        f"world_to_base_quat_wxyz={_format_vec(world_to_base_quat_wxyz)}"
+    )
+    controller.get_logger().info(f"{prefix}Current {side} EE base pose: {_format_vec(plan['current_ee_pose'])}")
+    _log_actual_ee_debug(
+        controller,
+        side,
+        f"attempt_{attempt_index}_start" if attempt_index is not None else "start",
+        gripper_forward_axis_ee=gripper_forward_axis_ee,
+        radius=grasp_radius,
+        base_in_world_pos=base_in_world_pos,
+        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+    )
+    controller.get_logger().info(f"{prefix}Rot weight: {float(rot_weight):.3f}, unlock_waist={unlock_waist}")
+
+    candidate = plan.get("candidate")
+    if candidate is None:
+        return
+    controller.get_logger().info(
+        f"{prefix}Auto grasp samples={candidate['sample_count']}, valid={candidate['valid_count']}, "
+        f"score={candidate['score']:.6f}, target_pos_world={_format_vec(candidate['target_pos_world'])}, "
+        f"target_pos_base={_format_vec(transform_world_point_to_base(candidate['target_pos_world'], base_in_world_pos, world_to_base_quat_wxyz))}"
+    )
+    controller.get_logger().info(
+        f"{prefix}Auto grasp direction_world={_format_vec(candidate['direction_world'])}, "
+        f"direction_base={_format_vec(candidate['direction_base'])}, "
+        f"forward_world={_format_vec(candidate['forward_world'])}, "
+        f"forward_base={_format_vec(candidate['forward_base'])}"
+    )
+    controller.get_logger().info(
+        f"{prefix}Auto grasp pregrasp_world={_format_vec(candidate['pregrasp_world'])}, "
+        f"pregrasp_base={_format_vec(candidate['pregrasp_base'])}, "
+        f"ee_world={_format_vec(candidate['ee_world'])}, ee_base={_format_vec(candidate['ee_base'])}, "
+        f"descend_world={_format_vec(candidate['descend_world'])}, descend_base={_format_vec(candidate['descend_base'])}, "
+        f"lift_world={_format_vec(candidate['lift_world'])}, lift_base={_format_vec(candidate['lift_base'])}, "
+        f"ee_rpy_base={_format_vec(candidate['ee_rpy_base'])}, "
+        f"tcp_z_down={candidate['tcp_z_world_down_alignment']:.4f}, xy_rot_balance={candidate['xy_rot_balance_penalty']:.4f}"
+    )
+
+
+def _validate_stages_for_execution(controller, stages, require_ik_ok, dry_run=False):
+    ok_to_execute = True
+    for stage in stages:
+        controller.get_logger().info(
+            f"{stage['label']}: sample_world={_format_vec(stage['target_world'])}, "
+            f"sample_base={_format_vec(stage['target_base'])}, pos_err={stage['pos_err']:.6f}m, "
+            f"rot_err={stage['rot_err']:.6f}rad, ik_ok={stage['ik_ok']}, violations={stage['violations']}"
+        )
+        if "debug_pose" in stage:
+            _log_grasp_debug(controller, stage["label"], stage["debug_pose"], prefix="target ")
+        if stage["joint_targets"] is None:
+            controller.get_logger().error(f"{stage['label']} IK failed: {stage['diagnostics']}")
+            ok_to_execute = False
+        if require_ik_ok and not stage["ik_ok"]:
+            controller.get_logger().error(f"{stage['label']} IK did not report success: {stage['diagnostics']}")
+            ok_to_execute = False
+        if not stage["position_ok"]:
+            controller.get_logger().error(
+                f"{stage['label']} position error too large: "
+                f"{stage['pos_err']:.6f}m > {stage['position_tolerance']:.6f}m"
+            )
+            ok_to_execute = False
+        if stage["joint_targets"] is not None:
+            joint_text = ", ".join(
+                f"{name}={float(value):+.4f}"
+                for name, value in stage["joint_targets"].items()
+            )
+            controller.get_logger().info(f"{stage['label']} joint_targets: {joint_text}")
+        if stage["violations"]:
+            for name, value, lo, hi in stage["violations"]:
+                controller.get_logger().error(f"{stage['label']} would exceed {name}: {value:.4f} not in [{lo}, {hi}]")
+            ok_to_execute = False
+
+    if dry_run:
+        for stage in stages:
+            print(
+                f"{stage['label']}: pose={stage['pose'].tolist()} "
+                f"pos_err={stage['pos_err']:.6f} rot_err={stage['rot_err']:.6f} "
+                f"violations={stage['violations']} diagnostics={stage['diagnostics']}"
+            )
+            print(f"{stage['label']}_joint_targets={stage['joint_targets']}")
+    return ok_to_execute
+
+
+def _stage_map_or_log(controller, stages, required_labels, context):
+    stage_map = {stage["label"]: stage for stage in stages}
+    if len(stage_map) != len(stages):
+        labels = [stage["label"] for stage in stages]
+        controller.get_logger().error(f"Duplicate stage labels found: {labels}")
+        return None
+    if not _require_stage_labels(stage_map, required_labels, controller.get_logger(), context):
+        return None
+    return stage_map
+
+
+def _execute_grasp_once(
+    controller,
+    part_monitor,
+    part_name,
+    part_pose_before_lift,
+    stage_map,
+    side,
+    auto_grasp,
+    duration_per_step,
+    gripper_duration,
+    timeout,
+    no_close_grip,
+    stop_after_open,
+    grasp_success_check,
+    grasp_success_min_lift_delta,
+    grasp_success_max_part_to_ee_dist,
+    grasp_success_part_state_timeout,
+    grasp_success_finger_timeout,
+    base_in_world_pos,
+    world_to_base_quat_wxyz,
+    gripper_forward_axis_ee,
+    grasp_radius,
+):
+    if auto_grasp:
+        if not controller.move_to_pose(stage_map["pregrasp"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+            controller.get_logger().error("Pregrasp trajectory failed")
+            return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
+        _log_actual_ee_debug(
+            controller,
+            side,
+            "after_pregrasp_move",
+            gripper_forward_axis_ee=gripper_forward_axis_ee,
+            radius=grasp_radius,
+            base_in_world_pos=base_in_world_pos,
+            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+        )
+
+        controller.get_logger().info(f"Open {side} gripper")
+        if not controller.open_grip(side, wait=True, timeout=max(timeout, gripper_duration)):
+            controller.get_logger().error(f"Open {side} gripper failed")
+            return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
+
+        if stop_after_open:
+            controller.get_logger().info("Stop after approach/open because --stop-after-open was requested")
+            return {"ok": True, "grasp_success": None, "lift_stage": None, "check": None}
+
+        if not controller.move_to_pose(stage_map["grasp"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+            controller.get_logger().error("Grasp trajectory failed")
+            return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
+        _log_actual_ee_debug(
+            controller,
+            side,
+            "after_grasp_move",
+            gripper_forward_axis_ee=gripper_forward_axis_ee,
+            radius=grasp_radius,
+            base_in_world_pos=base_in_world_pos,
+            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+        )
+
+        if not controller.move_to_pose(stage_map["descend_after_grasp"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+            controller.get_logger().error("Descend-after-grasp trajectory failed")
+            return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
+        _log_actual_ee_debug(
+            controller,
+            side,
+            "after_descend_after_grasp_move",
+            gripper_forward_axis_ee=gripper_forward_axis_ee,
+            radius=grasp_radius,
+            base_in_world_pos=base_in_world_pos,
+            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+        )
+    else:
+        if not controller.move_to_pose(stage_map["approach"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+            controller.get_logger().error("Approach trajectory failed")
+            return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
+        _log_actual_ee_debug(
+            controller,
+            side,
+            "after_approach_move",
+            gripper_forward_axis_ee=gripper_forward_axis_ee,
+            radius=grasp_radius,
+            base_in_world_pos=base_in_world_pos,
+            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+        )
+
+        controller.get_logger().info(f"Open {side} gripper")
+        if not controller.open_grip(side, wait=True, timeout=max(timeout, gripper_duration)):
+            controller.get_logger().error(f"Open {side} gripper failed")
+            return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
+
+        if stop_after_open:
+            controller.get_logger().info("Stop after approach/open because --stop-after-open was requested")
+            return {"ok": True, "grasp_success": None, "lift_stage": None, "check": None}
+
+        if not controller.move_to_pose(stage_map["descend"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+            controller.get_logger().error("Descend trajectory failed")
+            return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
+        _log_actual_ee_debug(
+            controller,
+            side,
+            "after_descend_move",
+            gripper_forward_axis_ee=gripper_forward_axis_ee,
+            radius=grasp_radius,
+            base_in_world_pos=base_in_world_pos,
+            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+        )
+
+    if no_close_grip:
+        controller.get_logger().info("Skip close/lift because --no-close-grip was requested")
+        return {"ok": True, "grasp_success": None, "lift_stage": None, "check": None}
+
+    controller.get_logger().info(f"Close {side} gripper")
+    if not controller.close_grip(side, wait=True, timeout=max(timeout, gripper_duration)):
+        controller.get_logger().error(f"Close {side} gripper failed")
+        return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
+
+    if grasp_success_check and hasattr(part_monitor, "get_update_seq"):
+        part_state_seq_before_lift = part_monitor.get_update_seq()
+    else:
+        part_state_seq_before_lift = None
+
+    if not controller.move_to_pose(stage_map["lift"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+        controller.get_logger().error("Lift trajectory failed")
+        return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
+    _log_actual_ee_debug(
+        controller,
+        side,
+        "after_lift_move",
+        gripper_forward_axis_ee=gripper_forward_axis_ee,
+        radius=grasp_radius,
+        base_in_world_pos=base_in_world_pos,
+        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+    )
+
+    if not grasp_success_check:
+        return {"ok": True, "grasp_success": True, "lift_stage": stage_map["lift"], "check": None}
+
+    check = _check_grasp_success_after_lift(
+        controller,
+        part_monitor,
+        part_name,
+        part_pose_before_lift,
+        side,
+        min_lift_delta=grasp_success_min_lift_delta,
+        max_part_to_ee_dist=grasp_success_max_part_to_ee_dist,
+        part_state_timeout=grasp_success_part_state_timeout,
+        finger_timeout=grasp_success_finger_timeout,
+        base_in_world_pos=base_in_world_pos,
+        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+        last_part_state_seq=part_state_seq_before_lift,
+    )
+    return {"ok": True, "grasp_success": bool(check["success"]), "lift_stage": stage_map["lift"], "check": check}
+
+
+def _execute_place(
+    controller,
+    side,
+    lift_stage,
+    place_box_world_pos,
+    place_exit_left_offset_world,
+    place_approach_height,
+    place_release_height,
+    place_lift_height,
+    duration_per_step,
+    gripper_duration,
+    timeout,
+    rot_weight,
+    unlock_waist,
+    joint_limit_margin,
+    unconstrain_rot_z,
+    world_to_base_quat_wxyz,
+    base_in_world_pos,
+    gripper_forward_axis_ee,
+    grasp_radius,
+    position_tolerance,
+    require_ik_ok,
+):
+    ee_rpy_base = np.asarray(lift_stage["pose"][3:], dtype=float)
+    place_stages = solve_place_waypoints(
+        controller,
+        side,
+        place_box_world_pos,
+        ee_rpy_base,
+        rot_weight=rot_weight,
+        unlock_waist=unlock_waist,
+        joint_limit_margin=joint_limit_margin,
+        seed_joint_targets=lift_stage.get("joint_targets"),
+        unconstrain_rot_z=unconstrain_rot_z,
+        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+        base_in_world_pos=base_in_world_pos,
+        gripper_forward_axis_ee=gripper_forward_axis_ee,
+        exit_left_offset_world=place_exit_left_offset_world,
+        place_approach_height=place_approach_height,
+        place_release_height=place_release_height,
+        place_lift_height=place_lift_height,
+        position_tolerance=position_tolerance,
+    )
+    controller.get_logger().info(f"Place box world pos: {_format_vec(place_box_world_pos)}")
+    controller.get_logger().info(f"Place exit-left offset world: {_format_vec(place_exit_left_offset_world)}")
+    if not _validate_stages_for_execution(controller, place_stages, require_ik_ok, dry_run=False):
+        return False
+    stage_map = _stage_map_or_log(
+        controller,
+        place_stages,
+        ("place_approach", "place_release", "place_lift", "place_exit_left"),
+        "place",
+    )
+    if stage_map is None:
+        return False
+
+    if not controller.move_to_pose(stage_map["place_approach"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+        controller.get_logger().error("Place approach trajectory failed")
+        return False
+    _log_actual_ee_debug(
+        controller,
+        side,
+        "after_place_approach_move",
+        gripper_forward_axis_ee=gripper_forward_axis_ee,
+        radius=grasp_radius,
+        base_in_world_pos=base_in_world_pos,
+        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+    )
+
+    if not controller.move_to_pose(stage_map["place_release"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+        controller.get_logger().error("Place release trajectory failed")
+        return False
+    _log_actual_ee_debug(
+        controller,
+        side,
+        "after_place_release_move",
+        gripper_forward_axis_ee=gripper_forward_axis_ee,
+        radius=grasp_radius,
+        base_in_world_pos=base_in_world_pos,
+        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+    )
+
+    controller.get_logger().info(f"Open {side} gripper to release part")
+    if not controller.open_grip(side, wait=True, timeout=max(timeout, gripper_duration)):
+        controller.get_logger().error(f"Open {side} gripper failed")
+        return False
+
+    if not controller.move_to_pose(stage_map["place_lift"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+        controller.get_logger().error("Place lift trajectory failed")
+        return False
+    _log_actual_ee_debug(
+        controller,
+        side,
+        "after_place_lift_move",
+        gripper_forward_axis_ee=gripper_forward_axis_ee,
+        radius=grasp_radius,
+        base_in_world_pos=base_in_world_pos,
+        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+    )
+
+    if not controller.move_to_pose(stage_map["place_exit_left"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+        controller.get_logger().error("Place exit-left trajectory failed")
+        return False
+    _log_actual_ee_debug(
+        controller,
+        side,
+        "after_place_exit_left_move",
+        gripper_forward_axis_ee=gripper_forward_axis_ee,
+        radius=grasp_radius,
+        base_in_world_pos=base_in_world_pos,
+        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+    )
+    return True
+
+
+def move_ee_by_waypoints(
     controller,
     part_monitor,
     part_name=DEFAULT_PART_NAME,
@@ -751,10 +1441,54 @@ def move_right_ee_by_manual_waypoints(
     grasp_target_offset_world=DEFAULT_GRASP_TARGET_OFFSET_WORLD,
     grasp_descend_after_target_world=DEFAULT_GRASP_DESCEND_AFTER_TARGET_WORLD,
     place_after_grasp=True,
-    place_box_world_pos=DEFAULT_RIGHT_BOX_WORLD_POS,
+    place_box_world_pos=None,
     place_exit_left_offset_world=DEFAULT_PLACE_EXIT_LEFT_OFFSET_WORLD,
+    place_approach_height=DEFAULT_PLACE_APPROACH_HEIGHT,
+    place_release_height=DEFAULT_PLACE_RELEASE_HEIGHT,
+    place_lift_height=DEFAULT_PLACE_LIFT_HEIGHT,
+    position_tolerance=DEFAULT_POSITION_TOLERANCE,
+    require_ik_ok=DEFAULT_REQUIRE_IK_OK,
+    grasp_max_attempts=DEFAULT_GRASP_MAX_ATTEMPTS,
+    grasp_success_check=DEFAULT_GRASP_SUCCESS_CHECK,
+    grasp_success_min_lift_delta=DEFAULT_GRASP_SUCCESS_MIN_LIFT_DELTA,
+    grasp_success_max_part_to_ee_dist=DEFAULT_GRASP_SUCCESS_MAX_PART_TO_EE_DIST,
+    grasp_success_part_state_timeout=DEFAULT_GRASP_SUCCESS_PART_STATE_TIMEOUT,
+    grasp_success_finger_timeout=DEFAULT_GRASP_SUCCESS_FINGER_TIMEOUT,
 ):
-    """直接以 TCP 为 EE 控制目标，按 waypoint 执行抓取；成功后可搬运到右侧箱子松爪并撤离。"""
+    """直接以 TCP 为 EE 控制目标，按 waypoint 执行抓取/放置，支持左右手与自动/手工路径。"""
+    if float(position_tolerance) <= 0.0:
+        controller.get_logger().error(f"position_tolerance must be positive, got {position_tolerance}")
+        return False
+    grasp_max_attempts = int(grasp_max_attempts)
+    if grasp_max_attempts < 1:
+        controller.get_logger().error(f"grasp_max_attempts must be >= 1, got {grasp_max_attempts}")
+        return False
+    if float(grasp_success_min_lift_delta) < 0.0:
+        controller.get_logger().error(
+            f"grasp_success_min_lift_delta must be non-negative, got {grasp_success_min_lift_delta}"
+        )
+        return False
+    if float(grasp_success_max_part_to_ee_dist) <= 0.0:
+        controller.get_logger().error(
+            f"grasp_success_max_part_to_ee_dist must be positive, got {grasp_success_max_part_to_ee_dist}"
+        )
+        return False
+    if float(grasp_success_finger_timeout) < 0.0:
+        controller.get_logger().error(
+            f"grasp_success_finger_timeout must be non-negative, got {grasp_success_finger_timeout}"
+        )
+        return False
+    if float(place_approach_height) < float(place_release_height):
+        controller.get_logger().warning(
+            f"place_approach_height {place_approach_height:.3f} < place_release_height {place_release_height:.3f}"
+        )
+    if float(place_lift_height) < float(place_release_height):
+        controller.get_logger().warning(
+            f"place_lift_height {place_lift_height:.3f} < place_release_height {place_release_height:.3f}"
+        )
+    if place_box_world_pos is None:
+        place_box_world_pos = _default_place_box_world_pos_for_part(part_name)
+
     if not controller.wait_for_state(timeout=timeout):
         return False
     if not part_monitor.wait_for_part_states(timeout=timeout):
@@ -762,373 +1496,293 @@ def move_right_ee_by_manual_waypoints(
     if not controller.initialize_ik():
         return False
 
-    part_pose = part_monitor.get_part_pose(part_name)
-    if part_pose is None:
-        states = part_monitor.get_part_states() or {}
-        available = sorted((states.get("parts") or {}).keys())
-        controller.get_logger().error(f"Part '{part_name}' not found. Available parts: {available}")
-        return False
-
-    current_ee_pose = controller.get_ee_pose(side)
-    if current_ee_pose is None:
-        controller.get_logger().error(f"No {side} EE pose available from IK")
-        return False
-    current_ee_pose = np.asarray(current_ee_pose, dtype=float)
-
-    part_pos = np.asarray(part_pose["pos"], dtype=float)
-    stages = []
-    part_base = transform_world_point_to_base(part_pos, base_in_world_pos, world_to_base_quat_wxyz)
-    controller.get_logger().info(f"Target part: {part_name}")
-    controller.get_logger().info(f"Part world pos: {_format_vec(part_pos)}")
-    controller.get_logger().info(f"Part base pos: {_format_vec(part_base)}")
-    controller.get_logger().info(
-        f"Base world pos: {_format_vec(base_in_world_pos)}, world_to_base_quat_wxyz={_format_vec(world_to_base_quat_wxyz)}"
-    )
-    controller.get_logger().info(f"Current {side} EE base pose: {_format_vec(current_ee_pose)}")
-    _log_actual_ee_debug(
-        controller,
-        side,
-        "start",
-        gripper_forward_axis_ee=gripper_forward_axis_ee,
-        radius=grasp_radius,
-        base_in_world_pos=base_in_world_pos,
-        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-    )
-    controller.get_logger().info(f"Rot weight: {float(rot_weight):.3f}, unlock_waist={unlock_waist}")
-
-    if auto_grasp:
-        candidate = choose_suitable_grasp_pose(
+    def plan_from_latest_part_pose(attempt_index=None):
+        part_pose = _get_part_pose_or_log(part_monitor, part_name, controller.get_logger())
+        if part_pose is None:
+            return None
+        plan = _plan_grasp_stages(
             controller,
             part_pose,
-            side=side,
-            current_ee_pose=current_ee_pose,
-            radius=grasp_radius,
-            lift_height=grasp_lift_height,
-            pregrasp_height=grasp_pregrasp_height,
-            target_offset_world=grasp_target_offset_world,
-            descend_after_target_world=grasp_descend_after_target_world,
-            min_table_angle_deg=grasp_min_table_angle_deg,
-            azimuth_count=grasp_azimuth_count,
-            elevation_count=grasp_elevation_count,
-            rot_weight=rot_weight,
-            unconstrain_rot_z=unconstrain_rot_z,
-            unlock_waist=unlock_waist,
-            joint_limit_margin=joint_limit_margin,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-            base_in_world_pos=base_in_world_pos,
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-        )
-        if candidate is None:
-            controller.get_logger().error("No IK-valid auto grasp candidate found")
-            return False
-        stages = candidate["stages"]
-        controller.get_logger().info(
-            f"Auto grasp samples={candidate['sample_count']}, valid={candidate['valid_count']}, "
-            f"score={candidate['score']:.6f}, target_pos_world={_format_vec(candidate['target_pos_world'])}, "
-            f"target_pos_base={_format_vec(transform_world_point_to_base(candidate['target_pos_world'], base_in_world_pos, world_to_base_quat_wxyz))}"
-        )
-        controller.get_logger().info(
-            f"Auto grasp direction_world={_format_vec(candidate['direction_world'])}, "
-            f"direction_base={_format_vec(candidate['direction_base'])}, "
-            f"forward_world={_format_vec(candidate['forward_world'])}, "
-            f"forward_base={_format_vec(candidate['forward_base'])}"
-        )
-        controller.get_logger().info(
-            f"Auto grasp pregrasp_world={_format_vec(candidate['pregrasp_world'])}, "
-            f"pregrasp_base={_format_vec(candidate['pregrasp_base'])}, "
-            f"ee_world={_format_vec(candidate['ee_world'])}, ee_base={_format_vec(candidate['ee_base'])}, "
-            f"descend_world={_format_vec(candidate['descend_world'])}, descend_base={_format_vec(candidate['descend_base'])}, "
-            f"lift_world={_format_vec(candidate['lift_world'])}, lift_base={_format_vec(candidate['lift_base'])}, "
-            f"ee_rpy_base={_format_vec(candidate['ee_rpy_base'])}, "
-            f"tcp_z_down={candidate['tcp_z_world_down_alignment']:.4f}, xy_rot_balance={candidate['xy_rot_balance_penalty']:.4f}"
-        )
-    else:
-        target_rpy = _target_rpy_from_args(
-            current_ee_pose,
+            side,
+            auto_grasp,
+            approach_offset_world,
+            descend_offset_world,
+            lift_offset_world,
             ee_rpy_deg,
             ee_rpy_delta_deg,
             tilt_base_x_deg,
             tilt_base_y_deg,
+            rot_weight,
+            unconstrain_rot_z,
+            unlock_waist,
+            joint_limit_margin,
+            world_to_base_quat_wxyz,
+            base_in_world_pos,
+            grasp_radius,
+            grasp_lift_height,
+            grasp_pregrasp_height,
+            grasp_azimuth_count,
+            grasp_elevation_count,
+            gripper_forward_axis_ee,
+            grasp_target_offset_world,
+            grasp_descend_after_target_world,
+            grasp_min_table_angle_deg,
+            position_tolerance,
+            require_ik_ok,
         )
-        offsets = {
-            "approach": np.asarray(approach_offset_world, dtype=float),
-            "descend": np.asarray(descend_offset_world, dtype=float),
-            "lift": np.asarray(lift_offset_world, dtype=float),
-        }
-        seed = None
-        controller.get_logger().info(f"Target EE rpy base: {_format_vec(target_rpy)}")
+        if plan is None:
+            if attempt_index is not None:
+                controller.get_logger().error(f"Attempt {attempt_index}/{grasp_max_attempts}: grasp planning failed")
+            return None
+        _log_grasp_plan(
+            controller,
+            plan,
+            part_name,
+            side,
+            rot_weight,
+            unlock_waist,
+            base_in_world_pos,
+            world_to_base_quat_wxyz,
+            gripper_forward_axis_ee,
+            grasp_radius,
+            attempt_index=attempt_index,
+            max_attempts=grasp_max_attempts if attempt_index is not None else None,
+        )
+        return plan
 
-        for label, offset in offsets.items():
-            target_world = part_pos + offset
-            target_base = transform_world_point_to_base(target_world, base_in_world_pos, world_to_base_quat_wxyz)
-            target_pose = np.concatenate([target_base, target_rpy])
-            result = _solve_ee_target(
+    if dry_run:
+        plan = plan_from_latest_part_pose()
+        if plan is None:
+            return False
+        stages = list(plan["stages"])
+        if place_after_grasp and not stop_after_open and not no_close_grip:
+            lift_stage = next((stage for stage in stages if stage["label"] == "lift"), None)
+            if lift_stage is None:
+                controller.get_logger().error("Dry run cannot plan place: lift stage is missing")
+                return False
+            ee_rpy_base = np.asarray(lift_stage["pose"][3:], dtype=float)
+            place_stages = solve_place_waypoints(
                 controller,
                 side,
-                label,
-                target_pose,
+                place_box_world_pos,
+                ee_rpy_base,
                 rot_weight=rot_weight,
                 unlock_waist=unlock_waist,
                 joint_limit_margin=joint_limit_margin,
-                seed_joint_targets=seed,
+                seed_joint_targets=lift_stage.get("joint_targets"),
                 unconstrain_rot_z=unconstrain_rot_z,
-            )
-            result["target_world"] = target_world
-            result["target_base"] = target_base
-            result["debug_pose"] = _tcp_debug_pose(
-                target_base,
-                target_rpy,
-                gripper_forward_axis_ee=gripper_forward_axis_ee,
-                base_in_world_pos=base_in_world_pos,
                 world_to_base_quat_wxyz=world_to_base_quat_wxyz,
+                base_in_world_pos=base_in_world_pos,
+                gripper_forward_axis_ee=gripper_forward_axis_ee,
+                exit_left_offset_world=place_exit_left_offset_world,
+                place_approach_height=place_approach_height,
+                place_release_height=place_release_height,
+                place_lift_height=place_lift_height,
+                position_tolerance=position_tolerance,
             )
-            stages.append(result)
-            seed = result["joint_targets"]
+            stages.extend(place_stages)
+            controller.get_logger().info(f"Place box world pos: {_format_vec(place_box_world_pos)}")
+            controller.get_logger().info(f"Place exit-left offset world: {_format_vec(place_exit_left_offset_world)}")
+        return _validate_stages_for_execution(controller, stages, require_ik_ok, dry_run=True)
 
-    if place_after_grasp and not stop_after_open and not no_close_grip:
-        lift_stage = next((stage for stage in stages if stage["label"] == "lift"), None)
-        ee_rpy_base = np.asarray((lift_stage or stages[-1])["pose"][3:], dtype=float)
-        place_stages = solve_place_waypoints(
-            controller,
-            side,
-            place_box_world_pos,
-            ee_rpy_base,
-            rot_weight=rot_weight,
-            unlock_waist=unlock_waist,
-            joint_limit_margin=joint_limit_margin,
-            seed_joint_targets=(lift_stage or {}).get("joint_targets"),
-            unconstrain_rot_z=unconstrain_rot_z,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-            base_in_world_pos=base_in_world_pos,
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            exit_left_offset_world=place_exit_left_offset_world,
-        )
-        stages.extend(place_stages)
-        controller.get_logger().info(f"Place box world pos: {_format_vec(place_box_world_pos)}")
-        controller.get_logger().info(f"Place exit-left offset world: {_format_vec(place_exit_left_offset_world)}")
-
-    ok_to_execute = True
-    for stage in stages:
-        controller.get_logger().info(
-            f"{stage['label']}: sample_world={_format_vec(stage['target_world'])}, "
-            f"sample_base={_format_vec(stage['target_base'])}, pos_err={stage['pos_err']:.6f}m, "
-            f"rot_err={stage['rot_err']:.6f}rad, ik_ok={stage['ik_ok']}, violations={stage['violations']}"
-        )
-        if "debug_pose" in stage:
-            _log_grasp_debug(controller, stage["label"], stage["debug_pose"], prefix="target ")
-        if stage["joint_targets"] is None:
-            controller.get_logger().error(f"{stage['label']} IK failed: {stage['diagnostics']}")
-            ok_to_execute = False
-        if not stage["position_ok"]:
-            controller.get_logger().error(
-                f"{stage['label']} position error too large: {stage['pos_err']:.6f}m > {DEFAULT_POSITION_TOLERANCE:.6f}m"
-            )
-            ok_to_execute = False
-        if stage["joint_targets"] is not None:
-            joint_text = ", ".join(
-                f"{name}={float(value):+.4f}"
-                for name, value in stage["joint_targets"].items()
-            )
-            controller.get_logger().info(f"{stage['label']} joint_targets: {joint_text}")
-        if stage["violations"]:
-            for name, value, lo, hi in stage["violations"]:
-                controller.get_logger().error(f"{stage['label']} would exceed {name}: {value:.4f} not in [{lo}, {hi}]")
-            ok_to_execute = False
-
-    if dry_run:
-        for stage in stages:
-            print(
-                f"{stage['label']}: pose={stage['pose'].tolist()} "
-                f"pos_err={stage['pos_err']:.6f} rot_err={stage['rot_err']:.6f} "
-                f"violations={stage['violations']} diagnostics={stage['diagnostics']}"
-            )
-            print(f"{stage['label']}_joint_targets={stage['joint_targets']}")
-        return ok_to_execute
-
-    if not ok_to_execute:
-        return False
-
-    stage_map = {stage["label"]: stage for stage in stages}
-    if auto_grasp:
-        controller.get_logger().info(f"Open {side} gripper")
-        if not controller.open_grip(side, wait=True, timeout=max(timeout, gripper_duration)):
-            controller.get_logger().error(f"Open {side} gripper failed")
+    for attempt in range(1, grasp_max_attempts + 1):
+        plan = plan_from_latest_part_pose(attempt_index=attempt)
+        if plan is None:
+            if attempt < grasp_max_attempts:
+                controller.get_logger().warning(f"Retry grasp planning with latest part pose ({attempt + 1}/{grasp_max_attempts})")
+                continue
             return False
 
-        if not controller.move_to_pose(stage_map["pregrasp"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-            controller.get_logger().error("Pregrasp trajectory failed")
+        stages = plan["stages"]
+        if not _validate_stages_for_execution(controller, stages, require_ik_ok, dry_run=False):
+            if attempt < grasp_max_attempts:
+                controller.get_logger().warning(f"Retry after invalid grasp plan ({attempt + 1}/{grasp_max_attempts})")
+                continue
             return False
-        _log_actual_ee_debug(
-            controller,
-            side,
-            "after_pregrasp_move",
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            radius=grasp_radius,
-            base_in_world_pos=base_in_world_pos,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-        )
 
-        if not controller.move_to_pose(stage_map["grasp"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-            controller.get_logger().error("Grasp trajectory failed")
+        required_labels = ("pregrasp", "grasp", "descend_after_grasp", "lift") if auto_grasp else ("approach", "descend", "lift")
+        stage_map = _stage_map_or_log(controller, stages, required_labels, "auto grasp" if auto_grasp else "manual grasp")
+        if stage_map is None:
             return False
-        _log_actual_ee_debug(
-            controller,
-            side,
-            "after_grasp_move",
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            radius=grasp_radius,
-            base_in_world_pos=base_in_world_pos,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-        )
 
-        if stop_after_open:
-            controller.get_logger().info("Stop after grasp/open because --stop-after-open was requested")
+        result = _execute_grasp_once(
+            controller,
+            part_monitor,
+            part_name,
+            plan["part_pose"],
+            stage_map,
+            side,
+            auto_grasp,
+            duration_per_step,
+            gripper_duration,
+            timeout,
+            no_close_grip,
+            stop_after_open,
+            grasp_success_check,
+            grasp_success_min_lift_delta,
+            grasp_success_max_part_to_ee_dist,
+            grasp_success_part_state_timeout,
+            grasp_success_finger_timeout,
+            base_in_world_pos,
+            world_to_base_quat_wxyz,
+            gripper_forward_axis_ee,
+            grasp_radius,
+        )
+        if not result["ok"]:
+            return False
+        if result["grasp_success"] is None:
+            return True
+        if result["grasp_success"]:
+            controller.get_logger().info(f"Grasp succeeded on attempt {attempt}/{grasp_max_attempts}")
+            if place_after_grasp:
+                if not _execute_place(
+                    controller,
+                    side,
+                    result["lift_stage"],
+                    place_box_world_pos,
+                    place_exit_left_offset_world,
+                    place_approach_height,
+                    place_release_height,
+                    place_lift_height,
+                    duration_per_step,
+                    gripper_duration,
+                    timeout,
+                    rot_weight,
+                    unlock_waist,
+                    joint_limit_margin,
+                    unconstrain_rot_z,
+                    world_to_base_quat_wxyz,
+                    base_in_world_pos,
+                    gripper_forward_axis_ee,
+                    grasp_radius,
+                    position_tolerance,
+                    require_ik_ok,
+                ):
+                    return False
+
+            controller.get_logger().info("Move back to READY_POSE after grasp/place sequence")
+            if not controller.move_to_pose(READY_POSE, duration_sec=3.0, wait=True, unlock_required_joints=True):
+                controller.get_logger().error("Move back to READY_POSE failed")
+                return False
+
+            controller.get_logger().info("EE grasp/place sequence completed" if place_after_grasp else "EE grasp sequence completed")
             return True
 
-        if not controller.move_to_pose(stage_map["descend_after_grasp"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-            controller.get_logger().error("Descend-after-grasp trajectory failed")
-            return False
-        _log_actual_ee_debug(
-            controller,
-            side,
-            "after_descend_after_grasp_move",
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            radius=grasp_radius,
-            base_in_world_pos=base_in_world_pos,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-        )
+        if attempt < grasp_max_attempts:
+            controller.get_logger().warning(
+                f"Grasp failed on attempt {attempt}/{grasp_max_attempts}; open gripper and retry with latest part pose"
+            )
+            controller.open_grip(side, wait=True, timeout=max(timeout, gripper_duration))
+            continue
 
-        if no_close_grip:
-            controller.get_logger().info("Skip close/lift because --no-close-grip was requested")
-            return True
-    else:
-        if not controller.move_to_pose(stage_map["approach"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-            controller.get_logger().error("Approach trajectory failed")
-            return False
-        _log_actual_ee_debug(
-            controller,
-            side,
-            "after_approach_move",
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            radius=grasp_radius,
-            base_in_world_pos=base_in_world_pos,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-        )
-
-        controller.get_logger().info(f"Open {side} gripper")
-        if not controller.open_grip(side, wait=True, timeout=max(timeout, gripper_duration)):
-            controller.get_logger().error(f"Open {side} gripper failed")
-            return False
-
-        if stop_after_open:
-            controller.get_logger().info("Stop after approach/open because --stop-after-open was requested")
-            return True
-
-        if not controller.move_to_pose(stage_map["descend"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-            controller.get_logger().error("Descend trajectory failed")
-            return False
-        _log_actual_ee_debug(
-            controller,
-            side,
-            "after_descend_move",
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            radius=grasp_radius,
-            base_in_world_pos=base_in_world_pos,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-        )
-
-        if no_close_grip:
-            controller.get_logger().info("Skip close/lift because --no-close-grip was requested")
-            return True
-
-    controller.get_logger().info(f"Close {side} gripper")
-    if not controller.close_grip(side, wait=True, timeout=max(timeout, gripper_duration)):
-        controller.get_logger().error(f"Close {side} gripper failed")
+        controller.get_logger().error(f"Grasp failed after {grasp_max_attempts} attempt(s); not executing place")
+        controller.open_grip(side, wait=True, timeout=max(timeout, gripper_duration))
         return False
 
-    if not controller.move_to_pose(stage_map["lift"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-        controller.get_logger().error("Lift trajectory failed")
-        return False
-    _log_actual_ee_debug(
-        controller,
-        side,
-        "after_lift_move",
-        gripper_forward_axis_ee=gripper_forward_axis_ee,
-        radius=grasp_radius,
-        base_in_world_pos=base_in_world_pos,
-        world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-    )
+    return False
 
-    if place_after_grasp:
-        if not controller.move_to_pose(stage_map["place_approach"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-            controller.get_logger().error("Place approach trajectory failed")
-            return False
-        _log_actual_ee_debug(
-            controller,
-            side,
-            "after_place_approach_move",
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            radius=grasp_radius,
-            base_in_world_pos=base_in_world_pos,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-        )
 
-        if not controller.move_to_pose(stage_map["place_release"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-            controller.get_logger().error("Place release trajectory failed")
-            return False
-        _log_actual_ee_debug(
-            controller,
-            side,
-            "after_place_release_move",
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            radius=grasp_radius,
-            base_in_world_pos=base_in_world_pos,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-        )
-
-        controller.get_logger().info(f"Open {side} gripper to release part")
-        if not controller.open_grip(side, wait=True, timeout=max(timeout, gripper_duration)):
-            controller.get_logger().error(f"Open {side} gripper failed")
-            return False
-
-        if not controller.move_to_pose(stage_map["place_lift"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-            controller.get_logger().error("Place lift trajectory failed")
-            return False
-        _log_actual_ee_debug(
-            controller,
-            side,
-            "after_place_lift_move",
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            radius=grasp_radius,
-            base_in_world_pos=base_in_world_pos,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-        )
-
-        if not controller.move_to_pose(stage_map["place_exit_left"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
-            controller.get_logger().error("Place exit-left trajectory failed")
-            return False
-        _log_actual_ee_debug(
-            controller,
-            side,
-            "after_place_exit_left_move",
-            gripper_forward_axis_ee=gripper_forward_axis_ee,
-            radius=grasp_radius,
-            base_in_world_pos=base_in_world_pos,
-            world_to_base_quat_wxyz=world_to_base_quat_wxyz,
-        )
-
-    controller.get_logger().info("Move back to READY_POSE after grasp/place sequence")
-    if not controller.move_to_pose(READY_POSE, duration_sec=3.0, wait=True, unlock_required_joints=True):
-        controller.get_logger().error("Move back to READY_POSE failed")
+def randomize_part_positions(
+    controller,
+    part_monitor,
+    part_names=DEFAULT_PART_SEQUENCE,
+    topic=DEFAULT_RANDOMIZE_PARTS_TOPIC,
+    timeout=5.0,
+    settle_time=0.5,
+    seed=None,
+):
+    """通过 ROS2 bridge 请求仿真随机化零件位置，并等待 part_states 更新。"""
+    part_names = tuple(part_names)
+    if not part_names:
+        controller.get_logger().error("part_names must not be empty")
         return False
 
-    controller.get_logger().info("EE grasp/place sequence completed" if place_after_grasp else "EE grasp sequence completed")
+    last_seq = part_monitor.get_update_seq() if hasattr(part_monitor, "get_update_seq") else None
+    pub = controller.create_publisher(String, topic, 1)
+    time.sleep(0.2)
+
+    if seed is None:
+        seed = time.time_ns() & 0xFFFFFFFF
+    payload = {"parts": list(part_names), "seed": int(seed)}
+    msg = String()
+    msg.data = json.dumps(payload)
+    controller.get_logger().info(f"Randomize part positions via {topic}: {msg.data}")
+    pub.publish(msg)
+
+    if last_seq is not None and float(timeout) > 0.0:
+        if not part_monitor.wait_for_new_part_states(last_seq, timeout=float(timeout)):
+            controller.get_logger().error("No part_states update received after randomize request")
+            return False
+    if float(settle_time) > 0.0:
+        time.sleep(float(settle_time))
     return True
 
 
+def move_parts_by_waypoints(
+    controller,
+    part_monitor,
+    part_names=DEFAULT_PART_SEQUENCE,
+    randomize_before=True,
+    randomize_topic=DEFAULT_RANDOMIZE_PARTS_TOPIC,
+    randomize_timeout=None,
+    randomize_settle_time=0.5,
+    randomize_seed=None,
+    **kwargs,
+):
+    """按顺序对多个零件执行同一套抓取/放置流程。"""
+    fallback_part_name = kwargs.pop("part_name", DEFAULT_PART_NAME)
+    if part_names is None:
+        part_names = (fallback_part_name,)
+    else:
+        part_names = tuple(part_names)
+    if not part_names:
+        controller.get_logger().error("part_names must not be empty")
+        return False
+
+    if randomize_before:
+        timeout = kwargs.get("timeout", 5.0) if randomize_timeout is None else randomize_timeout
+        if not randomize_part_positions(
+            controller,
+            part_monitor,
+            part_names=part_names,
+            topic=randomize_topic,
+            timeout=timeout,
+            settle_time=randomize_settle_time,
+            seed=randomize_seed,
+        ):
+            return False
+
+    for index, part_name in enumerate(part_names, start=1):
+        controller.get_logger().info(f"Start part {index}/{len(part_names)}: {part_name}")
+        ok = move_ee_by_waypoints(
+            controller,
+            part_monitor,
+            part_name=part_name,
+            **kwargs,
+        )
+        if not ok:
+            controller.get_logger().error(f"Part {index}/{len(part_names)} failed: {part_name}")
+            return False
+        controller.get_logger().info(f"Part {index}/{len(part_names)} completed: {part_name}")
+
+    controller.get_logger().info(f"Completed {len(part_names)} part(s): {list(part_names)}")
+    return True
+
+
+def move_right_ee_by_manual_waypoints(*args, **kwargs):
+    """Backward-compatible wrapper for move_ee_by_waypoints."""
+    return move_ee_by_waypoints(*args, **kwargs)
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Move Walker S2 right EE through manually specified grasp waypoints")
+    parser = argparse.ArgumentParser(description="Move Walker S2 EE through grasp/place waypoints")
     parser.add_argument("--part", default=DEFAULT_PART_NAME, help="零件名，例如 part_a_ori / part_a_red / part_b_blue / part_b_ori")
+    parser.add_argument("--all-parts", action="store_true", help="按默认顺序依次抓取四个零件")
+    parser.add_argument("--parts", nargs="+", default=None, help="自定义多零件抓取顺序；指定后会依次执行每个零件")
+    parser.add_argument("--randomize-parts", action=argparse.BooleanOptionalAction, default=True, help="多零件抓取前先通过 bridge 随机化零件位置")
+    parser.add_argument("--randomize-parts-topic", default=DEFAULT_RANDOMIZE_PARTS_TOPIC, help="零件随机化命令 topic")
+    parser.add_argument("--randomize-seed", type=int, default=None, help="零件随机化 seed；不指定则每次自动生成随机 seed")
+    parser.add_argument("--randomize-settle-time", type=float, default=0.5, help="随机化后等待物体状态稳定的时间，单位 s")
     parser.add_argument("--side", choices=("left", "right"), default="right", help="选择左手或右手抓取")
     parser.add_argument("--auto-grasp", action=argparse.BooleanOptionalAction, default=DEFAULT_AUTO_GRASP, help="在零件 world 坐标周围球面采样，自动选择 IK 可达抓取姿态")
     parser.add_argument("--approach-offset", type=float, nargs=3, default=DEFAULT_APPROACH_OFFSET_WORLD, metavar=("X", "Y", "Z"), help="approach EE 目标相对零件 world 坐标的偏移，单位 m")
@@ -1141,13 +1795,21 @@ def parse_args():
     parser.add_argument("--rot-weight", type=float, default=DEFAULT_ROT_WEIGHT, help="IK 姿态误差权重；0 表示位置优先")
     parser.add_argument("--unconstrain-rot-z", action=argparse.BooleanOptionalAction, default=DEFAULT_UNCONSTRAIN_ROT_Z, help="IK 姿态只约束 base-frame x/y 旋转误差，不约束 z 轴旋转")
     parser.add_argument("--joint-limit-margin-deg", type=float, default=np.rad2deg(DEFAULT_JOINT_LIMIT_MARGIN), help="关节限位安全裕量，单位度")
+    parser.add_argument("--position-tolerance", type=float, default=DEFAULT_POSITION_TOLERANCE, help="IK 位置误差容忍阈值，单位 m")
+    parser.add_argument("--require-ik-ok", action=argparse.BooleanOptionalAction, default=DEFAULT_REQUIRE_IK_OK, help="要求 IK solver 返回 success；--no-require-ik-ok 可恢复仅按位置误差/限位判定的调试策略")
     parser.add_argument("--duration", type=float, default=2.0, help="每段关节轨迹执行时间，单位 s")
     parser.add_argument("--gripper-duration", type=float, default=1.0, help="等待夹爪打开/闭合的超时时间，单位 s")
-    parser.add_argument("--unlock-waist", action=argparse.BooleanOptionalAction, default=DEFAULT_UNLOCK_WAIST, help="IK 求解时允许 waist_yaw_joint 参与右臂求解，并在下发时临时解锁腰部")
-    parser.add_argument("--stop-after-open", action="store_true", help="只执行 approach 和打开右夹爪，然后结束")
+    parser.add_argument("--unlock-waist", action=argparse.BooleanOptionalAction, default=DEFAULT_UNLOCK_WAIST, help="IK 求解时允许 waist_yaw_joint 参与所选手臂求解，并在下发时临时解锁腰部")
+    parser.add_argument("--stop-after-open", action="store_true", help="只执行 approach/pregrasp 和打开所选夹爪，然后结束")
     parser.add_argument("--no-close-grip", action="store_true", help="只执行 approach/open/descend，不闭合夹爪和抬起")
     parser.add_argument("--timeout", type=float, default=5.0, help="等待 ROS 状态 topic 的超时时间，单位 s")
     parser.add_argument("--grasp-radius", type=float, default=DEFAULT_GRASP_RADIUS, help="兼容旧参数；当前 IK 末端已经是 TCP，不再按该半径外推")
+    parser.add_argument("--grasp-max-attempts", type=int, default=DEFAULT_GRASP_MAX_ATTEMPTS, help="抓取总尝试次数；1 表示不重试")
+    parser.add_argument("--grasp-success-check", action=argparse.BooleanOptionalAction, default=DEFAULT_GRASP_SUCCESS_CHECK, help="close/lift 后检查零件是否被抓起；失败时重新读取零件位置并重试")
+    parser.add_argument("--grasp-success-min-lift-delta", type=float, default=DEFAULT_GRASP_SUCCESS_MIN_LIFT_DELTA, help="判断抓取成功所需的零件 world z 最小抬升量，单位 m")
+    parser.add_argument("--grasp-success-max-part-to-ee-dist", type=float, default=DEFAULT_GRASP_SUCCESS_MAX_PART_TO_EE_DIST, help="lift 后零件到夹爪参考点的最大允许距离，单位 m")
+    parser.add_argument("--grasp-success-part-state-timeout", type=float, default=DEFAULT_GRASP_SUCCESS_PART_STATE_TIMEOUT, help="lift 后等待下一帧 /sim/part_states 的时间，单位 s；0 表示不等待")
+    parser.add_argument("--grasp-success-finger-timeout", type=float, default=DEFAULT_GRASP_SUCCESS_FINGER_TIMEOUT, help="可选等待 /sim/finger_link_states 的时间，单位 s；0 表示使用 EE/TCP")
     parser.add_argument("--grasp-min-table-angle-deg", type=float, default=DEFAULT_GRASP_MIN_TABLE_ANGLE_DEG, help="采样方向相对桌面的最小仰角，单位度")
     parser.add_argument("--grasp-lift-height", type=float, default=DEFAULT_GRASP_LIFT_HEIGHT, help="抓取后 world z 方向抬升高度，单位 m")
     parser.add_argument("--grasp-pregrasp-height", type=float, default=DEFAULT_GRASP_PREGRASP_HEIGHT, help="auto-grasp 中抓取前零件上方路径点高度，单位 m")
@@ -1155,9 +1817,12 @@ def parse_args():
     parser.add_argument("--grasp-azimuth-count", type=int, default=DEFAULT_GRASP_SAMPLE_AZIMUTH_COUNT, help="球面方位角采样数量")
     parser.add_argument("--grasp-elevation-count", type=int, default=DEFAULT_GRASP_SAMPLE_ELEVATION_COUNT, help="球面仰角采样数量")
     parser.add_argument("--gripper-forward-axis-ee", type=float, nargs=3, default=DEFAULT_GRIPPER_FORWARD_AXIS_EE, metavar=("X", "Y", "Z"), help="EE 局部坐标中从 force sensor 指向夹具/TCP 的轴")
-    parser.add_argument("--place", action=argparse.BooleanOptionalAction, default=True, help="抓取成功并抬起后，水平移动到右侧箱子上方并松开夹爪")
-    parser.add_argument("--place-box-pos", type=float, nargs=3, default=DEFAULT_RIGHT_BOX_WORLD_POS, metavar=("X", "Y", "Z"), help="右侧箱子 world frame 位置，默认来自 walker_s2_pick_place.py")
-    parser.add_argument("--place-exit-left-offset", type=float, nargs=3, default=DEFAULT_PLACE_EXIT_LEFT_OFFSET_WORLD, metavar=("X", "Y", "Z"), help="松爪后先抬升，再按该 world 偏移向左离开箱体范围")
+    parser.add_argument("--place", action=argparse.BooleanOptionalAction, default=True, help="抓取成功并抬起后，移动到放置箱子上方并松开夹爪")
+    parser.add_argument("--place-box-pos", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"), help="放置箱子 world frame 位置；不指定时 A 类零件放位置 1，B 类零件放位置 2")
+    parser.add_argument("--place-approach-height", type=float, default=DEFAULT_PLACE_APPROACH_HEIGHT, help="place_approach 相对箱子 world z 的高度，单位 m")
+    parser.add_argument("--place-release-height", type=float, default=DEFAULT_PLACE_RELEASE_HEIGHT, help="place_release 相对箱子 world z 的高度，单位 m")
+    parser.add_argument("--place-lift-height", type=float, default=DEFAULT_PLACE_LIFT_HEIGHT, help="松爪后 place_lift 相对箱子 world z 的高度，单位 m")
+    parser.add_argument("--place-exit-left-offset", type=float, nargs=3, default=DEFAULT_PLACE_EXIT_LEFT_OFFSET_WORLD, metavar=("X", "Y", "Z"), help="松爪后先抬升，再按该 world 偏移离开箱体范围")
     parser.add_argument(
         "--base-pos",
         type=float,
@@ -1191,10 +1856,8 @@ def main():
     spin_thread.start()
 
     try:
-        ok = move_right_ee_by_manual_waypoints(
-            controller,
-            part_monitor,
-            part_name=args.part,
+        part_names = DEFAULT_PART_SEQUENCE if args.all_parts else args.parts
+        move_kwargs = dict(
             approach_offset_world=args.approach_offset,
             descend_offset_world=args.descend_offset,
             lift_offset_world=args.lift_offset,
@@ -1208,6 +1871,8 @@ def main():
             unconstrain_rot_z=args.unconstrain_rot_z,
             unlock_waist=args.unlock_waist,
             joint_limit_margin=np.deg2rad(args.joint_limit_margin_deg),
+            position_tolerance=args.position_tolerance,
+            require_ik_ok=args.require_ik_ok,
             no_close_grip=args.no_close_grip,
             stop_after_open=args.stop_after_open,
             timeout=args.timeout,
@@ -1217,6 +1882,12 @@ def main():
             auto_grasp=args.auto_grasp,
             side=args.side,
             grasp_radius=args.grasp_radius,
+            grasp_max_attempts=args.grasp_max_attempts,
+            grasp_success_check=args.grasp_success_check,
+            grasp_success_min_lift_delta=args.grasp_success_min_lift_delta,
+            grasp_success_max_part_to_ee_dist=args.grasp_success_max_part_to_ee_dist,
+            grasp_success_part_state_timeout=args.grasp_success_part_state_timeout,
+            grasp_success_finger_timeout=args.grasp_success_finger_timeout,
             grasp_min_table_angle_deg=args.grasp_min_table_angle_deg,
             grasp_lift_height=args.grasp_lift_height,
             grasp_pregrasp_height=args.grasp_pregrasp_height,
@@ -1227,7 +1898,29 @@ def main():
             place_after_grasp=args.place,
             place_box_world_pos=args.place_box_pos,
             place_exit_left_offset_world=args.place_exit_left_offset,
+            place_approach_height=args.place_approach_height,
+            place_release_height=args.place_release_height,
+            place_lift_height=args.place_lift_height,
         )
+        if part_names:
+            ok = move_parts_by_waypoints(
+                controller,
+                part_monitor,
+                part_names=part_names,
+                randomize_before=args.randomize_parts,
+                randomize_topic=args.randomize_parts_topic,
+                randomize_timeout=args.timeout,
+                randomize_settle_time=args.randomize_settle_time,
+                randomize_seed=args.randomize_seed,
+                **move_kwargs,
+            )
+        else:
+            ok = move_ee_by_waypoints(
+                controller,
+                part_monitor,
+                part_name=args.part,
+                **move_kwargs,
+            )
         if not ok:
             raise SystemExit(1)
     except KeyboardInterrupt:

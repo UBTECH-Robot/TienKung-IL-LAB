@@ -7,7 +7,7 @@ from pxr import Gf, Usd, UsdGeom
 
 import isaaclab.sim as sim_utils
 import isaaclab.envs.mdp as mdp
-from isaaclab.assets import AssetBaseCfg, ArticulationCfg
+from isaaclab.assets import AssetBaseCfg, ArticulationCfg, RigidObjectCfg
 from isaaclab.envs import ViewerCfg
 from isaaclab.managers import SceneEntityCfg, ObservationGroupCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -45,6 +45,25 @@ def _usd_asset_cfg(asset_cfg: dict) -> AssetBaseCfg:
             scale=tuple(asset_cfg.get("scale", (1.0, 1.0, 1.0))),
         ),
         init_state=AssetBaseCfg.InitialStateCfg(
+            pos=tuple(asset_cfg.get("pos", (0.0, 0.0, 0.0))),
+            rot=tuple(asset_cfg.get("rot", (1.0, 0.0, 0.0, 0.0))),
+        ),
+    )
+
+
+def _part_rigid_object_cfg(asset_cfg: dict) -> RigidObjectCfg:
+    """Create dynamic graspable part assets; keep table/box on _usd_asset_cfg."""
+    return RigidObjectCfg(
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=resolve_asset_path(asset_cfg["usd_path"]),
+            scale=tuple(asset_cfg.get("scale", (1.0, 1.0, 1.0))),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                disable_gravity=bool(asset_cfg.get("disable_gravity", False)),
+            ),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(mass=float(asset_cfg.get("mass", 0.05))),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(
             pos=tuple(asset_cfg.get("pos", (0.0, 0.0, 0.0))),
             rot=tuple(asset_cfg.get("rot", (1.0, 0.0, 0.0, 0.0))),
         ),
@@ -208,22 +227,90 @@ def _usd_prim_pose(prim) -> tuple[list[float], list[float]]:
     ])
 
 
-def _get_scene_asset_pose(env, part_name: str) -> tuple[list[float], list[float]]:
+def _prim_path_or_none(prim) -> str | None:
+    if prim is None:
+        return None
+    try:
+        if prim.IsValid():
+            return str(prim.GetPath())
+    except Exception:
+        return None
+    return None
+
+
+def _find_first_mesh_prim(root_prim):
+    if root_prim is None:
+        return None
+    try:
+        if root_prim.GetTypeName() == "Mesh":
+            return root_prim
+        for prim in Usd.PrimRange(root_prim):
+            if prim.GetTypeName() == "Mesh":
+                return prim
+    except Exception:
+        return None
+    return None
+
+
+def _get_scene_asset_pose_with_source(env, part_name: str) -> dict[str, Any]:
     asset = _asset_from_scene(env, part_name)
     data = getattr(asset, "data", None)
     if data is not None and hasattr(data, "root_pos_w") and hasattr(data, "root_quat_w"):
-        return _to_float_list(data.root_pos_w[0]), _quat_normalize(_to_float_list(data.root_quat_w[0]))
+        return {
+            "pos": _to_float_list(data.root_pos_w[0]),
+            "rot": _quat_normalize(_to_float_list(data.root_quat_w[0])),
+            "source": "asset_data.root_pos_w",
+            "prim_path": _prim_path_or_none(_prim_from_asset_or_stage(env, part_name)),
+        }
     if hasattr(asset, "get_world_pose"):
         pos, rot = asset.get_world_pose()
-        return _to_float_list(pos), _quat_normalize(_to_float_list(rot))
+        return {
+            "pos": _to_float_list(pos),
+            "rot": _quat_normalize(_to_float_list(rot)),
+            "source": "asset.get_world_pose",
+            "prim_path": _prim_path_or_none(_prim_from_asset_or_stage(env, part_name)),
+        }
     if hasattr(asset, "get_world_poses"):
         positions, orientations = asset.get_world_poses()
-        return _to_float_list(positions[0]), _quat_normalize(_to_float_list(orientations[0]))
+        return {
+            "pos": _to_float_list(positions[0]),
+            "rot": _quat_normalize(_to_float_list(orientations[0])),
+            "source": "asset.get_world_poses",
+            "prim_path": _prim_path_or_none(_prim_from_asset_or_stage(env, part_name)),
+        }
 
     prim = _prim_from_asset_or_stage(env, part_name)
     if prim is None:
-        return _part_initial_pose(part_name)
-    return _usd_prim_pose(prim)
+        pos, rot = _part_initial_pose(part_name)
+        return {
+            "pos": pos,
+            "rot": rot,
+            "source": "initial_fallback",
+            "prim_path": None,
+        }
+
+    mesh_prim = _find_first_mesh_prim(prim)
+    if mesh_prim is not None and mesh_prim != prim:
+        pos, rot = _usd_prim_pose(mesh_prim)
+        return {
+            "pos": pos,
+            "rot": rot,
+            "source": "usd.mesh_child_prim",
+            "prim_path": _prim_path_or_none(mesh_prim),
+        }
+
+    pos, rot = _usd_prim_pose(prim)
+    return {
+        "pos": pos,
+        "rot": rot,
+        "source": "usd.asset_root_prim",
+        "prim_path": _prim_path_or_none(prim),
+    }
+
+
+def _get_scene_asset_pose(env, part_name: str) -> tuple[list[float], list[float]]:
+    pose = _get_scene_asset_pose_with_source(env, part_name)
+    return pose["pos"], pose["rot"]
 
 
 def _set_usd_prim_pose(prim, pos: list[float], rot: list[float]) -> None:
@@ -267,9 +354,12 @@ def _set_scene_asset_pose(env, part_name: str, pos: list[float], rot: list[float
 def get_part_sorting_piece_states(env) -> dict[str, Any]:
     parts = {}
     for part_name in PART_SORTING_PART_KEYS:
-        pos, rot = _get_scene_asset_pose(env, part_name)
-        parts[part_name] = {"pos": pos, "rot": rot}
-    return {"frame": "world", "parts": parts}
+        pose = _get_scene_asset_pose_with_source(env, part_name)
+        part_state = {"pos": pose["pos"], "rot": pose["rot"], "source": pose["source"]}
+        if pose.get("prim_path") is not None:
+            part_state["prim_path"] = pose["prim_path"]
+        parts[part_name] = part_state
+    return {"frame": "world", "source_schema": "part_pose_v2", "parts": parts}
 
 
 def randomize_part_sorting_pieces(env, request: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -310,10 +400,10 @@ class WalkerS2PartSortingSceneCfg(InteractiveSceneCfg):
 
     table = _usd_asset_cfg(_OBJECTS_CFG["table"]).replace(prim_path="{ENV_REGEX_NS}/Table")
     box = _usd_asset_cfg(_OBJECTS_CFG["box"]).replace(prim_path="{ENV_REGEX_NS}/Box")
-    part_a_ori = _usd_asset_cfg(_PART_CFGS["part_a_ori"]).replace(prim_path="{ENV_REGEX_NS}/PartA_Ori")
-    part_a_red = _usd_asset_cfg(_PART_CFGS["part_a_red"]).replace(prim_path="{ENV_REGEX_NS}/PartA_Red")
-    part_b_blue = _usd_asset_cfg(_PART_CFGS["part_b_blue"]).replace(prim_path="{ENV_REGEX_NS}/PartB_Blue")
-    part_b_ori = _usd_asset_cfg(_PART_CFGS["part_b_ori"]).replace(prim_path="{ENV_REGEX_NS}/PartB_Ori")
+    part_a_ori = _part_rigid_object_cfg(_PART_CFGS["part_a_ori"]).replace(prim_path="{ENV_REGEX_NS}/PartA_Ori")
+    part_a_red = _part_rigid_object_cfg(_PART_CFGS["part_a_red"]).replace(prim_path="{ENV_REGEX_NS}/PartA_Red")
+    part_b_blue = _part_rigid_object_cfg(_PART_CFGS["part_b_blue"]).replace(prim_path="{ENV_REGEX_NS}/PartB_Blue")
+    part_b_ori = _part_rigid_object_cfg(_PART_CFGS["part_b_ori"]).replace(prim_path="{ENV_REGEX_NS}/PartB_Ori")
 
     robot = WALKER_S2_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot",
