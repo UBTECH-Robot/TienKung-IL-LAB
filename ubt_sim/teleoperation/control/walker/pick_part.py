@@ -34,6 +34,10 @@ from walker_s2_controller import BODY_JOINT_LIMITS, READY_POSE, WalkerS2Controll
 
 DEFAULT_PART_STATES_TOPIC = "/sim/part_states"
 DEFAULT_RANDOMIZE_PARTS_TOPIC = "/sim/cmd_randomize_parts"
+DEFAULT_RESET_SCENE_SETTLE_TIME = 1.0
+DEFAULT_ROBOT_INIT_DURATION = 10.0
+DEFAULT_ROBOT_INIT_SETTLE_TIMEOUT = 10.0
+DEFAULT_ROBOT_INIT_TOLERANCE = 0.08
 DEFAULT_PART_NAME = "part_a_red"
 DEFAULT_PART_SEQUENCE = ("part_a_ori", "part_a_red", "part_b_blue", "part_b_ori")
 DEFAULT_APPROACH_OFFSET_WORLD = (0.0, 0.0, 0.12)
@@ -1454,6 +1458,7 @@ def move_ee_by_waypoints(
     grasp_success_max_part_to_ee_dist=DEFAULT_GRASP_SUCCESS_MAX_PART_TO_EE_DIST,
     grasp_success_part_state_timeout=DEFAULT_GRASP_SUCCESS_PART_STATE_TIMEOUT,
     grasp_success_finger_timeout=DEFAULT_GRASP_SUCCESS_FINGER_TIMEOUT,
+    before_execute_callback=None,
 ):
     """直接以 TCP 为 EE 控制目标，按 waypoint 执行抓取/放置，支持左右手与自动/手工路径。"""
     if float(position_tolerance) <= 0.0:
@@ -1605,6 +1610,13 @@ def move_ee_by_waypoints(
         if stage_map is None:
             return False
 
+        if before_execute_callback is not None:
+            try:
+                before_execute_callback()
+            except Exception as e:
+                controller.get_logger().error(f"before_execute_callback failed: {e}")
+                return False
+
         result = _execute_grasp_once(
             controller,
             part_monitor,
@@ -1682,6 +1694,63 @@ def move_ee_by_waypoints(
     return False
 
 
+def initialize_robot_pose(
+    controller,
+    duration_sec=DEFAULT_ROBOT_INIT_DURATION,
+    settle_timeout=DEFAULT_ROBOT_INIT_SETTLE_TIMEOUT,
+    tolerance=DEFAULT_ROBOT_INIT_TOLERANCE,
+    timeout=5.0,
+):
+    """执行 walker_s2_controller.py --init 等价的分段 READY_POSE 初始化。"""
+    if not controller.wait_for_state(timeout=timeout):
+        return False
+    controller.get_logger().info(
+        f"Initialize robot pose via controller.move_to_ready_pose(duration={float(duration_sec):.1f}s)"
+    )
+    if not controller.move_to_ready_pose(duration_sec=duration_sec):
+        controller.get_logger().error("Robot READY_POSE initialization trajectory failed")
+        return False
+    reached, misses = controller.wait_until_position(
+        controller.ready_position_vector(),
+        timeout=settle_timeout,
+        tolerance=tolerance,
+    )
+    if reached:
+        controller.get_logger().info(f"Robot READY_POSE reached (tolerance <= {float(tolerance):.3f} rad)")
+        return True
+
+    controller.get_logger().warning(
+        f"Robot READY_POSE not fully reached within {float(settle_timeout):.1f}s "
+        f"(tolerance={float(tolerance):.3f} rad)"
+    )
+    for name, actual, target, err in misses[:8]:
+        if actual is None:
+            controller.get_logger().warning(f"  {name}: no state, target={target:+.4f}")
+        else:
+            controller.get_logger().warning(
+                f"  {name}: actual={actual:+.4f}, target={target:+.4f}, err={err:.4f}"
+            )
+    return True
+
+
+def reset_scene(
+    controller,
+    part_monitor=None,
+    timeout=5.0,
+    settle_time=DEFAULT_RESET_SCENE_SETTLE_TIME,
+):
+    """发布仿真场景 reset，并等待零件状态刷新/稳定。"""
+    last_seq = part_monitor.get_update_seq() if part_monitor is not None and hasattr(part_monitor, "get_update_seq") else None
+    controller.reset_sim()
+    if last_seq is not None and float(timeout) > 0.0:
+        if not part_monitor.wait_for_new_part_states(last_seq, timeout=float(timeout)):
+            controller.get_logger().error("No part_states update received after scene reset")
+            return False
+    if float(settle_time) > 0.0:
+        time.sleep(float(settle_time))
+    return True
+
+
 def randomize_part_positions(
     controller,
     part_monitor,
@@ -1722,11 +1791,18 @@ def move_parts_by_waypoints(
     controller,
     part_monitor,
     part_names=DEFAULT_PART_SEQUENCE,
+    reset_scene_before=False,
+    reset_scene_settle_time=DEFAULT_RESET_SCENE_SETTLE_TIME,
+    robot_init_before=False,
+    robot_init_duration=DEFAULT_ROBOT_INIT_DURATION,
+    robot_init_settle_timeout=DEFAULT_ROBOT_INIT_SETTLE_TIMEOUT,
+    robot_init_tolerance=DEFAULT_ROBOT_INIT_TOLERANCE,
     randomize_before=True,
     randomize_topic=DEFAULT_RANDOMIZE_PARTS_TOPIC,
     randomize_timeout=None,
     randomize_settle_time=0.5,
     randomize_seed=None,
+    before_execute_callback=None,
     **kwargs,
 ):
     """按顺序对多个零件执行同一套抓取/放置流程。"""
@@ -1739,8 +1815,27 @@ def move_parts_by_waypoints(
         controller.get_logger().error("part_names must not be empty")
         return False
 
+    timeout = kwargs.get("timeout", 5.0) if randomize_timeout is None else randomize_timeout
+    if reset_scene_before:
+        if not reset_scene(
+            controller,
+            part_monitor,
+            timeout=timeout,
+            settle_time=reset_scene_settle_time,
+        ):
+            return False
+
+    if robot_init_before:
+        if not initialize_robot_pose(
+            controller,
+            duration_sec=robot_init_duration,
+            settle_timeout=robot_init_settle_timeout,
+            tolerance=robot_init_tolerance,
+            timeout=timeout,
+        ):
+            return False
+
     if randomize_before:
-        timeout = kwargs.get("timeout", 5.0) if randomize_timeout is None else randomize_timeout
         if not randomize_part_positions(
             controller,
             part_monitor,
@@ -1758,6 +1853,7 @@ def move_parts_by_waypoints(
             controller,
             part_monitor,
             part_name=part_name,
+            before_execute_callback=before_execute_callback,
             **kwargs,
         )
         if not ok:
@@ -1783,6 +1879,12 @@ def parse_args():
     parser.add_argument("--randomize-parts-topic", default=DEFAULT_RANDOMIZE_PARTS_TOPIC, help="零件随机化命令 topic")
     parser.add_argument("--randomize-seed", type=int, default=None, help="零件随机化 seed；不指定则每次自动生成随机 seed")
     parser.add_argument("--randomize-settle-time", type=float, default=0.5, help="随机化后等待物体状态稳定的时间，单位 s")
+    parser.add_argument("--reset-scene", action="store_true", help="抓取前发布 /sim/cmd_reset 重置仿真场景")
+    parser.add_argument("--reset-scene-settle-time", type=float, default=DEFAULT_RESET_SCENE_SETTLE_TIME, help="场景 reset 后等待状态稳定的时间，单位 s")
+    parser.add_argument("--robot-init", action="store_true", help="抓取前调用 controller.py --init 等价流程，将机器人移动到 READY_POSE")
+    parser.add_argument("--robot-init-duration", type=float, default=DEFAULT_ROBOT_INIT_DURATION, help="机器人 READY_POSE 初始化轨迹时长，单位 s")
+    parser.add_argument("--robot-init-settle-timeout", type=float, default=DEFAULT_ROBOT_INIT_SETTLE_TIMEOUT, help="机器人 READY_POSE 初始化后等待关节收敛的超时时间，单位 s")
+    parser.add_argument("--robot-init-tolerance", type=float, default=DEFAULT_ROBOT_INIT_TOLERANCE, help="机器人 READY_POSE 初始化到位判定阈值，单位 rad")
     parser.add_argument("--side", choices=("left", "right"), default="right", help="选择左手或右手抓取")
     parser.add_argument("--auto-grasp", action=argparse.BooleanOptionalAction, default=DEFAULT_AUTO_GRASP, help="在零件 world 坐标周围球面采样，自动选择 IK 可达抓取姿态")
     parser.add_argument("--approach-offset", type=float, nargs=3, default=DEFAULT_APPROACH_OFFSET_WORLD, metavar=("X", "Y", "Z"), help="approach EE 目标相对零件 world 坐标的偏移，单位 m")
@@ -1907,6 +2009,12 @@ def main():
                 controller,
                 part_monitor,
                 part_names=part_names,
+                reset_scene_before=args.reset_scene,
+                reset_scene_settle_time=args.reset_scene_settle_time,
+                robot_init_before=args.robot_init,
+                robot_init_duration=args.robot_init_duration,
+                robot_init_settle_timeout=args.robot_init_settle_timeout,
+                robot_init_tolerance=args.robot_init_tolerance,
                 randomize_before=args.randomize_parts,
                 randomize_topic=args.randomize_parts_topic,
                 randomize_timeout=args.timeout,
@@ -1915,6 +2023,23 @@ def main():
                 **move_kwargs,
             )
         else:
+            if args.reset_scene:
+                if not reset_scene(
+                    controller,
+                    part_monitor,
+                    timeout=args.timeout,
+                    settle_time=args.reset_scene_settle_time,
+                ):
+                    raise SystemExit(1)
+            if args.robot_init:
+                if not initialize_robot_pose(
+                    controller,
+                    duration_sec=args.robot_init_duration,
+                    settle_timeout=args.robot_init_settle_timeout,
+                    tolerance=args.robot_init_tolerance,
+                    timeout=args.timeout,
+                ):
+                    raise SystemExit(1)
             ok = move_ee_by_waypoints(
                 controller,
                 part_monitor,

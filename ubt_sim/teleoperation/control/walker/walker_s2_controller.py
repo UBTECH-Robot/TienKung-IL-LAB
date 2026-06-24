@@ -373,6 +373,8 @@ class WalkerS2Controller(Node):
         self.current_index = 0
         self.is_publishing = False
         self.safety_violation = False
+        self.current_publish_joints = None
+        self.publish_changed_epsilon = 1e-6
 
         # QoS
         qos_sub = QoSProfile(
@@ -1290,13 +1292,14 @@ class WalkerS2Controller(Node):
 
     control_dual_arm_ik = move_dual_arm_ik
 
-    def move_to_position(self, target_position, duration_sec=3.0, wait=True):
+    def move_to_position(self, target_position, duration_sec=3.0, wait=True, publish_changed_only=False):
         """平滑移动到目标位置（从当前位置线性插值）。
 
         Args:
             target_position: 目标关节位置，长度 n_joints 的列表或 numpy 数组
             duration_sec: 运动持续时间（秒）
             wait: 是否阻塞等待完成
+            publish_changed_only: True 时仅发布本次轨迹中实际变化的关节
         Returns:
             bool: True=成功（已开始/完成），False=失败
         """
@@ -1330,15 +1333,20 @@ class WalkerS2Controller(Node):
             for j in range(self.n_joints)
         ])
 
-        return self.execute_trajectory(trajectory, wait=wait)
+        return self.execute_trajectory(
+            trajectory,
+            wait=wait,
+            publish_changed_only=publish_changed_only,
+        )
 
-    def execute_trajectory(self, trajectory, wait=True):
+    def execute_trajectory(self, trajectory, wait=True, publish_changed_only=False):
         """执行预定义轨迹。
 
         Args:
             trajectory: numpy 数组 (N, n_joints)，每行一个时间步的关节位置
                         点间距按 1/control_hz 秒（200Hz → 5ms/点）
             wait: 是否阻塞等待完成
+            publish_changed_only: True 时仅发布轨迹中实际变化的关节
         Returns:
             bool: True=成功，False=失败（维度错误/安全违规）
         """
@@ -1348,6 +1356,10 @@ class WalkerS2Controller(Node):
                 f"Trajectory shape {trajectory.shape} != (N, {self.n_joints})"
             )
             return False
+
+        publish_joints = None
+        if publish_changed_only:
+            publish_joints = self._infer_changed_joints(trajectory)
 
         # 限位裁剪
         if self.enable_limit_check:
@@ -1369,11 +1381,14 @@ class WalkerS2Controller(Node):
             max_speeds = np.max(
                 np.abs(np.diff(trajectory, axis=0)) / self.timer_period, axis=0
             )
-            unsafe = [
-                (name, max_speeds[i])
-                for i, name in enumerate(self.all_joints)
-                if max_speeds[i] > self.max_joint_speed
-            ]
+            unsafe = []
+            for i, name in enumerate(self.all_joints):
+                if name in self.lock_joints:
+                    continue
+                if publish_joints is not None and name not in publish_joints:
+                    continue
+                if max_speeds[i] > self.max_joint_speed:
+                    unsafe.append((name, max_speeds[i]))
             if unsafe:
                 self.get_logger().error(
                     f"SAFETY VIOLATION: {len(unsafe)} joints exceed "
@@ -1387,13 +1402,18 @@ class WalkerS2Controller(Node):
         # 写入轨迹
         with self.trajectory_lock:
             self.current_trajectory = trajectory.copy()
+            self.current_publish_joints = publish_joints
             self.current_index = 0
             self.is_publishing = True
             self.safety_violation = False
 
+        if publish_joints is None:
+            publish_desc = "all unlocked joints"
+        else:
+            publish_desc = ", ".join(sorted(publish_joints)) or "none"
         self.get_logger().info(
             f"Executing trajectory: {len(trajectory)} points, "
-            f"~{len(trajectory) / self.control_hz:.2f}s"
+            f"~{len(trajectory) / self.control_hz:.2f}s, publish={publish_desc}"
         )
 
         # 阻塞等待
@@ -1406,11 +1426,22 @@ class WalkerS2Controller(Node):
 
         return True
 
+    def _infer_changed_joints(self, trajectory, epsilon=None):
+        """根据轨迹列是否变化推断本次实际需要发布的关节。"""
+        eps = self.publish_changed_epsilon if epsilon is None else float(epsilon)
+        changed = set()
+        for i, name in enumerate(self.all_joints):
+            col = trajectory[:, i]
+            if float(np.max(np.abs(col - col[0]))) > eps:
+                changed.add(name)
+        return changed
+
     def stop(self):
         """立即停止发布指令（机器人保持在最后一个发送的位置）"""
         with self.trajectory_lock:
             self.is_publishing = False
             self.current_index = self.current_trajectory.shape[0]
+            self.current_publish_joints = None
         self.get_logger().info("Stop requested")
 
     def set_lock_joints(self, joint_names):
@@ -1542,7 +1573,12 @@ class WalkerS2Controller(Node):
             )
             self.get_logger().info(f"{prefix}: {error_text}")
 
-        result = self.move_to_position(target, duration_sec=duration_sec, wait=wait)
+        result = self.move_to_position(
+            target,
+            duration_sec=duration_sec,
+            wait=wait,
+            publish_changed_only=True,
+        )
 
         settled = True
         # execute_trajectory(wait=True) 只表示轨迹点发布完毕；之后用闭环补偿重发目标，避免多关节动作停在中间状态。
@@ -1570,7 +1606,12 @@ class WalkerS2Controller(Node):
                     f"Position did not settle, corrective retry {attempt + 1}/{max_settle_retries}: {misses[:5]}"
                 )
                 correction_duration = max(1.0, min(float(duration_sec) * 0.5, 2.0))
-                result = self.move_to_position(target, duration_sec=correction_duration, wait=True)
+                result = self.move_to_position(
+                    target,
+                    duration_sec=correction_duration,
+                    wait=True,
+                    publish_changed_only=True,
+                )
                 if not result:
                     settled = False
                     break
@@ -1985,10 +2026,14 @@ class WalkerS2Controller(Node):
                 return
             if self.current_index >= self.current_trajectory.shape[0]:
                 self.is_publishing = False
+                self.current_publish_joints = None
                 self.get_logger().info("Trajectory execution completed")
                 return
 
             point = self.current_trajectory[self.current_index, :]
+            publish_joints = self.current_publish_joints
+            if publish_joints is not None:
+                publish_joints = set(publish_joints)
             self.current_index += 1
 
         # 构造并发布 RobotCommand
@@ -1999,13 +2044,16 @@ class WalkerS2Controller(Node):
         for idx, name in enumerate(self.all_joints):
             if name in self.lock_joints:
                 continue
+            if publish_joints is not None and name not in publish_joints:
+                continue
             jc = JointCmd()
             jc.name = name
             jc.control_mode = JointCmd.MODE_POSITION
             jc.position = float(point[idx])
             cmd.joint_cmd.append(jc)
 
-        self.command_pub.publish(cmd)
+        if cmd.joint_cmd:
+            self.command_pub.publish(cmd)
 
 
 RobotController = WalkerS2Controller
