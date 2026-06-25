@@ -250,7 +250,7 @@ RIGHT_ARM_JOINTS = [
 ]
 
 # ============================================================================
-# 预备姿态（上电归零后 RobotState 快照，双臂自然下垂的站立位姿）
+# 预备姿态（双臂抬起预备抓取的站立位姿）
 # ============================================================================
 
 READY_POSE = {
@@ -1506,7 +1506,10 @@ class WalkerS2Controller(Node):
         return clamped, violations
 
     def move_to_pose(self, pose_dict, duration_sec=1.5, wait=True,
-                     unlock_required_joints=True):
+                     unlock_required_joints=True, publish_changed_only=True,
+                     settle_check=True, settle_timeout=None,
+                     settle_tolerance=0.03, max_settle_retries=2,
+                     ignored_joints=None):
         """按"关节名→角度"字典移动机器人。未指定的关节保持当前位置。
 
         相比 move_to_position（传整个 17 维向量），这个 API 更方便：
@@ -1577,21 +1580,26 @@ class WalkerS2Controller(Node):
             target,
             duration_sec=duration_sec,
             wait=wait,
-            publish_changed_only=True,
+            publish_changed_only=publish_changed_only,
         )
 
         settled = True
         # execute_trajectory(wait=True) 只表示轨迹点发布完毕；之后用闭环补偿重发目标，避免多关节动作停在中间状态。
-        if result and wait:
-            settle_timeout = max(2.0, min(float(duration_sec), 3.0))
-            settle_tolerance = 0.03
-            max_settle_retries = 2
+        if result and wait and settle_check:
+            check_timeout = settle_timeout
+            if check_timeout is None:
+                check_timeout = max(2.0, min(float(duration_sec), 3.0))
+            ignored = set(ignored_joints or [])
+            ignored.update(name for name in self.all_joints if name not in target_joint_names)
+            if not unlock_required_joints:
+                ignored.update(joints_needing_unlock)
             settled = False
             for attempt in range(max_settle_retries + 1):
                 arrived, misses = self.wait_until_position(
                     target,
-                    timeout=settle_timeout,
+                    timeout=check_timeout,
                     tolerance=settle_tolerance,
+                    ignored_joints=ignored,
                 )
                 log_target_joint_errors(f"Settle check {attempt + 1}/{max_settle_retries + 1}")
                 if arrived:
@@ -1610,7 +1618,7 @@ class WalkerS2Controller(Node):
                     target,
                     duration_sec=correction_duration,
                     wait=True,
-                    publish_changed_only=True,
+                    publish_changed_only=publish_changed_only,
                 )
                 if not result:
                     settled = False
@@ -1622,7 +1630,7 @@ class WalkerS2Controller(Node):
 
         return bool(result and settled)
 
-    def move_to_ready_pose(self, duration_sec=15.0, wait=True):
+    def move_to_ready_pose(self, duration_sec=15.0, wait=True, staged=True):
         """分段移动到预备姿态（先 shoulder pitch / elbow roll，再 elbow yaw，最后 READY_POSE）。
 
         适用于实验开始前的初始化——将机器人从任意位置安全地移到统一的起始位姿。
@@ -1634,6 +1642,14 @@ class WalkerS2Controller(Node):
         Returns:
             bool: True=成功，False=失败
         """
+        if not staged:
+            return self.move_to_pose(
+                READY_POSE,
+                duration_sec=duration_sec,
+                wait=wait,
+                unlock_required_joints=True,
+            )
+
         if not wait:
             self.get_logger().warning(
                 "move_to_ready_pose(wait=False) requested, but staged init runs synchronously for safety"

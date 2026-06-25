@@ -1,8 +1,8 @@
-# TienKung Robot — LeRobot 部署指南
+# UBTECH Robot — LeRobot 部署指南
 
-天工双臂+灵巧手机器人 LeRobot 部署插件。支持 `lerobot-rollout` CLI 直接部署真机。
+天工与 Walker S2 机器人 LeRobot 部署插件。支持 `lerobot-rollout` CLI 部署真机。
 
-> 技术架构、端口定义、ROS2 话题、26 维向量格式等参见 [CLAUDE.md](./CLAUDE.md)。
+> 技术架构、端口定义、ROS2 话题、26/31 维向量格式等参见 [CLAUDE.md](./CLAUDE.md)。
 
 ## 目录
 
@@ -45,7 +45,8 @@ bash run.sh rm             # 删除容器
 
 ```bash
 <address>127.0.0.1</address>      # 同机部署 IP走本地回环 
-<address>192.168.41.99</address>  # 远程真机走网线直连，需设置IP为本机IP
+<address>192.168.41.99</address>  # 天工/默认远程真机网线直连，需设置为本机 IP
+<address>192.168.11.99</address>  # Walker S2 直连网段，需设置为本机 IP
 ```
 ---
 
@@ -200,6 +201,35 @@ POLICY_PATH=/ubt_IL/model/test_model DURATION=60 \
     --robot.cameras="{camera_head: {type: image_server, server_address: '192.168.41.2', port: 5558, width: 640, height: 360, fps: 15, display: true}}" \
     --task="pick and place" --fps=15 --duration=60
 ```
+
+### Walker S2 部署（P0 基础迁移）
+
+Walker S2 使用独立插件与 Bridge2：
+
+- 插件目录：`/ubt_IL/walker/lerobot_robot_walker`
+- Bridge2：`/ubt_IL/walker/ros2_walker_bridge.py`
+- ROS2 SDK/messages：`/ubt_IL/walker/walker_sdk_ros2`
+- ZMQ 端口：`5561` action、`5562` state、`5563` image
+- 相机链路：Walker ROS2 `shm_msgs` → Bridge2 JPEG relay → `walker_camera`
+
+容器启动时 `entrypoint.sh` 会尝试构建 Walker ROS2 messages，并安装 `lerobot_robot_walker` 插件。也可用环境检查确认：
+
+```bash
+cd docker
+bash run.sh check
+```
+
+Walker 专用 rollout 入口：
+
+```bash
+# 需要 31 维 Walker 真机 policy
+POLICY_PATH=/ubt_IL/model/<walker_31dim_policy>/checkpoints/last/pretrained_model \
+DURATION=30 FPS=15 \
+CAMERA_TOPIC=/sensor/camera/stereo/color/raw \
+  bash /ubt_IL/scripts/deploy/rollout_walker.sh
+```
+
+⚠️ 当前 `model/Walker_S2_sim_act` 和 `scripts/deploy/train_config_walker_s2_sim.json` 是 19 维仿真配置；本次 P0 迁移不包含 19→31 维动作适配，`rollout_walker.sh` 会拒绝非 31 维 policy，避免误发真机动作。
 
 ### 相机 & 部署参数
 

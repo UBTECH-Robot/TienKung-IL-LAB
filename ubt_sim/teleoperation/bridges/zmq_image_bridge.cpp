@@ -1,12 +1,14 @@
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstring>
 #include <iostream>
 #include <string>
-#include <cstring>
-#include <chrono>
+#include <thread>
 
 #include <zmq.hpp>
 #include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/image.hpp>
-#include <image_transport/image_transport.hpp>
+#include <shm_msgs/msg/image2m.hpp>
 
 // Minimal JSON parser — extracts integer values for known keys.
 // Avoids nlohmann-json system dependency for a trivial {"width":N,"height":N} payload.
@@ -50,15 +52,50 @@ static BridgeConfig parse_args(int argc, char* argv[]) {
             std::cout << "Usage: zmq_image_bridge [OPTIONS]\n"
                       << "Options:\n"
                       << "  --zmq-port PORT       ZMQ image port (default: 5557)\n"
-                      << "  --rgb-topic TOPIC     RGB image ROS2 topic (default: /ob_camera_head/color/image_raw)\n"
-                      << "  --depth-topic TOPIC   Depth image ROS2 topic (default: /ob_camera_head/depth/image_raw)\n"
-                      << "\nCompressed topics are auto-published by image_transport plugins:\n"
-                      << "  <rgb-topic>/compressed          (JPEG, requires compressed_image_transport)\n"
-                      << "  <depth-topic>/compressedDepth   (PNG, requires compressed_depth_image_transport)\n";
+                      << "  --rgb-topic TOPIC     RGB shm_msgs/Image2m topic (default: /ob_camera_head/color/image_raw)\n"
+                      << "  --depth-topic TOPIC   Depth shm_msgs/Image2m topic (default: /ob_camera_head/depth/image_raw)\n";
             exit(0);
         }
     }
     return cfg;
+}
+
+static void set_shm_string(shm_msgs::msg::String& dst, const std::string& src) {
+    std::fill(dst.data.begin(), dst.data.end(), '\0');
+    const size_t n = std::min(src.size(), dst.data.size());
+    std::memcpy(dst.data.data(), src.data(), n);
+    dst.size = static_cast<uint8_t>(std::min<size_t>(n, 255));
+}
+
+static bool fill_image2m(
+    shm_msgs::msg::Image2m& msg,
+    const rclcpp::Time& stamp,
+    const std::string& frame_id,
+    int width,
+    int height,
+    const std::string& encoding,
+    uint32_t step,
+    const void* data,
+    size_t size)
+{
+    const size_t byte_count = static_cast<size_t>(height) * step;
+    if (size < byte_count) {
+        return false;
+    }
+    if (byte_count > msg.data.size()) {
+        return false;
+    }
+
+    msg.header.stamp = stamp;
+    set_shm_string(msg.header.frame_id, frame_id);
+    msg.height = static_cast<uint32_t>(height);
+    msg.width = static_cast<uint32_t>(width);
+    set_shm_string(msg.encoding, encoding);
+    msg.is_bigendian = 0;
+    msg.step = step;
+    std::fill(msg.data.begin(), msg.data.end(), 0);
+    std::memcpy(msg.data.data(), data, byte_count);
+    return true;
 }
 
 class ZmqImageBridge : public rclcpp::Node
@@ -66,29 +103,22 @@ class ZmqImageBridge : public rclcpp::Node
 public:
     ZmqImageBridge(const BridgeConfig& cfg) : Node("zmq_image_bridge")
     {
-        // Use image_transport — auto-publishes /compressed and /compressedDepth sub-topics
-        rmw_qos_profile_t qos = rmw_qos_profile_default;
-        qos.depth = 10;
-        pub_rgb_ = image_transport::create_publisher(this, cfg.rgb_topic, qos);
-        pub_depth_ = image_transport::create_publisher(this, cfg.depth_topic, qos);
+        auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
+        pub_rgb_ = this->create_publisher<shm_msgs::msg::Image2m>(cfg.rgb_topic, qos);
+        pub_depth_ = this->create_publisher<shm_msgs::msg::Image2m>(cfg.depth_topic, qos);
 
-        // ZMQ Configuration
         context_ = zmq::context_t(1);
         subscriber_ = zmq::socket_t(context_, ZMQ_SUB);
 
         std::string zmq_addr = "tcp://127.0.0.1:" + std::to_string(cfg.zmq_port);
         RCLCPP_INFO(this->get_logger(), "Connecting to ZMQ Image Server at %s", zmq_addr.c_str());
         subscriber_.connect(zmq_addr);
-
-        // Subscribe to all topics (empty filter)
         subscriber_.set(zmq::sockopt::subscribe, "");
-        // Only keep latest message in ZMQ buffer to avoid lag
         subscriber_.set(zmq::sockopt::rcvhwm, 2);
 
-        RCLCPP_INFO(this->get_logger(), "C++ ZMQ Image Bridge Started (rgb: %s, depth: %s)",
+        RCLCPP_INFO(this->get_logger(), "C++ ZMQ Image Bridge Started (shm_msgs/Image2m rgb: %s, depth: %s)",
                     cfg.rgb_topic.c_str(), cfg.depth_topic.c_str());
 
-        // Receive Loop
         receive_thread_ = std::thread(&ZmqImageBridge::receive_loop, this);
     }
 
@@ -107,15 +137,12 @@ private:
             zmq::message_t meta_msg, rgb_msg, depth_msg;
 
             try {
-                // 1. Metadata
                 auto res = subscriber_.recv(meta_msg, zmq::recv_flags::none);
                 if (!res) continue;
 
-                // 2. RGB Data (Wait for more parts)
                 if (!subscriber_.get(zmq::sockopt::rcvmore)) continue;
                 (void)subscriber_.recv(rgb_msg, zmq::recv_flags::none);
 
-                // 3. Depth Data (Optional/Wait)
                 bool has_depth = false;
                 if (subscriber_.get(zmq::sockopt::rcvmore)) {
                     (void)subscriber_.recv(depth_msg, zmq::recv_flags::none);
@@ -133,7 +160,6 @@ private:
 
     void publish_images(zmq::message_t& meta_msg, zmq::message_t& rgb_msg, zmq::message_t& depth_msg, bool has_depth)
     {
-        // Parse Metadata
         std::string meta_str(static_cast<char*>(meta_msg.data()), meta_msg.size());
         int w = tinyjson::get_int(meta_str, "width");
         int h = tinyjson::get_int(meta_str, "height");
@@ -144,42 +170,43 @@ private:
 
         auto current_time = this->now();
 
-        // --- Publish RGB ---
-        auto img_msg = std::make_shared<sensor_msgs::msg::Image>();
-        img_msg->header.stamp = current_time;
-        img_msg->header.frame_id = "ob_camera_head_color_optical_frame";
-        img_msg->height = h;
-        img_msg->width = w;
-        img_msg->encoding = "rgb8";
-        img_msg->step = w * 3;
+        shm_msgs::msg::Image2m img_msg;
+        if (!fill_image2m(
+                img_msg,
+                current_time,
+                "ob_camera_head_color_optical_frame",
+                w,
+                h,
+                "rgb8",
+                static_cast<uint32_t>(w * 3),
+                rgb_msg.data(),
+                rgb_msg.size())) {
+            RCLCPP_WARN(this->get_logger(), "RGB frame does not fit Image2m buffer, skipping");
+            return;
+        }
+        pub_rgb_->publish(img_msg);
 
-        img_msg->data.resize(rgb_msg.size());
-        std::memcpy(img_msg->data.data(), rgb_msg.data(), rgb_msg.size());
-
-        pub_rgb_.publish(img_msg);
-
-        // --- Publish Depth ---
         if (has_depth && depth_msg.size() > 0) {
-            auto depth_ros_msg = std::make_shared<sensor_msgs::msg::Image>();
-            depth_ros_msg->header.stamp = current_time;
-            depth_ros_msg->header.frame_id = "ob_camera_head_depth_optical_frame";
-            depth_ros_msg->height = h;
-            depth_ros_msg->width = w;
-
-            // encoding: 16UC1 (uint16 mm), W * H * 2 bytes
-            depth_ros_msg->encoding = "16UC1";
-            depth_ros_msg->step = w * 2;
-
-            if (depth_msg.size() == static_cast<size_t>(h * w * 2)) {
-                depth_ros_msg->data.resize(depth_msg.size());
-                std::memcpy(depth_ros_msg->data.data(), depth_msg.data(), depth_msg.size());
-                pub_depth_.publish(depth_ros_msg);
+            shm_msgs::msg::Image2m depth_ros_msg;
+            if (!fill_image2m(
+                    depth_ros_msg,
+                    current_time,
+                    "ob_camera_head_depth_optical_frame",
+                    w,
+                    h,
+                    "16UC1",
+                    static_cast<uint32_t>(w * 2),
+                    depth_msg.data(),
+                    depth_msg.size())) {
+                RCLCPP_WARN(this->get_logger(), "Depth frame does not fit Image2m buffer, skipping");
+                return;
             }
+            pub_depth_->publish(depth_ros_msg);
         }
     }
 
-    image_transport::Publisher pub_rgb_;
-    image_transport::Publisher pub_depth_;
+    rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr pub_rgb_;
+    rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr pub_depth_;
 
     zmq::context_t context_;
     zmq::socket_t subscriber_;

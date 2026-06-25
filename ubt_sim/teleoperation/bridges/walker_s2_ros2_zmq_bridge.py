@@ -16,6 +16,11 @@ import yaml
 import zmq
 
 try:
+    from shm_msgs.msg import Image2m
+except ImportError:
+    Image2m = None  # shm_msgs may not be available in some environments
+
+try:
     from mc_task_msgs.msg import JointCmd, JointCommand, RobotCommand
     from mc_state_msgs.msg import RobotState
     from ecat_task_msgs.msg import GripCmd, GripStatus
@@ -82,6 +87,7 @@ MSG_TYPES = {
     "JointState": JointState,
     "GripStatus": GripStatus,
     "Image": Image,
+    "Image2m": Image2m,
 }
 
 

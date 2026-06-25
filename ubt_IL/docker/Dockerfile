@@ -28,7 +28,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-sensor-msgs \
     ros-humble-geometry-msgs \
     ros-humble-builtin-interfaces \
+    ros-humble-rosidl-default-generators \
     ros-humble-rosidl-default-runtime \
+    build-essential cmake python3-colcon-common-extensions python3-empy \
     libyaml-cpp-dev \
     libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers \
     libgtk-3-0 libcanberra-gtk3-module \

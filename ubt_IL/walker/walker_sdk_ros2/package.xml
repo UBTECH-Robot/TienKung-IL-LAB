@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_control</name>
+  <version>0.0.1</version>
+  <description>Walker S2 机器人低层 SDK Python 控制包</description>
+  <maintainer email="qingxiang.liu@ubtrobot.com">qingxiangliu</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>mc_state_msgs</exec_depend>
+  <exec_depend>mc_task_msgs</exec_depend>
+  <exec_depend>ecat_task_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>shm_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

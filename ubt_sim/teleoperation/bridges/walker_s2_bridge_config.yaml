@@ -24,5 +24,5 @@ topics:
     right_grip_state: {topic: "/ecat/right_grip/state", type: "GripStatus", qos: 10}
     part_states: {topic: "/sim/part_states", type: "String", qos: 10}
     finger_link_states: {topic: "/sim/finger_link_states", type: "String", qos: 10}
-    image_rgb: {topic: "/sensor/camera/stereo/color/raw", type: "Image", compressed: true}
-    image_depth: {topic: "/sensor/camera/stereo/depth/raw", type: "Image", compressed: true}
+    image_rgb: {topic: "/sensor/camera/stereo/color/raw", type: "Image2m", compressed: true}
+    image_depth: {topic: "/sensor/camera/stereo/depth/raw", type: "Image2m", compressed: true}

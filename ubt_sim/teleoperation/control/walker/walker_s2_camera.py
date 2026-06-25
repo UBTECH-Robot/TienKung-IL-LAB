@@ -120,10 +120,10 @@ class Camera(Node):
         if topic is None:
             topic = self._default_topic_from_config(config_path)
 
-        # 仿真 bridge 默认发布 sensor_msgs/Image；shm_msgs 作为显式请求时的可选类型。
+        # Walker sim and real deployment use shm_msgs/Image2m；sensor_msgs/Image is a legacy fallback.
         if msg_type is None:
-            from sensor_msgs.msg import Image as SensorImage
-            msg_type = SensorImage
+            from shm_msgs.msg import Image2m
+            msg_type = Image2m
 
         self._msg_type = msg_type
         self._topic = topic
@@ -504,10 +504,10 @@ def main():
         help=f"相机图像话题 (default: bridge config or {DEFAULT_TOPIC})",
     )
     parser.add_argument(
-        "--msg-type", type=str, default="sensor_msgs/Image",
+        "--msg-type", type=str, default="Image2m",
         choices=["Image8k", "Image512k", "Image1m", "Image2m", "Image4m", "Image8m",
                  "sensor_msgs/Image"],
-        help="图像消息类型 (default: sensor_msgs/Image)",
+        help="图像消息类型 (default: Image2m / shm_msgs.msg.Image2m)",
     )
     parser.add_argument(
         "--save", action="store_true",

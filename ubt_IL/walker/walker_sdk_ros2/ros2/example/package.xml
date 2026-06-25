@@ -1,0 +1,24 @@
+<package format="3">
+    <name>ubt_ros2_example</name>
+    <version>0.0.0</version>
+    <description>This is the ubt_ros2_example package</description>
+    <maintainer email="nanjie.hu@ubtrobot.com"></maintainer>
+    <license>No License</license>
+
+    <buildtool_depend>ament_cmake</buildtool_depend>
+
+    <export>
+        <build_type>ament_cmake</build_type>
+    </export>
+
+
+
+    <depend>rclcpp</depend>
+    <depend>sensor_msgs</depend>
+    <depend>emb_task_msgs</depend>
+    <depend>sys_task_msgs</depend>
+    <depend>mc_state_msgs</depend>
+    <depend>mc_task_msgs</depend>
+    <depend>shm_msgs</depend>
+    <depend>std_srvs</depend>
+</package>

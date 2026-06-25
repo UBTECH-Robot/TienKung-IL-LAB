@@ -1,0 +1,24 @@
+
+uint8 FILE = 0
+uint8 TTS = 1
+uint8 type 1
+
+# all valid
+bool is_break true
+
+# Only file is valid
+string file_path ""
+
+# Only tts is valid
+string text ""
+string speaker "male_01"
+int32 speed 50
+int32 volume 100
+int32 pitch 50
+string language "zh"
+string format "wav"
+bool need_save true
+
+---
+rosa_msgs/NodeState result
+---

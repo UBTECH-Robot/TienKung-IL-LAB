@@ -1,0 +1,1 @@
+BatteryInfo[] batteries_states

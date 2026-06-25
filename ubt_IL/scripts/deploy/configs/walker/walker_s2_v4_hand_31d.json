@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "robot_model": "walker_s2_v4_hand_31d",
+  "description": "Walker S2: 17D body + left/right 7D V4 hands",
+  "action_order": [
+    "L_elbow_roll_joint",
+    "L_elbow_yaw_joint",
+    "L_shoulder_pitch_joint",
+    "L_shoulder_roll_joint",
+    "L_shoulder_yaw_joint",
+    "L_wrist_pitch_joint",
+    "L_wrist_roll_joint",
+    "R_elbow_roll_joint",
+    "R_elbow_yaw_joint",
+    "R_shoulder_pitch_joint",
+    "R_shoulder_roll_joint",
+    "R_shoulder_yaw_joint",
+    "R_wrist_pitch_joint",
+    "R_wrist_roll_joint",
+    "head_pitch_joint",
+    "head_yaw_joint",
+    "waist_yaw_joint",
+    "left_thumb_swing",
+    "left_thumb_mcp",
+    "left_thumb_pip",
+    "left_index_mcp",
+    "left_middle_mcp",
+    "left_ring_mcp",
+    "left_little_mcp",
+    "right_thumb_swing",
+    "right_thumb_mcp",
+    "right_thumb_pip",
+    "right_index_mcp",
+    "right_middle_mcp",
+    "right_ring_mcp",
+    "right_little_mcp"
+  ],
+  "body": {
+    "groups": {
+      "left_arm": [
+        "L_elbow_roll_joint",
+        "L_elbow_yaw_joint",
+        "L_shoulder_pitch_joint",
+        "L_shoulder_roll_joint",
+        "L_shoulder_yaw_joint",
+        "L_wrist_pitch_joint",
+        "L_wrist_roll_joint"
+      ],
+      "right_arm": [
+        "R_elbow_roll_joint",
+        "R_elbow_yaw_joint",
+        "R_shoulder_pitch_joint",
+        "R_shoulder_roll_joint",
+        "R_shoulder_yaw_joint",
+        "R_wrist_pitch_joint",
+        "R_wrist_roll_joint"
+      ],
+      "head": ["head_pitch_joint", "head_yaw_joint"],
+      "waist": ["waist_yaw_joint"]
+    },
+    "lock_joints": ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"],
+    "home": {
+      "L_elbow_roll_joint": -1.56,
+      "L_elbow_yaw_joint": 2.88,
+      "L_shoulder_pitch_joint": 0.0,
+      "L_shoulder_roll_joint": -0.15,
+      "L_shoulder_yaw_joint": -1.56,
+      "L_wrist_pitch_joint": 0.0,
+      "L_wrist_roll_joint": 0.0,
+      "R_elbow_roll_joint": -1.56,
+      "R_elbow_yaw_joint": -2.88,
+      "R_shoulder_pitch_joint": 0.0,
+      "R_shoulder_roll_joint": -0.15,
+      "R_shoulder_yaw_joint": 1.56,
+      "R_wrist_pitch_joint": 0.0,
+      "R_wrist_roll_joint": 0.0,
+      "head_pitch_joint": -0.65,
+      "head_yaw_joint": 0.0,
+      "waist_yaw_joint": 0.0
+    },
+    "limits": {}
+  },
+  "end_effectors": {
+    "type": "v4_hand_7dof",
+    "groups": {
+      "left_hand": [
+        "left_thumb_swing",
+        "left_thumb_mcp",
+        "left_thumb_pip",
+        "left_index_mcp",
+        "left_middle_mcp",
+        "left_ring_mcp",
+        "left_little_mcp"
+      ],
+      "right_hand": [
+        "right_thumb_swing",
+        "right_thumb_mcp",
+        "right_thumb_pip",
+        "right_index_mcp",
+        "right_middle_mcp",
+        "right_ring_mcp",
+        "right_little_mcp"
+      ]
+    },
+    "open": {
+      "left_thumb_swing": 0.0,
+      "left_thumb_mcp": 0.0,
+      "left_thumb_pip": 0.0,
+      "left_index_mcp": 0.0,
+      "left_middle_mcp": 0.0,
+      "left_ring_mcp": 0.0,
+      "left_little_mcp": 0.0,
+      "right_thumb_swing": 0.0,
+      "right_thumb_mcp": 0.0,
+      "right_thumb_pip": 0.0,
+      "right_index_mcp": 0.0,
+      "right_middle_mcp": 0.0,
+      "right_ring_mcp": 0.0,
+      "right_little_mcp": 0.0
+    },
+    "topics": {
+      "left_cmd": "/mc/left_hand/command",
+      "right_cmd": "/mc/right_hand/command",
+      "left_state": "/mc/left_hand/joint_states",
+      "right_state": "/mc/right_hand/joint_states"
+    }
+  },
+  "ros": {
+    "namespace": "",
+    "cmd_namespace": "",
+    "body_cmd_topic": "/mc/sdk/robot_command",
+    "body_state_topic": "/mc/sdk/robot_state"
+  },
+  "zmq": {
+    "host": "127.0.0.1",
+    "cmd_port": 5561,
+    "status_port": 5562,
+    "image_port": 5563
+  },
+  "bridge": {
+    "enabled": true,
+    "script": "/ubt_IL/walker/ros2_walker_bridge.py"
+  },
+  "safety": {
+    "max_relative_target": 0.02,
+    "disable_torque_on_disconnect": true
+  },
+  "cameras": {
+    "camera_head": {
+      "type": "walker_camera",
+      "ros_topic": "/sensor/camera/stereo/color/raw",
+      "msg_type": "shm_msgs/Image2m",
+      "width": 640,
+      "height": 360,
+      "fps": 15,
+      "warmup_s": 3,
+      "timeout_ms": 5000
+    }
+  }
+}

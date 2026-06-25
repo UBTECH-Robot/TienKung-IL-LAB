@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "robot_model": "walker_s2_gripper_19d",
+  "description": "Walker S2: 17D body + left/right 1D PGC grippers",
+  "action_order": [
+    "L_elbow_roll_joint",
+    "L_elbow_yaw_joint",
+    "L_shoulder_pitch_joint",
+    "L_shoulder_roll_joint",
+    "L_shoulder_yaw_joint",
+    "L_wrist_pitch_joint",
+    "L_wrist_roll_joint",
+    "R_elbow_roll_joint",
+    "R_elbow_yaw_joint",
+    "R_shoulder_pitch_joint",
+    "R_shoulder_roll_joint",
+    "R_shoulder_yaw_joint",
+    "R_wrist_pitch_joint",
+    "R_wrist_roll_joint",
+    "head_pitch_joint",
+    "head_yaw_joint",
+    "waist_yaw_joint",
+    "left_grip",
+    "right_grip"
+  ],
+  "body": {
+    "groups": {
+      "left_arm": [
+        "L_elbow_roll_joint",
+        "L_elbow_yaw_joint",
+        "L_shoulder_pitch_joint",
+        "L_shoulder_roll_joint",
+        "L_shoulder_yaw_joint",
+        "L_wrist_pitch_joint",
+        "L_wrist_roll_joint"
+      ],
+      "right_arm": [
+        "R_elbow_roll_joint",
+        "R_elbow_yaw_joint",
+        "R_shoulder_pitch_joint",
+        "R_shoulder_roll_joint",
+        "R_shoulder_yaw_joint",
+        "R_wrist_pitch_joint",
+        "R_wrist_roll_joint"
+      ],
+      "head": ["head_pitch_joint", "head_yaw_joint"],
+      "waist": ["waist_yaw_joint"]
+    },
+    "lock_joints": ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"],
+    "home": {
+      "L_elbow_roll_joint": -1.7,
+      "L_elbow_yaw_joint": 1.50,
+      "L_shoulder_pitch_joint": 0.0,
+      "L_shoulder_roll_joint": -0.15,
+      "L_shoulder_yaw_joint": -1.56,
+      "L_wrist_pitch_joint": 0.0,
+      "L_wrist_roll_joint": 0.0,
+      "R_elbow_roll_joint": -1.7,
+      "R_elbow_yaw_joint": -1.50,
+      "R_shoulder_pitch_joint": 0.0,
+      "R_shoulder_roll_joint": -0.15,
+      "R_shoulder_yaw_joint": 1.56,
+      "R_wrist_pitch_joint": 0.0,
+      "R_wrist_roll_joint": 0.0,
+      "head_pitch_joint": -0.65,
+      "head_yaw_joint": 0.0,
+      "waist_yaw_joint": 0.0
+    },
+    "limits": {}
+  },
+  "end_effectors": {
+    "type": "pgc_gripper_1dof",
+    "groups": {
+      "left_hand": ["left_grip"],
+      "right_hand": ["right_grip"]
+    },
+    "open": {
+      "left_grip": 0.05,
+      "right_grip": 0.05
+    },
+    "limits": {
+      "position": [0.0, 0.05],
+      "force": [41.0, 100.0],
+      "velocity": [0.0, 0.01],
+      "acceleration": [0.0, 3.0]
+    },
+    "command_defaults": {
+      "force": 41.0,
+      "velocity": 0.005,
+      "acceleration": 0.0,
+      "mode": 0
+    },
+    "topics": {
+      "left_cmd": "/ecat/left_grip/cmd",
+      "right_cmd": "/ecat/right_grip/cmd",
+      "left_state": "/ecat/left_grip/state",
+      "right_state": "/ecat/right_grip/state"
+    }
+  },
+  "ros": {
+    "namespace": "",
+    "cmd_namespace": "",
+    "body_cmd_topic": "/mc/sdk/robot_command",
+    "body_state_topic": "/mc/sdk/robot_state"
+  },
+  "zmq": {
+    "host": "127.0.0.1",
+    "cmd_port": 5561,
+    "status_port": 5562,
+    "image_port": 5563
+  },
+  "bridge": {
+    "enabled": true,
+    "script": "/ubt_IL/walker/ros2_walker_bridge.py"
+  },
+  "safety": {
+    "max_relative_target": 0.02,
+    "disable_torque_on_disconnect": true
+  },
+  "cameras": {
+    "camera_head": {
+      "type": "walker_camera",
+      "ros_topic": "/sensor/camera/stereo/color/raw",
+      "msg_type": "shm_msgs/Image2m",
+      "width": 640,
+      "height": 360,
+      "fps": 15,
+      "warmup_s": 3,
+      "timeout_ms": 5000
+    }
+  }
+}

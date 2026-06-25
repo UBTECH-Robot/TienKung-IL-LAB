@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>sys_task_msgs</name>
+  <version>0.0.0</version>
+  <description>This is the sys_task_msgs package</description>
+
+  <maintainer email="zhanjia.bi@ubtrobot.com">bzj</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- Build system -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- For message/service/action generation -->
+  <build_depend>rosidl_default_generators</build_depend>
+
+  <!-- Runtime dependencies for using generated code -->
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <!-- Other dependent message packages -->
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>rosa_msgs</depend>
+
+  <!-- Group: so other packages can find message interfaces -->
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

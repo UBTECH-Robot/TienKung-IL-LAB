@@ -3,6 +3,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
+WALKER_WS="/ubt_IL/walker/walker_sdk_ros2"
+
 case "${1:-}" in
     build)
         echo "[INFO] Building image: $IMAGE"
@@ -54,7 +56,7 @@ case "${1:-}" in
         fi
 
         # 等待 entrypoint 安装完成，同时实时显示安装日志
-        echo "[INFO] Waiting for entrypoint to install lerobot and plugin..."
+        echo "[INFO] Waiting for entrypoint to install lerobot, plugins and messages..."
         TIMEOUT=300
         ELAPSED=0
 
@@ -62,11 +64,11 @@ case "${1:-}" in
         sudo docker logs -f "$CONTAINER_NAME" 2>&1 &
         LOG_PID=$!
 
-        while sudo docker exec "$CONTAINER_NAME" pgrep -f "uv pip install" >/dev/null 2>&1; do
+        while sudo docker exec "$CONTAINER_NAME" pgrep -af "uv pip install|colcon build" >/dev/null 2>&1; do
             sleep 3
             ELAPSED=$((ELAPSED + 3))
             if [ $ELAPSED -ge $TIMEOUT ]; then
-                echo "[WARN] Install still running after ${TIMEOUT}s, proceeding anyway..."
+                echo "[WARN] Install/build still running after ${TIMEOUT}s, proceeding anyway..."
                 break
             fi
         done
@@ -109,6 +111,7 @@ case "${1:-}" in
         fi
         sudo docker exec -it "$CONTAINER_NAME" bash -c "\
             source /opt/ros/humble/setup.bash 2>/dev/null || true; \
+            source $WALKER_WS/install/setup.bash 2>/dev/null || true; \
             export ROS_DOMAIN_ID=$DOMAIN_ID; \
             export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/fastdds_no_shm.xml; \
             bash"
@@ -144,7 +147,7 @@ case "${1:-}" in
             echo "[OK] Project mounted: /ubt_IL"
         else
             echo "[FAIL] Project NOT mounted!"
-            ((ERRORS++))
+            ERRORS=$((ERRORS + 1))
         fi
 
         # lerobot 导入
@@ -152,7 +155,7 @@ case "${1:-}" in
             echo "[OK] lerobot package: installed"
         else
             echo "[FAIL] lerobot package: NOT installed"
-            ((ERRORS++))
+            ERRORS=$((ERRORS + 1))
         fi
 
         # tienkung 插件导入
@@ -160,7 +163,40 @@ case "${1:-}" in
             echo "[OK] tienkung plugin: installed"
         else
             echo "[FAIL] tienkung plugin: NOT installed"
-            ((ERRORS++))
+            ERRORS=$((ERRORS + 1))
+        fi
+
+        # Walker 插件导入（如果已迁移 walker/ 目录）
+        if sudo docker exec "$CONTAINER_NAME" test -d /ubt_IL/walker/lerobot_robot_walker; then
+            if sudo docker exec "$CONTAINER_NAME" /lerobot/.venv/bin/python -c "from lerobot_robot_walker import WalkerRobotConfig, WalkerCameraConfig" 2>/dev/null; then
+                echo "[OK] walker plugin: installed"
+            else
+                echo "[FAIL] walker plugin: NOT installed"
+                ERRORS=$((ERRORS + 1))
+            fi
+        else
+            echo "[WARN] walker plugin: /ubt_IL/walker/lerobot_robot_walker not found"
+            WARNINGS=$((WARNINGS + 1))
+        fi
+
+        # Walker Bridge2 脚本
+        if sudo docker exec "$CONTAINER_NAME" test -f /ubt_IL/walker/ros2_walker_bridge.py; then
+            echo "[OK] walker bridge: available"
+        else
+            echo "[WARN] walker bridge: /ubt_IL/walker/ros2_walker_bridge.py not found"
+            WARNINGS=$((WARNINGS + 1))
+        fi
+
+        # Walker ROS2 messages
+        if sudo docker exec "$CONTAINER_NAME" bash -lc "source /opt/ros/humble/setup.bash 2>/dev/null || true; source $WALKER_WS/install/setup.bash 2>/dev/null || true; /usr/bin/python3 - <<'PY'
+from mc_state_msgs.msg import RobotState
+from mc_task_msgs.msg import JointCmd, JointCommand, RobotCommand
+from shm_msgs.msg import Image2m
+PY" 2>/dev/null; then
+            echo "[OK] walker ROS2 msgs: installed"
+        else
+            echo "[WARN] walker ROS2 msgs: NOT installed"
+            WARNINGS=$((WARNINGS + 1))
         fi
 
         # ROS2 Humble
@@ -168,7 +204,7 @@ case "${1:-}" in
             echo "[OK] ROS2 Humble: installed"
         else
             echo "[FAIL] ROS2 Humble: NOT installed"
-            ((ERRORS++))
+            ERRORS=$((ERRORS + 1))
         fi
 
         # bodyctrl_msgs
@@ -176,7 +212,7 @@ case "${1:-}" in
             echo "[OK] bodyctrl_msgs: installed"
         else
             echo "[WARN] bodyctrl_msgs: NOT installed"
-            ((WARNINGS++))
+            WARNINGS=$((WARNINGS + 1))
         fi
 
         # GPU
@@ -185,7 +221,7 @@ case "${1:-}" in
             echo "[OK] GPU: $GPU"
         else
             echo "[FAIL] GPU: not detected"
-            ((ERRORS++))
+            ERRORS=$((ERRORS + 1))
         fi
 
         # 网络
@@ -194,7 +230,7 @@ case "${1:-}" in
             echo "[OK] Network: host mode"
         else
             echo "[FAIL] Network: $NET (expected host mode)"
-            ((ERRORS++))
+            ERRORS=$((ERRORS + 1))
         fi
 
         echo ""
