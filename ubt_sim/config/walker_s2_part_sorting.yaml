@@ -63,7 +63,7 @@ objects:
 
 cameras:
   head_rgb:
-    prim_path: "{ENV_REGEX_NS}/Robot/Camera_RGB"
+    prim_path: "{ENV_REGEX_NS}/Robot/head_pitch_link/head_stereo_left/head_stereo_left_Camera_01"
     data_types: ["rgb"]
     resolution: [640, 480]
 

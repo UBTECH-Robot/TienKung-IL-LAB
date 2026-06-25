@@ -14,9 +14,8 @@ robot:
 
 cameras:
   head_rgb:
-    # Phase 1 uses a spawned debug RGB camera under the robot root so USD-internal
-    # head camera hierarchy uncertainty does not block robot loading.
-    prim_path: "{ENV_REGEX_NS}/Robot/Camera_RGB"
+    # Use the USD-internal left head stereo camera as the published head RGB view.
+    prim_path: "{ENV_REGEX_NS}/Robot/head_pitch_link/head_stereo_left/head_stereo_left_Camera_01"
     data_types: ["rgb"]
     resolution: [640, 480]
 

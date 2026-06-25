@@ -430,13 +430,7 @@ class WalkerS2PartSortingSceneCfg(InteractiveSceneCfg):
         height=int(_HEAD_RGB_RESOLUTION[1]),
         width=int(_HEAD_RGB_RESOLUTION[0]),
         data_types=["rgb"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=24.0,
-            focus_distance=400.0,
-            horizontal_aperture=44.76,
-            vertical_aperture=24.99,
-            clipping_range=(0.1, 1.0e5),
-        ),
+        spawn=None,
     )
 
 

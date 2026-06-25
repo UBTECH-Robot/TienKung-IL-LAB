@@ -54,7 +54,8 @@ def _read_hdf5_part(file, spec) -> np.ndarray:
 
     spec can be:
       - str: direct HDF5 key, read full array
-      - dict: {"hdf5_key": ..., "repeat": N, "pad": [v1, ...], "invert": true}
+      - dict: {"hdf5_key": ..., "expand_dims": true, "repeat": N, "pad": [v1, ...], "invert": true}
+        "expand_dims" (optional): if true and data is 1D, expand to (T, 1)
         "repeat" (optional): repeat the value N times along last axis
         "pad" (optional): append constant values along last axis
         "invert" (optional): if true, apply 1 - value to flip the range
@@ -64,6 +65,9 @@ def _read_hdf5_part(file, spec) -> np.ndarray:
 
     hdf5_key = spec["hdf5_key"]
     data = np.array(file[hdf5_key])
+
+    if spec.get("expand_dims", False) and data.ndim == 1:
+        data = data[:, None]
 
     if "invert" in spec and spec["invert"]:
         data = 1.0 - data
@@ -164,10 +168,11 @@ def process_episode(
                     raw = file[hdf5_key]
 
                     if encoding == "jpeg":
-                        images = [
-                            cv2.resize(cv2.imdecode(img, cv2.IMREAD_COLOR_RGB), image_size)
-                            for img in raw
-                        ]
+                        images = []
+                        for buf in raw:
+                            img = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
+                            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                            images.append(cv2.resize(img, image_size))
                     elif encoding == "png_depth":
                         # uint16 millimeter depth -> 3-channel uint8 video frame
                         # (Pick_up_the_apple_all 约定：复制到 3 通道，走 mp4 编码，is_depth_map=false)
