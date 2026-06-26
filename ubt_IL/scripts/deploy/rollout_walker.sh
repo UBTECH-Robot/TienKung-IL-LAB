@@ -14,6 +14,15 @@ STRATEGY="${STRATEGY:-base}"
 FPS="${FPS:-15}"
 DURATION="${DURATION:-30}"
 TASK="${TASK:-walker s2 rollout}"
+PREVIEW_CAMERA="${PREVIEW_CAMERA:-0}"
+PREVIEW_CAMERA_HOST="${PREVIEW_CAMERA_HOST:-127.0.0.1}"
+PREVIEW_CAMERA_PORT="${PREVIEW_CAMERA_PORT:-5563}"
+PREVIEW_CAMERA_NAME="${PREVIEW_CAMERA_NAME:-camera_head}"
+PREVIEW_CAMERA_WIDTH="${PREVIEW_CAMERA_WIDTH:-0}"
+PREVIEW_CAMERA_HEIGHT="${PREVIEW_CAMERA_HEIGHT:-0}"
+PREVIEW_CAMERA_TIMEOUT_MS="${PREVIEW_CAMERA_TIMEOUT_MS:-5000}"
+PREVIEW_CAMERA_PRINT_FPS="${PREVIEW_CAMERA_PRINT_FPS:-1}"
+PREVIEW_CAMERA_WINDOW="${PREVIEW_CAMERA_WINDOW:-Walker camera}"
 
 if [ -z "$POLICY_PATH" ]; then
     echo "[ERROR] POLICY_PATH is required."
@@ -104,6 +113,34 @@ if names is None:
 PY
 
 cd /ubt_IL/lerobot
+
+PREVIEW_PID=""
+cleanup_preview() {
+    if [ -n "$PREVIEW_PID" ]; then
+        kill "$PREVIEW_PID" 2>/dev/null || true
+        wait "$PREVIEW_PID" 2>/dev/null || true
+    fi
+}
+
+if [ "$PREVIEW_CAMERA" = "1" ]; then
+    PREVIEW_CMD=(
+        /lerobot/.venv/bin/python /ubt_IL/scripts/deploy/preview_walker_camera.py
+        --host "$PREVIEW_CAMERA_HOST"
+        --port "$PREVIEW_CAMERA_PORT"
+        --camera "$PREVIEW_CAMERA_NAME"
+        --width "$PREVIEW_CAMERA_WIDTH"
+        --height "$PREVIEW_CAMERA_HEIGHT"
+        --timeout-ms "$PREVIEW_CAMERA_TIMEOUT_MS"
+        --window "$PREVIEW_CAMERA_WINDOW"
+    )
+    if [ "$PREVIEW_CAMERA_PRINT_FPS" = "1" ]; then
+        PREVIEW_CMD+=(--print-fps)
+    fi
+    echo "[INFO] Starting Walker camera preview: ${PREVIEW_CAMERA_NAME} at ${PREVIEW_CAMERA_HOST}:${PREVIEW_CAMERA_PORT}"
+    "${PREVIEW_CMD[@]}" &
+    PREVIEW_PID=$!
+    trap cleanup_preview EXIT INT TERM
+fi
 
 /lerobot/.venv/bin/lerobot-rollout \
     --strategy.type="$STRATEGY" \

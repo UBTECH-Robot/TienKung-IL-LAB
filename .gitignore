@@ -72,3 +72,4 @@ ubt_IL/walker/walker_sdk_ros2/robot_control/camera_frame_*.png
 ubt_IL/walker/**/__pycache__/
 ubt_IL/walker/**/*.pyc
 ubt_IL/walker/**/*.egg-info/
+ubt_sim/teleoperation/control/walker/camera_*.png
