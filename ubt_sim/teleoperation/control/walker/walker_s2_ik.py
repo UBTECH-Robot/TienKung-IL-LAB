@@ -55,12 +55,13 @@ class WalkerS2IK:
     LEFT_EE_FRAME = "L_sixforce_link"
     RIGHT_EE_FRAME = "R_sixforce_link"
 
-    def __init__(self, urdf_path: str):
+    def __init__(self, urdf_path: str, joint_limits=None, joint_limit_margin: float = 0.0):
         self.urdf_path = str(urdf_path)
         self.model = pin.buildModelFromUrdf(self.urdf_path)
         self.data = self.model.createData()
 
         self._validate_model()
+        self._joint_limit_override_count = self._apply_joint_limits(joint_limits, joint_limit_margin)
         self.left_ee_id = self.model.getFrameId(self.LEFT_EE_FRAME)
         self.right_ee_id = self.model.getFrameId(self.RIGHT_EE_FRAME)
 
@@ -104,6 +105,36 @@ class WalkerS2IK:
             q_indices.append(self.model.joints[jid].idx_q)
             v_indices.append(self.model.joints[jid].idx_v)
         return q_indices, v_indices
+
+    def _apply_joint_limits(self, joint_limits, margin: float = 0.0) -> int:
+        if joint_limits is None:
+            return 0
+        margin = float(margin)
+        applied = 0
+        for name, limits in joint_limits.items():
+            if not self.model.existJointName(name):
+                continue
+            jid = self.model.getJointId(name)
+            joint = self.model.joints[jid]
+            if joint.nq != 1:
+                continue
+            q_idx = joint.idx_q
+            lower, upper = limits
+            safe_lower = max(float(self.model.lowerPositionLimit[q_idx]), float(lower) + margin)
+            safe_upper = min(float(self.model.upperPositionLimit[q_idx]), float(upper) - margin)
+            if safe_lower >= safe_upper:
+                raise ValueError(
+                    f"Invalid constrained IK limits for {name}: "
+                    f"[{safe_lower:.4f}, {safe_upper:.4f}]"
+                )
+            if (
+                safe_lower != float(self.model.lowerPositionLimit[q_idx])
+                or safe_upper != float(self.model.upperPositionLimit[q_idx])
+            ):
+                applied += 1
+            self.model.lowerPositionLimit[q_idx] = safe_lower
+            self.model.upperPositionLimit[q_idx] = safe_upper
+        return applied
 
     def set_neutral_config(self, left_angles: list[float], right_angles: list[float]) -> None:
         if len(left_angles) != len(self.LEFT_ARM_JOINTS):
@@ -223,7 +254,9 @@ class WalkerS2IK:
             raise ValueError(f"rot_axis_weights must have shape (3,), got {rot_axis_weights.shape}")
         rot_weights = rot_weight * rot_axis_weights
         weight = np.diag([pos_weight] * 3 + rot_weights.tolist())
-        effective_rot_tol = rot_tol / max(float(np.max(rot_weights)), 0.01)
+        max_rot_weight = float(np.max(np.abs(rot_weights)))
+        check_rotation = max_rot_weight > 1e-9
+        effective_rot_tol = float("inf") if not check_rotation else rot_tol / max(max_rot_weight, 0.01)
         use_null = q_neutral_active is not None and null_weight > 0.0
         pos_err = float("inf")
         rot_err = float("inf")
@@ -236,8 +269,8 @@ class WalkerS2IK:
             current_pose = self.data.oMf[ee_id]
             error = pin.log(current_pose.actInv(target_se3)).vector
             pos_err = float(np.linalg.norm(error[:3]))
-            rot_err = float(np.linalg.norm(error[3:] * rot_axis_weights))
-            if pos_err < pos_tol and rot_err < effective_rot_tol:
+            rot_err = float(np.linalg.norm(error[3:] * rot_axis_weights)) if check_rotation else 0.0
+            if pos_err < pos_tol and (not check_rotation or rot_err < effective_rot_tol):
                 active_q = np.array([q[idx] for idx in q_indices], dtype=float)
                 for idx in q_indices:
                     self.q[idx] = q[idx]

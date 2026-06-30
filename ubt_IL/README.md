@@ -89,6 +89,86 @@ python scripts/convert/convert_to_lerobot.py \
 | `Tien_Kung_26_1RGB.json` | 仿真 | 26 | action 从 `action/` 读取 |
 | `Tien_Kung_26_1RGB_real.json` | 真机 | 26 | action 从 `master/` 读取，含灵巧手 invert/padding |
 | `Tien_Kung_Gello_1RGB.json` | Gello | 16 | 关节空间，单相机 |
+| `Walker_S2_real_19_1RGBD.json` | Walker S2 真机 | 19 | 17D body/head/waist + 左右 1D PGC 夹爪，RGB camera_head |
+
+### Walker S2 真机 HDF5 批量转换（19D）
+
+容器内运行。源目录可传单个 episode，也可传整个 `walker-s2-real-data` 根目录；传根目录时脚本会批量扫描每个子目录下的 `hdf5/metadata_aligned.hdf5` 并合并成一个 LeRobot v3.0 数据集。
+
+转换前可先检查可转换 episode 数量：
+
+```bash
+find /ubt_IL/dataset/walker-s2-real-data \
+  -maxdepth 3 \
+  -type f \
+  -name metadata_aligned.hdf5 \
+  -print | wc -l
+```
+
+批量转换全部 Walker S2 真机 HDF5：
+
+```bash
+PYTHONPATH=/ubt_IL/lerobot/src \
+python /ubt_IL/scripts/convert/convert_walker_real_to_lerobot_v3.py \
+  --config /ubt_IL/scripts/convert/configs/Walker_S2_real_19_1RGBD.json \
+  --src_root /ubt_IL/dataset/walker-s2-real-data \
+  --tgt_path /ubt_IL/dataset \
+  --repo_id Walker_S2_real_19_1RGBD \
+  --task_name walker_s2_real \
+  --robot_type walker_s2 \
+  --fps 12.5 \
+  2>&1 | tee /ubt_IL/dataset/Walker_S2_real_19_1RGBD_conversion.log
+```
+
+输出目录：
+
+```bash
+/ubt_IL/dataset/Walker_S2_real_19_1RGBD
+```
+
+单条 episode 测试转换示例：
+
+```bash
+PYTHONPATH=/ubt_IL/lerobot/src \
+python /ubt_IL/scripts/convert/convert_walker_real_to_lerobot_v3.py \
+  --config /ubt_IL/scripts/convert/configs/Walker_S2_real_19_1RGBD.json \
+  --src_root /ubt_IL/dataset/walker-s2-real-data/20260629_150738_task_1782716590_1691 \
+  --tgt_path /ubt_IL/dataset \
+  --repo_id Walker_S2_real_19_1RGBD_test \
+  --task_name walker_s2_real \
+  --robot_type walker_s2 \
+  --fps auto \
+  --save_one true
+```
+
+`--fps` 支持 `auto` 或显式数值，例如 `--fps 12.5`、`--fps 15`、`--fps 30`。注意：显式改成 `--fps 30` 只会把 LeRobot timestamp 和视频编码标为 30Hz，不会对原始约 12.5Hz 的采集数据做插值/补帧；帧数不变，动作节奏会被压快。若要保持真实采集时序，推荐使用 `--fps 12.5` 或 `--fps auto`。
+
+如果输出目录已存在，脚本默认拒绝覆盖；确认要重跑并替换旧输出时再加：
+
+```bash
+--overwrite
+```
+
+转换后检查：
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("/ubt_IL/dataset/Walker_S2_real_19_1RGBD")
+info = json.loads((root / "meta/info.json").read_text())
+
+print("codebase_version:", info["codebase_version"])
+print("fps:", info["fps"])
+print("robot_type:", info["robot_type"])
+print("total_episodes:", info["total_episodes"])
+print("total_frames:", info["total_frames"])
+print("state shape:", info["features"]["observation.state"]["shape"])
+print("action shape:", info["features"]["action"]["shape"])
+print("image shape:", info["features"]["observation.images.camera_head"]["shape"])
+PY
+```
 
 ### 数据可视化
 
@@ -219,19 +299,36 @@ cd docker
 bash run.sh check
 ```
 
-Walker 专用 rollout 入口：
+Walker 专用 rollout 入口，支持 19D（PGC 夹爪）和 31D（V4 灵巧手）两种配置：
 
 ```bash
-# 需要 31 维 Walker 真机 policy
+# 19D PGC 夹爪模型（需要 ALLOW_DIM_ONLY_POLICY=1，见下方说明）
+ROBOT_MODEL=walker_s2_gripper_19d \
+ALLOW_DIM_ONLY_POLICY=1 \
+POLICY_PATH=/ubt_IL/model/Walker_S2_real_19_1RGBD_act/checkpoints/last/pretrained_model \
+  bash /ubt_IL/scripts/deploy/rollout_walker.sh
+
+# 31D V4 灵巧手模型
+ROBOT_MODEL=walker_s2_v4_hand_31d \
 POLICY_PATH=/ubt_IL/model/<walker_31dim_policy>/checkpoints/last/pretrained_model \
-DURATION=30 FPS=15 \
-CAMERA_TOPIC=/sensor/camera/stereo/color/raw \
   bash /ubt_IL/scripts/deploy/rollout_walker.sh
 ```
 
-⚠️ 当前 `model/Walker_S2_sim_act` 和 `scripts/deploy/train_config_walker_s2_sim.json` 是 19 维仿真配置；本次 P0 迁移不包含 19→31 维动作适配，`rollout_walker.sh` 会拒绝非 31 维 policy，避免误发真机动作。
+部署参数：
 
-### 相机 & 部署参数
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `ROBOT_MODEL` | `walker_s2_v4_hand_31d` | 机器人模型：`walker_s2_gripper_19d` 或 `walker_s2_v4_hand_31d` |
+| `POLICY_PATH` | (必填) | 模型 checkpoint 路径，指向 `pretrained_model/` 目录 |
+| `ALLOW_DIM_ONLY_POLICY` | `0` | 19D 模型缺少 `action_feature_names` 时须设为 `1` |
+| `DURATION` | `30` | 运行时长（秒） |
+| `FPS` | `15` | 推理帧率 |
+| `STRATEGY` | `base` | 部署策略类型 |
+| `PREVIEW_CAMERA` | `1` | 是否启动相机预览窗口 |
+
+> **19D 模型注意**：当前 19D 模型 `config.json` 的 `output_features.action` 中不包含 `names` 字段，`rollout_walker.sh` 默认拒绝仅靠维度匹配的部署。设置 `ALLOW_DIM_ONLY_POLICY=1` 前需确认训练数据 action 顺序与 `walker_s2_gripper_19d.json` 的 `action_order` 一致。
+
+### 相机 & 部署参数 (TienKung)
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|

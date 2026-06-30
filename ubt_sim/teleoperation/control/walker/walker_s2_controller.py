@@ -586,7 +586,11 @@ class WalkerS2Controller(Node):
                 from .walker_s2_ik import WalkerS2IK
             except ImportError:
                 from walker_s2_ik import WalkerS2IK
-            solver = WalkerS2IK(resolved_urdf)
+            solver = WalkerS2IK(
+                resolved_urdf,
+                joint_limits=BODY_JOINT_LIMITS,
+                joint_limit_margin=0.0,
+            )
         except Exception as exc:
             self.get_logger().error(f"Failed to initialize Walker S2 IK: {exc}")
             return False
@@ -601,7 +605,10 @@ class WalkerS2Controller(Node):
             self.ik_solver.set_neutral_config(left, right)
             if save_current_as_initial:
                 self.ik_solver.save_initial_q()
-        self.get_logger().info(f"Walker S2 IK initialized with URDF: {resolved_urdf}")
+        self.get_logger().info(
+            f"Walker S2 IK initialized with URDF: {resolved_urdf}; "
+            f"joint_limits_constrained={solver._joint_limit_override_count}"
+        )
         return True
 
     def reset_ik(self, save_current_as_initial=True):

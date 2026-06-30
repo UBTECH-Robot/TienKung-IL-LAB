@@ -181,8 +181,8 @@ class WalkerRobot(Robot):
         logger.info("Starting Walker Bridge2: %s --config <json>", self.config.bridge_script)
         self._bridge_process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
         # Write config to a known location for external scripts

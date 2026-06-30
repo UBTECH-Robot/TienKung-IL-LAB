@@ -54,6 +54,7 @@ from pick_part import (  # noqa: E402
     DEFAULT_PLACE_EXIT_LEFT_OFFSET_WORLD,
     DEFAULT_PLACE_LIFT_HEIGHT,
     DEFAULT_PLACE_RELEASE_HEIGHT,
+    DEFAULT_PLACE_ROT_WEIGHT,
     DEFAULT_POSITION_TOLERANCE,
     DEFAULT_RANDOMIZE_PARTS_TOPIC,
     DEFAULT_REQUIRE_IK_OK,
@@ -537,6 +538,7 @@ def build_parser():
     parser.add_argument("--place-approach-height", type=float, default=DEFAULT_PLACE_APPROACH_HEIGHT, help="place_approach 相对箱子 world z 的高度，单位 m")
     parser.add_argument("--place-release-height", type=float, default=DEFAULT_PLACE_RELEASE_HEIGHT, help="place_release 相对箱子 world z 的高度，单位 m")
     parser.add_argument("--place-lift-height", type=float, default=DEFAULT_PLACE_LIFT_HEIGHT, help="松爪后 place_lift 相对箱子 world z 的高度，单位 m")
+    parser.add_argument("--place-rot-weight", type=float, default=DEFAULT_PLACE_ROT_WEIGHT, help="放置阶段 IK 姿态误差权重；默认低于抓取阶段以减少姿态约束")
     parser.add_argument("--place-exit-left-offset", type=float, nargs=3, default=DEFAULT_PLACE_EXIT_LEFT_OFFSET_WORLD, metavar=("X", "Y", "Z"), help="松爪后先抬升，再按该 world 偏移离开箱体范围")
     parser.add_argument("--base-pos", type=float, nargs=3, default=DEFAULT_BASE_IN_WORLD_POS, metavar=("X", "Y", "Z"), help="URDF base 原点在 world frame 下的位置；默认来自 walker_s2_part_sorting.yaml")
     parser.add_argument("--world-to-base-quat", type=float, nargs=4, default=DEFAULT_WORLD_TO_BASE_QUAT_WXYZ, metavar=("W", "X", "Y", "Z"), help="world frame 到 URDF base frame 的旋转四元数 wxyz")
@@ -591,6 +593,7 @@ def build_move_kwargs(args):
         place_approach_height=args.place_approach_height,
         place_release_height=args.place_release_height,
         place_lift_height=args.place_lift_height,
+        place_rot_weight=args.place_rot_weight,
     )
 
 

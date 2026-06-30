@@ -46,7 +46,7 @@
       "head": ["head_pitch_joint", "head_yaw_joint"],
       "waist": ["waist_yaw_joint"]
     },
-    "lock_joints": ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"],
+    "lock_joints": [],
     "home": {
       "L_elbow_roll_joint": -1.7,
       "L_elbow_yaw_joint": 1.50,
@@ -125,7 +125,7 @@
       "width": 640,
       "height": 360,
       "fps": 15,
-      "warmup_s": 3,
+      "warmup_s": 10,
       "timeout_ms": 5000
     }
   }

@@ -44,6 +44,7 @@ DEFAULT_APPROACH_OFFSET_WORLD = (0.0, 0.0, 0.12)
 DEFAULT_DESCEND_OFFSET_WORLD = (0.0, 0.0, 0.035)
 DEFAULT_LIFT_OFFSET_WORLD = (0.0, 0.0, 0.14)
 DEFAULT_ROT_WEIGHT = 0.10
+DEFAULT_PLACE_ROT_WEIGHT = 0.02
 DEFAULT_POSITION_TOLERANCE = 0.01
 DEFAULT_JOINT_LIMIT_MARGIN = 0.0
 DEFAULT_REQUIRE_IK_OK = True
@@ -52,7 +53,7 @@ DEFAULT_UNCONSTRAIN_ROT_Z = True
 DEFAULT_UNLOCK_WAIST = True
 DEFAULT_GRASP_RADIUS = 0.0
 DEFAULT_GRASP_MIN_TABLE_ANGLE_DEG = 10.0
-DEFAULT_GRASP_LIFT_HEIGHT = 0.15
+DEFAULT_GRASP_LIFT_HEIGHT = 0.20
 DEFAULT_GRASP_PREGRASP_HEIGHT = 0.10
 DEFAULT_GRASP_TARGET_OFFSET_WORLD = (0.0, 0.0, 0.02)
 DEFAULT_GRASP_DESCEND_AFTER_TARGET_WORLD = (0.0, 0.0, -0.01)
@@ -74,7 +75,7 @@ DEFAULT_WORLD_TO_BASE_QUAT_WXYZ = (0.7071068, 0.0, 0.0, -0.7071068)
 DEFAULT_RIGHT_BOX_WORLD_POS1 = (1.2, 0.3 - 0.06, 1.05)
 DEFAULT_RIGHT_BOX_WORLD_POS2 = (1.2, 0.3 + 0.07, 1.05)
 DEFAULT_RIGHT_BOX_WORLD_POS = DEFAULT_RIGHT_BOX_WORLD_POS1
-DEFAULT_PLACE_APPROACH_HEIGHT = 0.18
+DEFAULT_PLACE_APPROACH_HEIGHT = 0.22
 DEFAULT_PLACE_RELEASE_HEIGHT = 0.10
 DEFAULT_PLACE_LIFT_HEIGHT = 0.20
 DEFAULT_PLACE_EXIT_LEFT_OFFSET_WORLD = (-0.25, 0.0, 0.05)
@@ -1262,7 +1263,13 @@ def _execute_grasp_once(
     else:
         part_state_seq_before_lift = None
 
-    if not controller.move_to_pose(stage_map["lift"]["joint_targets"], duration_sec=duration_per_step, wait=True, unlock_required_joints=True):
+    if not controller.move_to_pose(
+        stage_map["lift"]["joint_targets"],
+        duration_sec=duration_per_step,
+        wait=True,
+        unlock_required_joints=True,
+        settle_tolerance=0.04,
+    ):
         controller.get_logger().error("Lift trajectory failed")
         return {"ok": False, "grasp_success": None, "lift_stage": None, "check": None}
     _log_actual_ee_debug(
@@ -1304,6 +1311,7 @@ def _execute_place(
     place_approach_height,
     place_release_height,
     place_lift_height,
+    place_rot_weight,
     duration_per_step,
     gripper_duration,
     timeout,
@@ -1324,7 +1332,7 @@ def _execute_place(
         side,
         place_box_world_pos,
         ee_rpy_base,
-        rot_weight=rot_weight,
+        rot_weight=place_rot_weight,
         unlock_waist=unlock_waist,
         joint_limit_margin=joint_limit_margin,
         seed_joint_targets=lift_stage.get("joint_targets"),
@@ -1450,6 +1458,7 @@ def move_ee_by_waypoints(
     place_approach_height=DEFAULT_PLACE_APPROACH_HEIGHT,
     place_release_height=DEFAULT_PLACE_RELEASE_HEIGHT,
     place_lift_height=DEFAULT_PLACE_LIFT_HEIGHT,
+    place_rot_weight=DEFAULT_PLACE_ROT_WEIGHT,
     position_tolerance=DEFAULT_POSITION_TOLERANCE,
     require_ik_ok=DEFAULT_REQUIRE_IK_OK,
     grasp_max_attempts=DEFAULT_GRASP_MAX_ATTEMPTS,
@@ -1571,7 +1580,7 @@ def move_ee_by_waypoints(
                 side,
                 place_box_world_pos,
                 ee_rpy_base,
-                rot_weight=rot_weight,
+                rot_weight=place_rot_weight,
                 unlock_waist=unlock_waist,
                 joint_limit_margin=joint_limit_margin,
                 seed_joint_targets=lift_stage.get("joint_targets"),
@@ -1656,6 +1665,7 @@ def move_ee_by_waypoints(
                     place_approach_height,
                     place_release_height,
                     place_lift_height,
+                    place_rot_weight,
                     duration_per_step,
                     gripper_duration,
                     timeout,
@@ -1924,6 +1934,7 @@ def parse_args():
     parser.add_argument("--place-approach-height", type=float, default=DEFAULT_PLACE_APPROACH_HEIGHT, help="place_approach 相对箱子 world z 的高度，单位 m")
     parser.add_argument("--place-release-height", type=float, default=DEFAULT_PLACE_RELEASE_HEIGHT, help="place_release 相对箱子 world z 的高度，单位 m")
     parser.add_argument("--place-lift-height", type=float, default=DEFAULT_PLACE_LIFT_HEIGHT, help="松爪后 place_lift 相对箱子 world z 的高度，单位 m")
+    parser.add_argument("--place-rot-weight", type=float, default=DEFAULT_PLACE_ROT_WEIGHT, help="放置阶段 IK 姿态误差权重；默认低于抓取阶段以减少姿态约束")
     parser.add_argument("--place-exit-left-offset", type=float, nargs=3, default=DEFAULT_PLACE_EXIT_LEFT_OFFSET_WORLD, metavar=("X", "Y", "Z"), help="松爪后先抬升，再按该 world 偏移离开箱体范围")
     parser.add_argument(
         "--base-pos",
@@ -2003,6 +2014,7 @@ def main():
             place_approach_height=args.place_approach_height,
             place_release_height=args.place_release_height,
             place_lift_height=args.place_lift_height,
+            place_rot_weight=args.place_rot_weight,
         )
         if part_names:
             ok = move_parts_by_waypoints(
