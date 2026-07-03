@@ -1,0 +1,109 @@
+ARG BASE_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/dustynv/l4t-pytorch:r36.4.0-linuxarm64
+FROM ${BASE_IMAGE}
+
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
+# 覆盖基镜像 TORCH_HOME=/data/models/torch（容器内 /data 不存在且无权创建），
+# 改到 bind mount 路径，使 torchvision ResNet 等 pretrained 权重可下载并持久化。
+ENV TORCH_HOME=/ubt_IL/.cache/torch
+
+# Ubuntu / ROS2 Humble sources. JetPack 6 uses Ubuntu 22.04 (jammy).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl gnupg lsb-release software-properties-common \
+    && sed -i 's|http://ports.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list \
+    && sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list \
+    && sed -i 's|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list \
+    && add-apt-repository -y universe \
+    && curl -sSL https://mirrors.tuna.tsinghua.edu.cn/rosdistro/ros.key \
+       | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+       https://mirrors.tuna.tsinghua.edu.cn/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+       | tee /etc/apt/sources.list.d/ros2.list \
+    && rm -rf /var/lib/apt/lists/*
+
+# ROS2 Humble + build/runtime dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-ros-base \
+    ros-humble-image-transport \
+    ros-humble-cv-bridge \
+    ros-humble-message-filters \
+    ros-humble-rclcpp \
+    ros-humble-std-msgs \
+    ros-humble-sensor-msgs \
+    ros-humble-geometry-msgs \
+    ros-humble-builtin-interfaces \
+    ros-humble-rosidl-default-generators \
+    ros-humble-rosidl-default-runtime \
+    build-essential cmake python3-colcon-common-extensions python3-empy \
+    python3-venv python3-pip \
+    libyaml-cpp-dev \
+    libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers \
+    libgtk-3-0 libcanberra-gtk3-module \
+    && rm -rf /var/lib/apt/lists/*
+
+# ARM64 note: docker/ros2_msgs/ros-humble-bodyctrl-msgs_0.0.1-1_amd64.deb
+# contains x86_64 native ROS type-support libraries, so it is intentionally not
+# installed here. Walker ROS2 message packages are built by entrypoint.sh.
+
+# System Python dependencies for ROS2 Bridge2.
+RUN /usr/bin/python3 -m pip install --upgrade pip \
+    && /usr/bin/python3 -m pip install --no-cache-dir \
+    --retries 5 --timeout 60 \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    pyzmq "numpy<2" "opencv-python<4.10" ikpy h5py \
+    && ln -sf /usr/bin/python3 /usr/local/bin/rospython
+
+# LeRobot runtime venv. entrypoint.sh expects /lerobot/.venv and installs the
+# bind-mounted LeRobot/plugins editable at container startup. This project uses
+# LeRobot 0.5.x, which requires Python >= 3.12.
+RUN if ! id -u user_lerobot >/dev/null 2>&1; then \
+        useradd -m -s /bin/bash user_lerobot; \
+    fi \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-dev python3.12-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /lerobot /ubt_IL \
+    && /usr/bin/python3.12 -m venv /lerobot/.venv \
+    && /lerobot/.venv/bin/python -m pip install --upgrade pip \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    && /lerobot/.venv/bin/python -m pip install uv \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    # LeRobot [dataset] extra 运行时依赖：rollout 模块在 import 时硬性 require
+    # datasets/av（lerobot.datasets 录制回放视频用）。lerobot 源码是 bind-mount，
+    # entrypoint 只做 editable 安装不含此 extra，故构建时预装这 4 个独立 PyPI 包。
+    # 不指定 numpy：entrypoint 会按 cv_bridge 兼容性 finalize 到 numpy<2（当前 1.26.4）。
+    && /lerobot/.venv/bin/python -m pip install --no-cache-dir \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        "datasets>=4.7.0,<5.0.0" "pandas>=2.0.0,<3.0.0" \
+        "pyarrow>=21.0.0,<30.0.0" "av>=15.0.0,<16.0.0" \
+    && chown -R user_lerobot:user_lerobot /lerobot /ubt_IL
+
+# Fast-DDS config: disable shared memory (fixes ROS2 data delivery inside Docker)
+COPY docker/fastdds_no_shm.xml /opt/fastdds_no_shm.xml
+
+# ── Jetson sm_87 PyTorch（源码编译 wheel，替代无 sm_87 的通用 cu128 wheel）────────
+# 通用 download.pytorch.org cu128 wheel 未编译 SM_87（Orin CC 8.7）→
+# "CUDA error: no kernel image is available for execution on the device"。
+# 这两个 wheel 在本机源码编译（TORCH_CUDA_ARCH_LIST=8.7, CUDA 12.6, cuDNN 9.4, cp312），
+# torch 2.7.1 满足 LeRobot >=2.7,<2.12；torchvision 0.22.1 满足 >=0.22,<0.27。
+# uv pip install -e .（entrypoint）不升级已满足约束的依赖，故 2.7.1 不被 cu128 覆盖；
+# entrypoint 的 reinstall_jetson_torch 作防御性安全网。
+# wheel 文件随镜像分发，避免每台机器重新编译 3.5h。
+COPY docker/torch-2.7.1a0+gite2d141d-cp312-cp312-linux_aarch64.whl /tmp/jetson/torch.whl
+COPY docker/torchvision-0.22.1+59a3e1f-cp312-cp312-linux_aarch64.whl /tmp/jetson/torchvision.whl
+RUN mkdir -p /opt/jetson-wheels \
+    && mv /tmp/jetson/torch.whl /opt/jetson-wheels/torch-2.7.1a0+gite2d141d-cp312-cp312-linux_aarch64.whl \
+    && mv /tmp/jetson/torchvision.whl /opt/jetson-wheels/torchvision-0.22.1+59a3e1f-cp312-cp312-linux_aarch64.whl \
+    && /lerobot/.venv/bin/pip install --no-deps --force-reinstall /opt/jetson-wheels/*.whl \
+    && chown -R user_lerobot:user_lerobot /lerobot/.venv /opt/jetson-wheels
+
+# Project code is bind-mounted at /ubt_IL; entrypoint performs editable installs.
+COPY docker/entrypoint.sh /opt/entrypoint.sh
+RUN chmod +x /opt/entrypoint.sh
+
+USER user_lerobot
+WORKDIR /ubt_IL
+
+ENTRYPOINT ["/opt/entrypoint.sh"]
+CMD ["bash"]

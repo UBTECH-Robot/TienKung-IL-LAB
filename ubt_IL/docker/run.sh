@@ -8,10 +8,15 @@ WALKER_WS="/ubt_IL/walker/walker_sdk_ros2"
 case "${1:-}" in
     build)
         echo "[INFO] Building image: $IMAGE"
+        echo "[INFO] Architecture: $ARCH"
+        echo "[INFO] Dockerfile: $DOCKERFILE"
+        echo "[INFO] Base image: $BASE_IMAGE"
+        echo "[INFO] GPU args: $DOCKER_GPU_ARGS"
         echo "[INFO] This may take a few minutes on first build..."
         sudo docker build \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
             -t "$IMAGE" \
-            -f "$SCRIPT_DIR/Dockerfile" \
+            -f "$DOCKERFILE" \
             "$PROJECT_ROOT"
         echo "[INFO] Image built: $IMAGE"
         ;;
@@ -29,12 +34,17 @@ case "${1:-}" in
             echo "[INFO] Creating container '$CONTAINER_NAME'..."
             mkdir -p "${PROJECT_ROOT}/.cache/huggingface"
 
+            GPU_ARGS=()
+            if [ -n "$DOCKER_GPU_ARGS" ]; then
+                read -r -a GPU_ARGS <<< "$DOCKER_GPU_ARGS"
+            fi
             sudo docker run -d --name "$CONTAINER_NAME" \
-                --gpus all \
+                "${GPU_ARGS[@]}" \
                 --network=host \
                 --shm-size=16g \
                 -e DOMAIN_ID="$DOMAIN_ID" \
                 -e HF_HOME="$HF_HOME" \
+                -e TORCH_HOME="$TORCH_HOME" \
                 -e UV_INDEX_URL="$UV_INDEX_URL" \
                 -v "$PROJECT_ROOT":/ubt_IL \
                 -e DISPLAY="${DISPLAY}" \
@@ -55,21 +65,65 @@ case "${1:-}" in
             exit 1
         fi
 
-        # 等待 entrypoint 安装完成，同时实时显示安装日志
-        echo "[INFO] Waiting for entrypoint to install lerobot, plugins and messages..."
-        TIMEOUT=300
+        # 等待 entrypoint 安装完成，同时实时显示安装日志。
+        # STARTUP_TIMEOUT=0 表示不超时；如果设置了超时，超时后也不会跳过，
+        # 而是直接失败，避免在 lerobot/plugins 仍未安装完时继续使用容器。
+        echo "[INFO] Waiting for entrypoint to finish installing lerobot, plugins and messages..."
+        STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-0}"
         ELAPSED=0
+        IDLE_ELAPSED=0
 
         # 后台跟踪容器日志（实时输出安装进度）
         sudo docker logs -f "$CONTAINER_NAME" 2>&1 &
         LOG_PID=$!
 
-        while sudo docker exec "$CONTAINER_NAME" pgrep -af "uv pip install|colcon build" >/dev/null 2>&1; do
+        is_env_ready() {
+            sudo docker exec "$CONTAINER_NAME" bash -lc '/lerobot/.venv/bin/python - <<'"'"'PY'"'"'
+import lerobot
+from lerobot_robot_tienkung import TienKungRobotConfig
+from lerobot_robot_walker import WalkerRobotConfig, WalkerCameraConfig
+PY' >/dev/null 2>&1
+        }
+
+        is_install_running() {
+            sudo docker exec "$CONTAINER_NAME" pgrep -af "uv pip install|colcon build|pip install" >/dev/null 2>&1
+        }
+
+        while true; do
+            if is_env_ready; then
+                break
+            fi
+
+            if ! sudo docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+                sudo kill $LOG_PID 2>/dev/null || true
+                wait $LOG_PID 2>/dev/null || true
+                echo "[ERROR] Container stopped before environment setup completed."
+                echo "[INFO] Check logs: sudo docker logs $CONTAINER_NAME"
+                exit 1
+            fi
+
+            if is_install_running; then
+                IDLE_ELAPSED=0
+            else
+                IDLE_ELAPSED=$((IDLE_ELAPSED + 3))
+                if [ $IDLE_ELAPSED -ge 30 ]; then
+                    sudo kill $LOG_PID 2>/dev/null || true
+                    wait $LOG_PID 2>/dev/null || true
+                    echo "[ERROR] Entrypoint setup appears finished, but lerobot/plugins are not importable."
+                    echo "[INFO] Check logs: sudo docker logs $CONTAINER_NAME"
+                    exit 1
+                fi
+            fi
+
             sleep 3
             ELAPSED=$((ELAPSED + 3))
-            if [ $ELAPSED -ge $TIMEOUT ]; then
-                echo "[WARN] Install/build still running after ${TIMEOUT}s, proceeding anyway..."
-                break
+            if [ "$STARTUP_TIMEOUT" != "0" ] && [ $ELAPSED -ge "$STARTUP_TIMEOUT" ]; then
+                sudo kill $LOG_PID 2>/dev/null || true
+                wait $LOG_PID 2>/dev/null || true
+                echo "[ERROR] Environment setup did not complete within ${STARTUP_TIMEOUT}s."
+                echo "[INFO] Install may still be running; not proceeding with incomplete setup."
+                echo "[INFO] Check logs: sudo docker logs -f $CONTAINER_NAME"
+                exit 1
             fi
         done
 
@@ -77,7 +131,7 @@ case "${1:-}" in
         sudo kill $LOG_PID 2>/dev/null || true
         wait $LOG_PID 2>/dev/null || true
 
-        echo "[INFO] Install completed (${ELAPSED}s)"
+        echo "[INFO] Environment setup completed (${ELAPSED}s)"
 
         echo ""
         echo "Next steps:"
@@ -137,6 +191,11 @@ case "${1:-}" in
         echo "=========================================="
         echo "  LeRobot TienKung Environment Check"
         echo "=========================================="
+        echo ""
+        echo "Host arch:      $ARCH"
+        CONTAINER_ARCH=$(sudo docker exec "$CONTAINER_NAME" uname -m 2>/dev/null || echo "unknown")
+        echo "Container arch: $CONTAINER_ARCH"
+        echo "Image:          $IMAGE"
         echo ""
 
         ERRORS=0
@@ -207,9 +266,12 @@ PY" 2>/dev/null; then
             ERRORS=$((ERRORS + 1))
         fi
 
-        # bodyctrl_msgs
+        # bodyctrl_msgs (x86_64 TianKung package; ARM64 image skips the amd64 deb by design)
         if sudo docker exec "$CONTAINER_NAME" dpkg -l ros-humble-bodyctrl-msgs >/dev/null 2>&1; then
             echo "[OK] bodyctrl_msgs: installed"
+        elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+            echo "[WARN] bodyctrl_msgs: not installed on ARM64 (expected unless an arm64 package/source is added)"
+            WARNINGS=$((WARNINGS + 1))
         else
             echo "[WARN] bodyctrl_msgs: NOT installed"
             WARNINGS=$((WARNINGS + 1))

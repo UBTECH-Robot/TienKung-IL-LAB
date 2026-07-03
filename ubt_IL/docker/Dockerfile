@@ -1,7 +1,11 @@
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/huggingface/lerobot-gpu:latest
+ARG BASE_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/huggingface/lerobot-gpu:latest
+FROM ${BASE_IMAGE}
 
 USER root
 ENV DEBIAN_FRONTEND=noninteractive
+# 覆盖基镜像 TORCH_HOME=/data/models/torch（容器内 /data 不存在且无权创建），
+# 改到 bind mount 路径，使 torchvision ResNet 等 pretrained 权重可下载并持久化。
+ENV TORCH_HOME=/ubt_IL/.cache/torch
 
 # 清华 TUNA apt 源
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
@@ -59,6 +63,14 @@ RUN chmod +x /opt/entrypoint.sh
 
 USER user_lerobot
 WORKDIR /ubt_IL
+
+# LeRobot [dataset] extra 运行时依赖：rollout 模块在 import 时硬性 require
+# datasets/av（lerobot.datasets 录制回放视频用）。lerobot 源码是 bind-mount，
+# entrypoint 只做 editable 安装不含此 extra，故构建时预装这 4 个独立 PyPI 包。
+RUN /lerobot/.venv/bin/python -m pip install --no-cache-dir \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    "datasets>=4.7.0,<5.0.0" "pandas>=2.0.0,<3.0.0" \
+    "pyarrow>=21.0.0,<30.0.0" "av>=15.0.0,<16.0.0"
 
 ENTRYPOINT ["/opt/entrypoint.sh"]
 CMD ["bash"]
