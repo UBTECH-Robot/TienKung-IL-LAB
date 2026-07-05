@@ -302,8 +302,20 @@ class WalkerRealRobotBridge:
         self._executor_thread.start()
 
         self._running = True
+        # body 插值状态：500Hz 发布 quintic 斜坡（_start_vec → _goal_vec，窗口 _ramp_dur），
+        # 平滑 15Hz action 的 0.02 rad 步进；无新 action 时 hold 在 goal。
+        self._body_vec_lock = threading.Lock()
+        self._body_start_vec = np.zeros(self._n_body, dtype=float)
+        self._body_goal_vec = np.zeros(self._n_body, dtype=float)
+        self._body_ramp_t0 = 0.0
+        self._body_ramp_dur = 1.0 / 15.0  # 默认窗口，后续按实测 action 间隔自适应
+        self._body_last_action_t = None
+        self._body_has_target = False
+        self._body_thread = None
         self._action_thread = threading.Thread(target=self._action_loop, daemon=True, name="action_forward")
         self._action_thread.start()
+        self._body_thread = threading.Thread(target=self._body_publish_loop, daemon=True, name="body_forward")
+        self._body_thread.start()
 
         logger.info(
             "Walker bridge started model=%s end_effector=%s ns=%s cmd_ns=%s lock=%s body_joints=%d",
@@ -400,25 +412,96 @@ class WalkerRealRobotBridge:
         while self._running:
             action = self.zmq_bridge.recv_action(timeout_ms=50)
             if action is not None:
-                self._publish_body_command(action)
+                # body 目标交给 500Hz 插值发布线程（quintic 斜坡 + hold）
+                self._update_body_target(action)
+                # 末端执行器（手/夹爪）走独立通路，保持事件驱动
                 self._publish_end_effector_command("left", action.get("left_hand", []))
                 self._publish_end_effector_command("right", action.get("right_hand", []))
 
-    def _publish_body_command(self, action: dict) -> None:
-        """Publish RobotCommand with JointCmd[] for body joints."""
-        target_joints = []
+    def _update_body_target(self, action: dict) -> None:
+        """收到新 action：从当前插值位置 retarget 到新目标，启动新 quintic 斜坡。"""
+        goal = self._body_action_to_vec(action)
+        if goal is None:
+            return
+        now = time.time()
+        with self._body_vec_lock:
+            if self._body_has_target:
+                start = self._body_interp_at(now)  # 从当前插值位置 retarget，避免跳变
+                if self._body_last_action_t is not None:
+                    interval = now - self._body_last_action_t
+                    ramp_dur = max(0.02, min(interval, 0.2))  # 20ms..200ms
+                else:
+                    ramp_dur = self._body_ramp_dur
+            else:
+                # 首个 action：从 goal 起步（lerobot 侧 max_relative 已限步，无大跳变）
+                start = goal.copy()
+                ramp_dur = self._body_ramp_dur
+            self._body_start_vec = start
+            self._body_goal_vec = goal
+            self._body_ramp_t0 = now
+            self._body_ramp_dur = ramp_dur
+            self._body_last_action_t = now
+            self._body_has_target = True
+
+    def _body_action_to_vec(self, action: dict) -> np.ndarray | None:
+        """从 action dict 提取 body 目标向量（按 _body_joint_names 顺序）。None=无 body 关节。"""
+        vec = np.zeros(self._n_body, dtype=float)
+        idx = 0
+        has_any = False
         for group in ("left_arm", "right_arm", "head", "waist"):
             values = action.get(group, [])
             joint_names = self._body_groups[group]
-            for jname, val in zip(joint_names, values):
-                target_joints.append((jname, float(val)))
+            for _jname, val in zip(joint_names, values):
+                if idx >= self._n_body:
+                    break
+                vec[idx] = float(val)
+                idx += 1
+                has_any = True
+        return vec if has_any else None
+
+    def _body_interp_at(self, t: float) -> np.ndarray:
+        """时刻 t 的插值目标（quintic 斜坡，超时 hold 在 goal）。调用方须持 _body_vec_lock。"""
+        if self._body_ramp_dur <= 0:
+            return self._body_goal_vec.copy()
+        tau = (t - self._body_ramp_t0) / self._body_ramp_dur
+        if tau <= 0.0:
+            return self._body_start_vec.copy()
+        if tau >= 1.0:
+            return self._body_goal_vec.copy()
+        s = 10.0 * tau**3 - 15.0 * tau**4 + 6.0 * tau**5  # quintic，起止速度/加速度=0
+        return self._body_start_vec + s * (self._body_goal_vec - self._body_start_vec)
+
+    def _body_publish_loop(self) -> None:
+        """500Hz 发布 body 插值目标（quintic 斜坡 + hold），平滑 0.02 rad 步进。
+
+        发布节拍由独立线程 sleep 控制，不依赖 executor 调度，不复现 GIL 定时器抖动。
+        """
+        period = 1.0 / 500.0
+        next_t = time.time()
+        while self._running:
+            now = time.time()
+            with self._body_vec_lock:
+                vec = self._body_interp_at(now) if self._body_has_target else None
+            if vec is not None:
+                self._publish_body_vec(vec)
+            next_t += period
+            sleep_t = next_t - time.time()
+            if sleep_t > 0:
+                time.sleep(sleep_t)
+            else:
+                next_t = time.time()  # 落后过多则重置，避免追赶风暴
+
+    def _publish_body_vec(self, vec: np.ndarray) -> None:
+        """从 body 目标向量构造并发布 RobotCommand（限位裁剪 + lock_joints 过滤）。"""
+        target_joints = []
+        for jname, val in zip(self._body_joint_names, vec):
+            val = float(val)
+            if jname in self._body_joint_limits:
+                val = _clamp(val, self._body_joint_limits[jname])
+            target_joints.append((jname, val))
 
         if not target_joints:
             return
-
-        for idx, (jname, val) in enumerate(target_joints):
-            if jname in self._body_joint_limits:
-                target_joints[idx] = (jname, _clamp(val, self._body_joint_limits[jname]))
 
         if self._mc_msgs_available:
             from std_msgs.msg import Header
@@ -498,6 +581,8 @@ class WalkerRealRobotBridge:
         self._running = False
         if self._action_thread.is_alive():
             self._action_thread.join(timeout=2.0)
+        if self._body_thread is not None and self._body_thread.is_alive():
+            self._body_thread.join(timeout=2.0)
         if self._executor is not None:
             self._executor.shutdown()
         if self._executor_thread is not None and self._executor_thread.is_alive():

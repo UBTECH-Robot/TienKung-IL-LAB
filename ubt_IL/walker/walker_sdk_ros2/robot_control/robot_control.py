@@ -3,7 +3,7 @@
 Walker S2 机器人直接控制脚本
 
 从 executor_node_sdk.py 提取，移除 VLA 推理依赖（不订阅 Gr00tMotionChunk），
-保留核心的安全检查、线性插值、关节锁定、200Hz 发布逻辑，
+保留核心的安全检查、线性插值、关节锁定、500Hz 发布逻辑，
 提供 Python API 直接控制真机。
 
 控制方法：方法 2（SDK 控制器，RobotCommand/JointCmd，MODE_POSITION=2）
@@ -33,13 +33,13 @@ Walker S2 机器人直接控制脚本
     # Python API：
     from robot_control import RobotController
     import rclpy, threading
-    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.executors import SingleThreadedExecutor
 
     rclpy.init()
     controller = RobotController(
         lock_joints=['head_pitch_joint', 'head_yaw_joint', 'waist_yaw_joint'],
     )
-    executor = MultiThreadedExecutor(num_threads=2)
+    executor = SingleThreadedExecutor()
     executor.add_node(controller)
     threading.Thread(target=executor.spin, daemon=True).start()
 
@@ -60,8 +60,8 @@ from collections import deque
 import numpy as np
 
 import rclpy
-from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
@@ -76,9 +76,30 @@ from sensor_msgs.msg import JointState
 
 DEFAULT_COMMAND_TOPIC = "/mc/sdk/robot_command"
 DEFAULT_STATE_TOPIC = "/mc/sdk/robot_state"
-DEFAULT_CONTROL_HZ = 200
+DEFAULT_CONTROL_HZ = 500  # 对齐 pub_arm_command / SDK demo 基线（500Hz，2ms/点）
 DEFAULT_MAX_JOINT_SPEED = 6.28  # rad/s，安全速度上限
 DEFAULT_LOCK_JOINTS = ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"]
+
+# ============================================================================
+# PVT 力位混合模式（JointCmd.CUSTOM_MODE_1 = 7）参数
+# 控制律：tau = Kp·(q_des − q) + Kd·(dq_des − dq) + effort_ff
+#   position = q_des（目标位置）
+#   velocity = dq_des（速度前馈，规划速度）
+#   effort   = effort_ff（力矩前馈，如重力补偿，默认 0）
+#   v1 = Kp, v2 = Kd
+# ⚠️ 以下 Kp/Kd 是 deliberately soft 的未验证占位值，必须真机调！
+#    Kp 太小 → 手臂下垂（重力补偿不足）；Kp 太大 → 振荡。
+#    理想基线：容器内 config_mc_walker_s2_v1_sps 的 mode=2 内部增益。
+# ============================================================================
+
+# 对齐 pub_arm_command.py 的 PVT 基线增益（kp=50/kd=2，velocity=0 纯阻尼）：
+# 原 30/1 过软 → 跟踪误差与振荡（抖动）。真机仍可经 pvt_kp/pvt_kd 覆盖。
+_PVT_DEFAULT_KP = 50.0   # 位置增益（对齐 pub_arm_command 基线）
+_PVT_DEFAULT_KD = 2.0    # 速度增益（阻尼，对齐 pub_arm_command 基线）
+
+# 轨迹插值 profile
+PROFILE_LINEAR = "linear"
+PROFILE_QUINTIC = "quintic"   # s(τ)=10τ³−15τ⁴+6τ⁵，起止速度/加速度均为 0 → 无 jerk 阶跃
 
 # ============================================================================
 # 关节定义（原 utars_clamp_and_place_large_bio_box_in_test_field.yaml 中的
@@ -288,7 +309,7 @@ class RobotController(Node):
     职责：
         1. 订阅 /mc/sdk/robot_state 维护最新关节位置
         2. 提供 move_to_position / execute_trajectory 等 API
-        3. 200Hz 定时器发布 RobotCommand 到 /mc/sdk/robot_command
+        3. 500Hz 定时器发布 RobotCommand 到 /mc/sdk/robot_command
         4. 安全检查：最大关节速度
         5. 关节锁定：发布时跳过指定关节
         6. 关节限位：超限时自动裁剪到限位边界
@@ -305,6 +326,11 @@ class RobotController(Node):
         max_joint_speed=DEFAULT_MAX_JOINT_SPEED,
         enable_safety_check=True,
         enable_limit_check=True,
+        use_pvt=False,
+        pvt_kp=None,
+        pvt_kd=None,
+        pvt_effort=None,
+        hold_when_idle=True,
     ):
         super().__init__(node_name)
 
@@ -334,6 +360,21 @@ class RobotController(Node):
         # 锁定关节
         self.lock_joints = set(lock_joints or [])
 
+        # PVT 力位混合模式（mode=7）配置
+        self.use_pvt = bool(use_pvt)
+        self._pvt_default_kp = _PVT_DEFAULT_KP
+        self._pvt_default_kd = _PVT_DEFAULT_KD
+        self._pvt_kp = self._normalize_gain_map(pvt_kp, _PVT_DEFAULT_KP)
+        self._pvt_kd = self._normalize_gain_map(pvt_kd, _PVT_DEFAULT_KD)
+        self._pvt_effort = dict(pvt_effort or {})
+        if self.use_pvt:
+            self.get_logger().warning(
+                "⚠️ PVT (mode=7) enabled with UNVERIFIED conservative Kp/Kd defaults "
+                f"(Kp={self._pvt_default_kp}, Kd={self._pvt_default_kd}). "
+                "MUST tune on real hardware. Start from a safe pose with small motion. "
+                "Too-soft Kp → arm droop; too-stiff Kp → oscillation."
+            )
+
         # 状态缓冲
         self.robot_states_buffer = deque(maxlen=1)
         self.robot_states_buffer_lock = threading.Lock()
@@ -341,11 +382,18 @@ class RobotController(Node):
         # 轨迹状态
         self.trajectory_lock = threading.Lock()
         self.current_trajectory = np.empty((0, self.n_joints), dtype=float)
+        self.current_velocity_trajectory = None  # PVT 速度前馈轨迹 (N, n_joints) 或 None
         self.current_index = 0
         self.is_publishing = False
         self.safety_violation = False
         self.current_publish_joints = None
         self.publish_changed_epsilon = 1e-6
+
+        # 空闲保持（防抖动）：对齐 pub_arm_command.py 持续发布、永不停止的行为。
+        # is_publishing=False 时不再断流，而是持续发布 _hold_position（最近一次指令位姿）
+        # 到所有未锁定关节，避免低层控制器丢失主动保持 → 漂移/恢复抖动。
+        self.hold_when_idle = bool(hold_when_idle)
+        self._hold_position = None  # np.ndarray(n_joints,) 或 None（尚未从 RobotState 种子初始化）
 
         # QoS
         qos_sub = QoSProfile(
@@ -421,16 +469,17 @@ class RobotController(Node):
             qos_sub, callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
-        # 200Hz 控制定时器
+        # 500Hz 控制定时器（默认互斥回调组 + 单线程 executor，对齐 pub_arm_command：
+        # MultiThreadedExecutor+Reentrant 在 500Hz 下因 GIL 争用导致定时不均 → 运动关节抖）
         self.control_timer = self.create_timer(
             self.timer_period, self._control_callback,
-            callback_group=ReentrantCallbackGroup(),
         )
 
         self.get_logger().info(
             f"RobotController initialized: {self.n_joints} joints, "
             f"{control_hz}Hz, locked={sorted(self.lock_joints)}, "
-            f"limit_check={self.enable_limit_check}"
+            f"limit_check={self.enable_limit_check}, pvt={self.use_pvt}, "
+            f"hold_when_idle={self.hold_when_idle}"
         )
 
     @staticmethod
@@ -455,6 +504,30 @@ class RobotController(Node):
             return self._config["topics"][section][key]["topic"]
         except (KeyError, TypeError):
             return default
+
+    def _normalize_gain_map(self, gain, default):
+        """把标量 / dict / None 归一化为 {joint_name: value}（覆盖所有身体关节）。
+
+        Args:
+            gain: None（用 default）/ 标量（所有关节同值）/ {joint_name: value}
+            default: gain 为 None 时各关节的默认值
+        Returns:
+            dict: 每个身体关节 → 增益值
+        """
+        if gain is None:
+            return {name: default for name in self.all_joints}
+        if isinstance(gain, dict):
+            result = {name: default for name in self.all_joints}
+            for name, val in gain.items():
+                if name in result:
+                    result[name] = float(val)
+                else:
+                    self.get_logger().warning(
+                        f"Unknown joint '{name}' in PVT gain map, ignored"
+                    )
+            return result
+        # 标量
+        return {name: float(gain) for name in self.all_joints}
 
     # ========================================================================
     # 公开 API
@@ -926,14 +999,20 @@ class RobotController(Node):
             self._hand_states[side] = positions
         self._hand_state_received[side].set()
 
-    def move_to_position(self, target_position, duration_sec=3.0, wait=True, publish_changed_only=False):
-        """平滑移动到目标位置（从当前位置线性插值）。
+    def move_to_position(self, target_position, duration_sec=3.0, wait=True,
+                         publish_changed_only=False, profile=PROFILE_QUINTIC):
+        """平滑移动到目标位置（从当前位置插值）。
 
         Args:
             target_position: 目标关节位置，长度 n_joints 的列表或 numpy 数组
             duration_sec: 运动持续时间（秒）
             wait: 是否阻塞等待完成
             publish_changed_only: True 时仅发布本次轨迹中实际变化的关节
+            profile: 插值 profile
+                - 'quintic'：s(τ)=10τ³−15τ⁴+6τ⁵，起止速度/加速度均为 0，无 jerk 阶跃
+                  （默认，对齐 pub_arm_command 的平滑运动，消除端点抖动）
+                - 'linear'：线性插值（起止速度阶跃，有 jerk；仅向后兼容/需要匀速时显式指定）
+                  PVT 模式下自动强制为 quintic（线性 profile 的速度前馈是阶跃，抵消 PVT 平滑效果）
         Returns:
             bool: True=成功（已开始/完成），False=失败
         """
@@ -958,12 +1037,30 @@ class RobotController(Node):
             self.get_logger().error("No current position available")
             return False
 
-        # 起点+终点 → 逐关节线性插值
+        # PVT 模式强制 quintic（线性 profile 的速度前馈是阶跃 → jerk）
+        effective_profile = profile
+        if self.use_pvt and profile != PROFILE_QUINTIC:
+            self.get_logger().warning(
+                f"PVT mode active but profile='{profile}'; forcing '{PROFILE_QUINTIC}' "
+                f"to avoid velocity-feedforward step (jerk)"
+            )
+            effective_profile = PROFILE_QUINTIC
+
+        # 起点+终点 → 逐关节插值，s(τ) 为归一化进度 [0,1]
         n_pts = max(2, int(duration_sec * self.control_hz))
-        t_orig = np.linspace(0.0, 1.0, 2)
-        t_new = np.linspace(0.0, 1.0, n_pts)
+        tau = np.linspace(0.0, 1.0, n_pts)
+        if effective_profile == PROFILE_QUINTIC:
+            s = 10 * tau**3 - 15 * tau**4 + 6 * tau**5
+        elif effective_profile == PROFILE_LINEAR:
+            s = tau
+        else:
+            self.get_logger().error(
+                f"Unknown profile '{effective_profile}', use '{PROFILE_LINEAR}' or '{PROFILE_QUINTIC}'"
+            )
+            return False
+
         trajectory = np.column_stack([
-            np.interp(t_new, t_orig, [current[j], target[j]])
+            current[j] + s * (target[j] - current[j])
             for j in range(self.n_joints)
         ])
 
@@ -978,7 +1075,7 @@ class RobotController(Node):
 
         Args:
             trajectory: numpy 数组 (N, n_joints)，每行一个时间步的关节位置
-                        点间距按 1/control_hz 秒（200Hz → 5ms/点）
+                        点间距按 1/control_hz 秒（500Hz → 2ms/点）
             wait: 是否阻塞等待完成
             publish_changed_only: True 时仅发布轨迹中实际变化的关节
         Returns:
@@ -1033,9 +1130,25 @@ class RobotController(Node):
                 self.safety_violation = True
                 return False
 
+        # PVT 速度前馈：对位置轨迹做数值微分（quintic 下起止≈0，安全）
+        velocity_trajectory = None
+        if self.use_pvt:
+            velocity_trajectory = np.gradient(trajectory, axis=0) / self.timer_period
+            # 限幅到 max_joint_speed（防异常前馈）
+            if self.enable_safety_check:
+                np.clip(
+                    velocity_trajectory,
+                    -self.max_joint_speed,
+                    self.max_joint_speed,
+                    out=velocity_trajectory,
+                )
+
         # 写入轨迹
         with self.trajectory_lock:
             self.current_trajectory = trajectory.copy()
+            self.current_velocity_trajectory = (
+                velocity_trajectory.copy() if velocity_trajectory is not None else None
+            )
             self.current_publish_joints = publish_joints
             self.current_index = 0
             self.is_publishing = True
@@ -1071,12 +1184,23 @@ class RobotController(Node):
         return changed
 
     def stop(self):
-        """立即停止发布指令（机器人保持在最后一个发送的位置）"""
+        """停止当前轨迹播放。
+
+        若 hold_when_idle=True（默认），停止后转为持续保持当前位置（电机不断电，
+        机器人停在停止时刻的实际位置），对齐 pub_arm_command 永不断流的行为；
+        若 hold_when_idle=False，则完全停止发布（真机可能 limp，仅用于调试）。
+        """
+        # 先在锁外读实际位置（避免 trajectory_lock→buffer_lock 与 _state_callback 反向死锁）
+        current = self.get_current_position()
         with self.trajectory_lock:
             self.is_publishing = False
             self.current_index = self.current_trajectory.shape[0]
             self.current_publish_joints = None
-        self.get_logger().info("Stop requested")
+            self.current_velocity_trajectory = None
+            # 以实际当前位置作 hold 起点，避免 mid-trajectory 停止后 hold 跳回上一指令点
+            if current is not None:
+                self._hold_position = current.copy()
+        self.get_logger().info(f"Stop requested (hold_when_idle={self.hold_when_idle})")
 
     def set_lock_joints(self, joint_names):
         """动态设置锁定关节列表"""
@@ -1312,7 +1436,7 @@ class RobotController(Node):
         staged=True 时按真机侧安全阶段依次执行，默认 10s；staged=False 保留旧版直达行为，默认 3s。
         """
         if duration_sec is None:
-            duration_sec = 10.0 if staged else 3.0
+            duration_sec = 20.0 if staged else 3.0
 
         if not staged:
             return self.move_to_pose(
@@ -1409,7 +1533,7 @@ class RobotController(Node):
         """头部周期 sin 运动测试（参考 SDK demo pub_head_command.cpp）。
 
         生成轨迹：position = sin(2π * t / period) * amplitude，
-        以本控制器频率（200Hz）采样并通过 execute_trajectory 发布。
+        以本控制器频率（500Hz）采样并通过 execute_trajectory 发布。
 
         ⚠️ 副作用：
             - 自动解锁 head_pitch_joint / head_yaw_joint
@@ -1673,25 +1797,57 @@ class RobotController(Node):
         with self.robot_states_buffer_lock:
             self.robot_states_buffer.append(positions)
 
+        # 首次收到状态时种子初始化 hold 位姿，使空闲 hold 从当前实际位姿起步
+        # （之后由 _control_callback 在每次发布时更新为最新指令点）
+        if self._hold_position is None:
+            with self.trajectory_lock:
+                if self._hold_position is None:
+                    self._hold_position = positions.copy()
+
     def _control_callback(self):
-        """200Hz 定时回调：取轨迹点 → 构造 RobotCommand → 发布"""
+        """500Hz 定时回调：取轨迹点 → 构造 RobotCommand → 发布
+
+        空闲（无轨迹播放）时若 hold_when_idle=True，持续发布 _hold_position 到所有
+        未锁定关节，对齐 pub_arm_command.py 永不断流的行为：避免低层控制器在收不到
+        指令时丢失主动保持 → 漂移，以及恢复发布时的不连续 → 抖动。
+        """
         if self.safety_violation:
             return
 
-        with self.trajectory_lock:
-            if not self.is_publishing:
-                return
-            if self.current_index >= self.current_trajectory.shape[0]:
-                self.is_publishing = False
-                self.current_publish_joints = None
-                self.get_logger().info("Trajectory execution completed")
-                return
+        point = None
+        vel_point = None
+        publish_joints = None
+        is_active = False
 
-            point = self.current_trajectory[self.current_index, :]
-            publish_joints = self.current_publish_joints
-            if publish_joints is not None:
-                publish_joints = set(publish_joints)
-            self.current_index += 1
+        with self.trajectory_lock:
+            if self.is_publishing:
+                if self.current_index >= self.current_trajectory.shape[0]:
+                    # 轨迹播放完毕：转入 hold（不断流），本帧即开始保持终点
+                    self.is_publishing = False
+                    self.current_publish_joints = None
+                    self.current_velocity_trajectory = None
+                    self.get_logger().info("Trajectory execution completed")
+                else:
+                    point = self.current_trajectory[self.current_index, :]
+                    if self.current_velocity_trajectory is not None:
+                        vel_point = self.current_velocity_trajectory[self.current_index, :]
+                    publish_joints = self.current_publish_joints
+                    if publish_joints is not None:
+                        publish_joints = set(publish_joints)
+                    self.current_index += 1
+                    # 轨迹进行中：更新 hold 位姿为当前指令点，轨迹结束即自然 hold 在终点
+                    self._hold_position = point.copy()
+                    is_active = True
+
+            # 空闲 hold：发布最近一次指令位姿到全部未锁定关节
+            # （忽略 publish_changed_only —— hold 需保持所有关节主动受控）
+            if not is_active and self.hold_when_idle:
+                point = self._hold_position
+                publish_joints = None
+
+        # 既无轨迹、又未启用 hold 或尚无 hold 位姿（未收到状态）→ 本帧不发
+        if point is None:
+            return
 
         # 构造并发布 RobotCommand
         cmd = RobotCommand()
@@ -1701,12 +1857,23 @@ class RobotController(Node):
         for idx, name in enumerate(self.all_joints):
             if name in self.lock_joints:
                 continue
-            if publish_joints is not None and name not in publish_joints:
+            # 轨迹模式尊重 publish_changed_only；hold 模式发布所有未锁定关节
+            if is_active and publish_joints is not None and name not in publish_joints:
                 continue
             jc = JointCmd()
             jc.name = name
-            jc.control_mode = JointCmd.MODE_POSITION
-            jc.position = float(point[idx])
+            if self.use_pvt:
+                # PVT 力位混合（mode=7）：同时下发 pos/vel/effort，v1=Kp, v2=Kd
+                jc.control_mode = JointCmd.CUSTOM_MODE_1
+                jc.position = float(point[idx])
+                # hold 时 velocity=0 纯阻尼（对齐 pub_arm_command）；轨迹时用速度前馈
+                jc.velocity = float(vel_point[idx]) if (is_active and vel_point is not None) else 0.0
+                jc.effort = float(self._pvt_effort.get(name, 0.0))
+                jc.v1 = float(self._pvt_kp.get(name, self._pvt_default_kp))
+                jc.v2 = float(self._pvt_kd.get(name, self._pvt_default_kd))
+            else:
+                jc.control_mode = JointCmd.MODE_POSITION
+                jc.position = float(point[idx])
             cmd.joint_cmd.append(jc)
 
         if cmd.joint_cmd:
@@ -1902,6 +2069,23 @@ def main(args=None):
         help="禁用关节限位裁剪",
     )
     parser.add_argument(
+        "--hz", type=int, default=DEFAULT_CONTROL_HZ,
+        help=f"身体控制发布频率（Hz），默认 {DEFAULT_CONTROL_HZ}（对齐 SDK demo / pub_arm_command）",
+    )
+    parser.add_argument(
+        "--pvt", action="store_true",
+        help="启用 PVT 力位混合模式 (mode=7)：速度前馈 + 可调 Kp/Kd，治手臂抖动"
+             "（增益为保守占位值，必须真机调）",
+    )
+    parser.add_argument(
+        "--pvt-kp", type=float, default=None,
+        help=f"PVT 位置增益 Kp（标量，应用到所有身体关节），默认保守值 {_PVT_DEFAULT_KP}",
+    )
+    parser.add_argument(
+        "--pvt-kd", type=float, default=None,
+        help=f"PVT 速度增益 Kd（标量），默认保守值 {_PVT_DEFAULT_KD}",
+    )
+    parser.add_argument(
         "--print-state", action="store_true",
         help="仅打印当前关节状态后退出",
     )
@@ -1911,11 +2095,11 @@ def main(args=None):
     )
     parser.add_argument(
         "--init-duration", type=float, default=None,
-        help="预备姿态运动时长（秒）；直达默认 3.0，分段默认 10.0",
+        help="预备姿态运动时长（秒）；直达默认 3.0，分段默认 20.0",
     )
     parser.add_argument(
         "--staged-init", action="store_true",
-        help="分段移动到预备姿态，适合双臂抬起/大幅 ready pose（建议 --init-duration 10~15）",
+        help="分段移动到预备姿态，适合双臂抬起/大幅 ready pose（建议 --init-duration 20~30）",
     )
     parser.add_argument(
         "--demo", action="store_true",
@@ -1982,13 +2166,26 @@ def main(args=None):
     rclpy.init(args=ros_args)
 
     lock_joints = None if cli_args.no_lock else DEFAULT_LOCK_JOINTS
+    if cli_args.pvt:
+        print("=" * 64)
+        print("⚠️  PVT (mode=7) 力位混合模式启用：速度前馈 + 可调 Kp/Kd")
+        print(f"    Kp={cli_args.pvt_kp if cli_args.pvt_kp is not None else _PVT_DEFAULT_KP}, "
+              f"Kd={cli_args.pvt_kd if cli_args.pvt_kd is not None else _PVT_DEFAULT_KD}")
+        print("    ⚠️ 增益为保守占位值，必须真机调！先安全位姿 + 小幅运动（如 --demo）。")
+        print("    ⚠️ Kp 太小→手臂下垂；Kp 太大→振荡。建议从容器 config_mc_walker_s2_v1_sps")
+        print("       的 mode=2 增益作参考基线。")
+        print("=" * 64)
     controller = RobotController(
         lock_joints=lock_joints,
         enable_safety_check=not cli_args.no_safety,
         enable_limit_check=not cli_args.no_limits,
+        control_hz=cli_args.hz,
+        use_pvt=cli_args.pvt,
+        pvt_kp=cli_args.pvt_kp,
+        pvt_kd=cli_args.pvt_kd,
     )
 
-    executor = MultiThreadedExecutor(num_threads=2)
+    executor = SingleThreadedExecutor()
     executor.add_node(controller)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
@@ -2008,7 +2205,7 @@ def main(args=None):
             init_mode = "分段" if cli_args.staged_init else "直达"
             init_duration = cli_args.init_duration
             if init_duration is None:
-                init_duration = 10.0 if cli_args.staged_init else 3.0
+                init_duration = 20.0 if cli_args.staged_init else 3.0
             print(f"\n=== 移动到预备姿态（{init_mode}，{init_duration:.1f}s）===")
             input("按回车开始（Ctrl+C 取消）...")
             if controller.move_to_ready_pose(
