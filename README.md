@@ -16,18 +16,39 @@
 
 仿真环境已开发完成，具体介绍与使用说明请参考 [ubt_sim/README.md](ubt_sim/README.md)。
 
+## 代码获取 git clone
+
+克隆仓库后，需先拉取 LFS 大文件（USD 模型、贴图等）并初始化子模块（`lerobot`）。
+
+```bash
+# （可选）配置代理：访问 GitHub 较慢时设置，端口按本地代理调整
+git config --global http.proxy  http://127.0.0.1:7897
+git config --global https.proxy http://127.0.0.1:7897
+export GIT_LFS_PROXY="http://127.0.0.1:7897"   # LFS 走代理
+
+# 1. 克隆仓库（先跳过 LFS和子模块）
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/LQX-Code-SH/TienKung-IL-LAB.git
+
+# 2. 拉取 LFS 大文件
+git lfs pull
+
+# 3. 初始化并拉取子模块（lerobot）
+git submodule update --init
+```
+
+
 ## 仿真模块
 ### 快速开始
 
 ```bash
 # 1. 构建并启动容器
-cd docker/isaac_sim
+cd ubt_sim/docker/isaac_sim
 bash run.sh build && bash run.sh start && bash run.sh init && bash run.sh check
 # 若真机模式启动容器：ROS_DOMAIN_ID=0 bash run.sh start
 
 # 2. 启动仿真（自动启动 ROS2-ZMQ 桥接）
 bash run.sh bash
-bash scripts/start_sim.sh 
+bash /ubt_sim/scripts/start_sim.sh 
 # 真机模式启动仿真+桥接：ROS_DOMAIN_ID=0 bash scripts/start_sim.sh
 # 按R机器人可复位
 
