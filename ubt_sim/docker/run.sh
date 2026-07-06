@@ -71,7 +71,7 @@ case "${1:-}" in
         ;;
     stop)
         # Stop bridge first if running
-        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "ros2_zmq_bridge" 2>/dev/null || true)
+        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "tiangong_ros2_zmq_bridge" 2>/dev/null || true)
         if [ -n "$BRIDGE_PID" ]; then
             echo "[INFO] Stopping bridge process..."
             docker exec "$CONTAINER_NAME" bash -c "kill $BRIDGE_PID 2>/dev/null" || true
@@ -181,7 +181,7 @@ case "${1:-}" in
             exit 1
         fi
         # Check if bridge is already running
-        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "ros2_zmq_bridge" 2>/dev/null || true)
+        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "tiangong_ros2_zmq_bridge" 2>/dev/null || true)
         if [ -n "$BRIDGE_PID" ]; then
             echo "[WARN] Bridge already running (PID=$BRIDGE_PID)"
             exit 0
@@ -193,7 +193,7 @@ case "${1:-}" in
             export FASTRTPS_DEFAULT_PROFILES_FILE=$FASTRTPS_DEFAULT_PROFILES_FILE && \
             /usr/bin/python3 $BRIDGE_SCRIPT"
         sleep 1
-        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "ros2_zmq_bridge" 2>/dev/null || true)
+        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "tiangong_ros2_zmq_bridge" 2>/dev/null || true)
         if [ -n "$BRIDGE_PID" ]; then
             echo "[INFO] Bridge started (PID=$BRIDGE_PID)"
         else
@@ -202,7 +202,7 @@ case "${1:-}" in
         fi
         ;;
     bridge-stop)
-        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "ros2_zmq_bridge" 2>/dev/null || true)
+        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "tiangong_ros2_zmq_bridge" 2>/dev/null || true)
         if [ -z "$BRIDGE_PID" ]; then
             echo "[WARN] Bridge is not running"
             exit 0
@@ -211,7 +211,7 @@ case "${1:-}" in
         docker exec "$CONTAINER_NAME" bash -c "kill $BRIDGE_PID 2>/dev/null"
         sleep 1
         # Force kill if still running
-        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "ros2_zmq_bridge" 2>/dev/null || true)
+        BRIDGE_PID=$(docker exec "$CONTAINER_NAME" pgrep -f "tiangong_ros2_zmq_bridge" 2>/dev/null || true)
         if [ -n "$BRIDGE_PID" ]; then
             echo "[WARN] Force killing bridge..."
             docker exec "$CONTAINER_NAME" bash -c "kill -9 $BRIDGE_PID 2>/dev/null"

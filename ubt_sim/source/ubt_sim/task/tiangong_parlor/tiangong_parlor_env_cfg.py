@@ -28,7 +28,7 @@ from ubt_sim.env.digital_twin_env_cfg import (
 )
 
 # Load scene config from YAML
-_TASK_CFG = load_config("tiangong_parlor.yaml")
+_TASK_CFG = load_config("tiangong_pro/parlor.yaml")
 _SCENE_USD_PATH = resolve_asset_path(_TASK_CFG["scene"]["usd_path"])
 
 PARLOR_SCENE_CFG = AssetBaseCfg(

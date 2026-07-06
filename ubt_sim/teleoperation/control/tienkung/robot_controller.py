@@ -18,6 +18,7 @@ from time import sleep
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import Point
 from sensor_msgs.msg import JointState, Image
 from std_msgs.msg import Float32, Bool
@@ -151,8 +152,8 @@ class RobotController(Node):
         self.create_subscription(MotorStatusMsg, self._get_topic("sub", "arm_status"), self._arm_status_cb, 10)
         self.create_subscription(JointState, self._get_topic("sub", "hand_r_state"), self._hand_right_cb, 10)
         self.create_subscription(JointState, self._get_topic("sub", "hand_l_state"), self._hand_left_cb, 10)
-        self.create_subscription(Image, self._get_topic("sub", "image_rgb"), self._image_cb, 10)
-        self.create_subscription(Image, self._get_topic("sub", "image_depth"), self._depth_cb, 10)
+        self.create_subscription(Image, self._get_topic("sub", "image_rgb"), self._image_cb, qos_profile_sensor_data)
+        self.create_subscription(Image, self._get_topic("sub", "image_depth"), self._depth_cb, qos_profile_sensor_data)
         self.create_subscription(CmdSetMotorPosition, self._get_topic("sub", "arm_cmd_pos"), self._arm_cmd_cb, 10)
         self.create_subscription(JointState, self._get_topic("sub", "hand_r_ctrl"), self._hand_cmd_right_cb, 10)
         self.create_subscription(JointState, self._get_topic("sub", "hand_l_ctrl"), self._hand_cmd_left_cb, 10)

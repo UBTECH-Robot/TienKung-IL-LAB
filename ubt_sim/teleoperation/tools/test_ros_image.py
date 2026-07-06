@@ -4,6 +4,10 @@
 订阅指定 topic，收到第一帧后打印分辨率、编码等信息，
 保存前 N 帧到 test_output/ 目录，超时则报错退出。
 
+天工（tienkung）相机的 ROS2 类型为 sensor_msgs/msg/Image，QoS 为 BEST_EFFORT
+（由 C++ image bridge 发布）。注意：只有 walker S2 使用 shm_msgs/msg/Image2m，
+本脚本不适用于 walker S2 的相机 topic。
+
 Usage:
   # 真机
   ROS_DOMAIN_ID=0 /usr/bin/python3 tool/test_ros_image.py
@@ -21,7 +25,7 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -42,8 +46,8 @@ class ImageTestNode(Node):
 
         os.makedirs(save_dir, exist_ok=True)
 
-        self.get_logger().info(f"Subscribing to: {topic}")
-        self.sub = self.create_subscription(Image, topic, self._callback, 10)
+        self.get_logger().info(f"Subscribing to: {topic} (sensor_msgs/Image, BEST_EFFORT)")
+        self.sub = self.create_subscription(Image, topic, self._callback, qos_profile_sensor_data)
 
     def _callback(self, msg: Image):
         if self.first_frame_time is None:
@@ -58,9 +62,12 @@ class ImageTestNode(Node):
         if self.frame_count <= SAVE_COUNT:
             try:
                 cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+                stats = f"min={cv_img.min()}, max={cv_img.max()}, mean={cv_img.mean():.1f}"
                 path = os.path.join(self.save_dir, f"frame_{self.frame_count:03d}.jpg")
-                cv2.imwrite(path, cv_img)
-                self.get_logger().info(f"Saved: {path}")
+                if cv2.imwrite(path, cv_img):
+                    self.get_logger().info(f"Saved: {path}  ({stats})")
+                else:
+                    self.get_logger().error(f"Failed to save frame: {path}")
             except Exception as e:
                 self.get_logger().error(f"Failed to save frame: {e}")
 

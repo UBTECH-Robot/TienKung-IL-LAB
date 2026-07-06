@@ -7,7 +7,7 @@
             <interfaceWhiteList>
                 <address>127.0.0.1</address>
                 <!-- 网线直连真机的网卡 IP，按实际修改 -->
-                <address>192.168.1.10</address>
+                <address>192.168.11.99</address>
             </interfaceWhiteList>
             <maxInitialPeersRange>10</maxInitialPeersRange>
             <maxMessageSize>65500</maxMessageSize>

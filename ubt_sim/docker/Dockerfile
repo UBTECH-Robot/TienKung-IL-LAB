@@ -1,4 +1,5 @@
-FROM nvcr.nju.edu.cn/nvidia/isaac-lab:2.2.0
+ARG BASE_IMAGE=nvcr.nju.edu.cn/nvidia/isaac-lab:2.2.0
+FROM ${BASE_IMAGE}
 
 # ---- ROS2 Humble (清华大学镜像源) ----
 RUN set -eux; \

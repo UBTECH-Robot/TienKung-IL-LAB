@@ -9,6 +9,7 @@
 #include <zmq.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <shm_msgs/msg/image2m.hpp>
+#include <sensor_msgs/msg/image.hpp>
 
 // Minimal JSON parser — extracts integer values for known keys.
 // Avoids nlohmann-json system dependency for a trivial {"width":N,"height":N} payload.
@@ -36,6 +37,8 @@ struct BridgeConfig {
     int zmq_port = 5557;
     std::string rgb_topic = "/ob_camera_head/color/image_raw";
     std::string depth_topic = "/ob_camera_head/depth/image_raw";
+    // "Image2m" (shm_msgs/Image2m, default — walker S2) or "Image" (sensor_msgs/Image — 天工)
+    std::string msg_type = "Image2m";
 };
 
 static BridgeConfig parse_args(int argc, char* argv[]) {
@@ -48,12 +51,15 @@ static BridgeConfig parse_args(int argc, char* argv[]) {
             cfg.rgb_topic = argv[++i];
         } else if ((arg == "--depth-topic") && i + 1 < argc) {
             cfg.depth_topic = argv[++i];
+        } else if ((arg == "--msg-type") && i + 1 < argc) {
+            cfg.msg_type = argv[++i];
         } else if (arg == "--help") {
             std::cout << "Usage: zmq_image_bridge [OPTIONS]\n"
                       << "Options:\n"
                       << "  --zmq-port PORT       ZMQ image port (default: 5557)\n"
-                      << "  --rgb-topic TOPIC     RGB shm_msgs/Image2m topic (default: /ob_camera_head/color/image_raw)\n"
-                      << "  --depth-topic TOPIC   Depth shm_msgs/Image2m topic (default: /ob_camera_head/depth/image_raw)\n";
+                      << "  --rgb-topic TOPIC     RGB image topic (default: /ob_camera_head/color/image_raw)\n"
+                      << "  --depth-topic TOPIC   Depth image topic (default: /ob_camera_head/depth/image_raw)\n"
+                      << "  --msg-type TYPE       Image type: Image (sensor_msgs/Image) or Image2m (shm_msgs/Image2m, default)\n";
             exit(0);
         }
     }
@@ -98,14 +104,50 @@ static bool fill_image2m(
     return true;
 }
 
+// Fill a sensor_msgs::msg::Image (variable-length data, no 2MB cap). Used for 天工.
+static bool fill_image(
+    sensor_msgs::msg::Image& msg,
+    const rclcpp::Time& stamp,
+    const std::string& frame_id,
+    int width,
+    int height,
+    const std::string& encoding,
+    uint32_t step,
+    const void* data,
+    size_t size)
+{
+    const size_t byte_count = static_cast<size_t>(height) * step;
+    if (size < byte_count) {
+        return false;
+    }
+
+    msg.header.stamp = stamp;
+    msg.header.frame_id = frame_id;
+    msg.height = static_cast<uint32_t>(height);
+    msg.width = static_cast<uint32_t>(width);
+    msg.encoding = encoding;
+    msg.is_bigendian = 0;
+    msg.step = step;
+    const uint8_t* src = static_cast<const uint8_t*>(data);
+    msg.data.assign(src, src + byte_count);
+    return true;
+}
+
 class ZmqImageBridge : public rclcpp::Node
 {
 public:
-    ZmqImageBridge(const BridgeConfig& cfg) : Node("zmq_image_bridge")
+    ZmqImageBridge(const BridgeConfig& cfg) : Node("zmq_image_bridge"), msg_type_(cfg.msg_type)
     {
         auto qos = rclcpp::QoS(rclcpp::KeepLast(10)).best_effort().durability_volatile();
-        pub_rgb_ = this->create_publisher<shm_msgs::msg::Image2m>(cfg.rgb_topic, qos);
-        pub_depth_ = this->create_publisher<shm_msgs::msg::Image2m>(cfg.depth_topic, qos);
+        if (msg_type_ == "Image") {
+            pub_rgb_img_ = this->create_publisher<sensor_msgs::msg::Image>(cfg.rgb_topic, qos);
+            pub_depth_img_ = this->create_publisher<sensor_msgs::msg::Image>(cfg.depth_topic, qos);
+        } else {
+            // default: Image2m (shm_msgs) — walker S2 path
+            msg_type_ = "Image2m";
+            pub_rgb_2m_ = this->create_publisher<shm_msgs::msg::Image2m>(cfg.rgb_topic, qos);
+            pub_depth_2m_ = this->create_publisher<shm_msgs::msg::Image2m>(cfg.depth_topic, qos);
+        }
 
         context_ = zmq::context_t(1);
         subscriber_ = zmq::socket_t(context_, ZMQ_SUB);
@@ -116,8 +158,9 @@ public:
         subscriber_.set(zmq::sockopt::subscribe, "");
         subscriber_.set(zmq::sockopt::rcvhwm, 2);
 
-        RCLCPP_INFO(this->get_logger(), "C++ ZMQ Image Bridge Started (shm_msgs/Image2m rgb: %s, depth: %s)",
-                    cfg.rgb_topic.c_str(), cfg.depth_topic.c_str());
+        RCLCPP_INFO(this->get_logger(),
+                    "C++ ZMQ Image Bridge Started (msg_type=%s, rgb: %s, depth: %s)",
+                    msg_type_.c_str(), cfg.rgb_topic.c_str(), cfg.depth_topic.c_str());
 
         receive_thread_ = std::thread(&ZmqImageBridge::receive_loop, this);
     }
@@ -170,43 +213,55 @@ private:
 
         auto current_time = this->now();
 
-        shm_msgs::msg::Image2m img_msg;
-        if (!fill_image2m(
-                img_msg,
-                current_time,
-                "ob_camera_head_color_optical_frame",
-                w,
-                h,
-                "rgb8",
-                static_cast<uint32_t>(w * 3),
-                rgb_msg.data(),
-                rgb_msg.size())) {
-            RCLCPP_WARN(this->get_logger(), "RGB frame does not fit Image2m buffer, skipping");
-            return;
-        }
-        pub_rgb_->publish(img_msg);
-
-        if (has_depth && depth_msg.size() > 0) {
-            shm_msgs::msg::Image2m depth_ros_msg;
-            if (!fill_image2m(
-                    depth_ros_msg,
-                    current_time,
-                    "ob_camera_head_depth_optical_frame",
-                    w,
-                    h,
-                    "16UC1",
-                    static_cast<uint32_t>(w * 2),
-                    depth_msg.data(),
-                    depth_msg.size())) {
-                RCLCPP_WARN(this->get_logger(), "Depth frame does not fit Image2m buffer, skipping");
+        if (msg_type_ == "Image") {
+            sensor_msgs::msg::Image img_msg;
+            if (!fill_image(img_msg, current_time, "ob_camera_head_color_optical_frame",
+                            w, h, "rgb8", static_cast<uint32_t>(w * 3),
+                            rgb_msg.data(), rgb_msg.size())) {
+                RCLCPP_WARN(this->get_logger(), "RGB frame invalid, skipping");
                 return;
             }
-            pub_depth_->publish(depth_ros_msg);
+            pub_rgb_img_->publish(img_msg);
+
+            if (has_depth && depth_msg.size() > 0) {
+                sensor_msgs::msg::Image depth_ros_msg;
+                if (!fill_image(depth_ros_msg, current_time, "ob_camera_head_depth_optical_frame",
+                                w, h, "16UC1", static_cast<uint32_t>(w * 2),
+                                depth_msg.data(), depth_msg.size())) {
+                    RCLCPP_WARN(this->get_logger(), "Depth frame invalid, skipping");
+                    return;
+                }
+                pub_depth_img_->publish(depth_ros_msg);
+            }
+        } else {
+            shm_msgs::msg::Image2m img_msg;
+            if (!fill_image2m(img_msg, current_time, "ob_camera_head_color_optical_frame",
+                              w, h, "rgb8", static_cast<uint32_t>(w * 3),
+                              rgb_msg.data(), rgb_msg.size())) {
+                RCLCPP_WARN(this->get_logger(), "RGB frame does not fit Image2m buffer, skipping");
+                return;
+            }
+            pub_rgb_2m_->publish(img_msg);
+
+            if (has_depth && depth_msg.size() > 0) {
+                shm_msgs::msg::Image2m depth_ros_msg;
+                if (!fill_image2m(depth_ros_msg, current_time, "ob_camera_head_depth_optical_frame",
+                                  w, h, "16UC1", static_cast<uint32_t>(w * 2),
+                                  depth_msg.data(), depth_msg.size())) {
+                    RCLCPP_WARN(this->get_logger(), "Depth frame does not fit Image2m buffer, skipping");
+                    return;
+                }
+                pub_depth_2m_->publish(depth_ros_msg);
+            }
         }
     }
 
-    rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr pub_rgb_;
-    rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr pub_depth_;
+    // Only one pair is non-null, selected by msg_type_ at construction.
+    rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr pub_rgb_2m_;
+    rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr pub_depth_2m_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_rgb_img_;
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_depth_img_;
+    std::string msg_type_;
 
     zmq::context_t context_;
     zmq::socket_t subscriber_;

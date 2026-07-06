@@ -21,8 +21,8 @@ import subprocess
 import threading
 import time
 
-# 从 control/constants.py 导入共享常量（零依赖，纯数据）
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "control"))
+# 从 control/tienkung/constants.py 导入共享常量（零依赖，纯数据）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, "control", "tienkung"))
 from constants import ID_TO_NAME as _ID_TO_NAME, NAME_TO_ID as _NAME_TO_ID
 from constants import HAND_L_MAP as _HAND_L_MAP, HAND_R_MAP as _HAND_R_MAP
 from constants import ID_HEAD, ID_ARM_L, ID_ARM_R, ID_WAIST, ID_LEG_L, ID_LEG_R
@@ -129,10 +129,11 @@ class TiangongRosBridge(Node):
 
     def start_cpp_bridge(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        build_script = os.path.join(script_dir, "build_cpp_bridge.sh")
-        executable = os.path.join(script_dir, "zmq_image_bridge")
-        cpp_source = os.path.join(script_dir, "zmq_image_bridge.cpp")
-        cmake_source = os.path.join(script_dir, "CMakeLists.txt")
+        cpp_dir = os.path.dirname(script_dir)  # 共享 C++ bridge 在上级 bridges/ 目录
+        build_script = os.path.join(cpp_dir, "build_cpp_bridge.sh")
+        executable = os.path.join(cpp_dir, "zmq_image_bridge")
+        cpp_source = os.path.join(cpp_dir, "zmq_image_bridge.cpp")
+        cmake_source = os.path.join(cpp_dir, "CMakeLists.txt")
 
         # Skip build if executable exists and is newer than source files
         need_build = True
@@ -145,8 +146,8 @@ class TiangongRosBridge(Node):
 
         if need_build:
             self.get_logger().info(f"Building C++ Bridge: {build_script} ...")
-            subprocess.run(["chmod", "+x", build_script], cwd=script_dir)
-            res = subprocess.run([build_script], cwd=script_dir,
+            subprocess.run(["chmod", "+x", build_script], cwd=cpp_dir)
+            res = subprocess.run([build_script], cwd=cpp_dir,
                                  capture_output=True, text=True)
             if res.returncode != 0:
                 self.get_logger().error(
@@ -163,15 +164,17 @@ class TiangongRosBridge(Node):
         # Pass config values to C++ bridge via CLI args
         pub_cfg = self.cfg["topics"]["pub"]
         zmq_cfg = self.cfg["zmq"]
+        image_msg_type = pub_cfg["image_rgb"].get("type", "Image2m")
         args = [
             executable,
             "--zmq-port",    str(zmq_cfg["image_port"]),
             "--rgb-topic",   pub_cfg["image_rgb"]["topic"],
             "--depth-topic", pub_cfg["image_depth"]["topic"],
+            "--msg-type",    image_msg_type,
         ]
         self.get_logger().info(f"Starting C++ Bridge: {' '.join(args)}")
         try:
-            self.cpp_bridge_process = subprocess.Popen(args, cwd=script_dir)
+            self.cpp_bridge_process = subprocess.Popen(args, cwd=cpp_dir)
         except Exception as e:
             self.get_logger().error(f"Failed to start C++ Bridge: {e}")
             self.cpp_bridge_process = None

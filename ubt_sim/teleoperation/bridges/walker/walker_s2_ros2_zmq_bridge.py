@@ -27,7 +27,7 @@ try:
 except ImportError as exc:
     raise ImportError(
         "Walker S2 ROS2 SDK messages not found. Build and source vendored messages first, e.g.\n"
-        "  cd /ubt_sim/docker/isaac_sim && bash run.sh init\n"
+        "  cd /ubt_sim/docker && bash run.sh init\n"
         "  source /opt/ros/humble/setup.bash\n"
         "  source /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash\n"
         "Then verify /usr/bin/python3 can import mc_task_msgs, mc_state_msgs, and ecat_task_msgs."
@@ -156,10 +156,11 @@ class WalkerS2RosBridge(Node):
 
     def start_cpp_bridge(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        build_script = os.path.join(script_dir, "build_cpp_bridge.sh")
-        executable = os.path.join(script_dir, "zmq_image_bridge")
-        cpp_source = os.path.join(script_dir, "zmq_image_bridge.cpp")
-        cmake_source = os.path.join(script_dir, "CMakeLists.txt")
+        cpp_dir = os.path.dirname(script_dir)  # 共享 C++ bridge 在上级 bridges/ 目录
+        build_script = os.path.join(cpp_dir, "build_cpp_bridge.sh")
+        executable = os.path.join(cpp_dir, "zmq_image_bridge")
+        cpp_source = os.path.join(cpp_dir, "zmq_image_bridge.cpp")
+        cmake_source = os.path.join(cpp_dir, "CMakeLists.txt")
 
         need_build = True
         if os.path.isfile(executable) and os.access(executable, os.X_OK):
@@ -171,8 +172,8 @@ class WalkerS2RosBridge(Node):
 
         if need_build:
             self.get_logger().info(f"Building C++ Bridge: {build_script} ...")
-            subprocess.run(["chmod", "+x", build_script], cwd=script_dir)
-            res = subprocess.run([build_script], cwd=script_dir, capture_output=True, text=True)
+            subprocess.run(["chmod", "+x", build_script], cwd=cpp_dir)
+            res = subprocess.run([build_script], cwd=cpp_dir, capture_output=True, text=True)
             if res.returncode != 0:
                 self.get_logger().error(
                     f"C++ Bridge build failed:\n{res.stderr}\n"
@@ -186,6 +187,7 @@ class WalkerS2RosBridge(Node):
 
         pub_cfg = self.cfg["topics"]["pub"]
         zmq_cfg = self.cfg["zmq"]
+        image_msg_type = pub_cfg["image_rgb"].get("type", "Image2m")
         args = [
             executable,
             "--zmq-port",
@@ -194,10 +196,12 @@ class WalkerS2RosBridge(Node):
             pub_cfg["image_rgb"]["topic"],
             "--depth-topic",
             pub_cfg["image_depth"]["topic"],
+            "--msg-type",
+            image_msg_type,
         ]
         self.get_logger().info(f"Starting C++ Bridge: {' '.join(args)}")
         try:
-            self.cpp_bridge_process = subprocess.Popen(args, cwd=script_dir)
+            self.cpp_bridge_process = subprocess.Popen(args, cwd=cpp_dir)
         except Exception as exc:
             self.get_logger().error(f"Failed to start C++ Bridge: {exc}")
             self.cpp_bridge_process = None

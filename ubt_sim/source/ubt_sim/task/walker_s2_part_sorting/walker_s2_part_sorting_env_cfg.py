@@ -30,7 +30,7 @@ from ubt_sim.env.digital_twin_env_cfg import ManagerBasedRLDigitalTwinEnvCfg
 from ubt_sim.utils.config_loader import load_config, resolve_asset_path
 
 # Load scene config from YAML
-_TASK_CFG = load_config("walker_s2_part_sorting.yaml")
+_TASK_CFG = load_config("walker_s2/part_sorting.yaml")
 _SCENE_USD_PATH = resolve_asset_path(_TASK_CFG["scene"]["usd_path"])
 _ROBOT_INIT_STATE = _TASK_CFG["robot"]["init_state"]
 _OBJECTS_CFG = _TASK_CFG["objects"]

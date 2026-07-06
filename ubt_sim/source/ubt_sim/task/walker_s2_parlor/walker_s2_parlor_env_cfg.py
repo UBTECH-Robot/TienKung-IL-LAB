@@ -23,7 +23,7 @@ from ubt_sim.env.digital_twin_env_cfg import ManagerBasedRLDigitalTwinEnvCfg
 from ubt_sim.utils.config_loader import load_config, resolve_asset_path
 
 # Load scene config from YAML
-_TASK_CFG = load_config("walker_s2_parlor.yaml")
+_TASK_CFG = load_config("walker_s2/parlor.yaml")
 _SCENE_USD_PATH = resolve_asset_path(_TASK_CFG["scene"]["usd_path"])
 _ROBOT_INIT_STATE = _TASK_CFG["robot"]["init_state"]
 _HEAD_RGB_CAMERA_CFG = _TASK_CFG["cameras"]["head_rgb"]
