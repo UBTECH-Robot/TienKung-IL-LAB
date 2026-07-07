@@ -129,7 +129,7 @@ class PickPlaceSaveDataController(PickPlaceController):
                 project_dir = os.path.dirname(os.path.dirname(os.path.dirname(script_dir)))
                 break
             project_dir = parent
-        dataset_root = os.path.join(project_dir, "dataset")
+        dataset_root = os.path.join(project_dir, "dataset", "tienkung")
         dir_name = os.path.join(dataset_root, f"{ts[0]}")
         # 首次创建时一次性放权；不再每次重复 chmod root
         new_dir = not os.path.exists(dir_name)

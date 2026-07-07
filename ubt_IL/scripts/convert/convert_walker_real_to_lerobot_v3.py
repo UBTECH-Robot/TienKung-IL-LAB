@@ -111,15 +111,14 @@ def load_walker_real_config(config_path: str | Path) -> tuple[dict[str, Any], di
 
     features = config
     expected_names = mapping["body_joint_order"] + mapping.get("gripper_order", ["left_grip", "right_grip"])
-    if len(expected_names) != 19:
-        raise ValueError(f"Expected 19 Walker names, got {len(expected_names)}: {expected_names}")
+    expected_dim = len(expected_names)
 
     for key in ("observation.state", "action"):
         feature = features.get(key)
         if feature is None:
             raise ValueError(f"Config missing feature '{key}'.")
-        if feature.get("shape") != [19]:
-            raise ValueError(f"Feature '{key}' must have shape [19], got {feature.get('shape')}")
+        if feature.get("shape") != [expected_dim]:
+            raise ValueError(f"Feature '{key}' must have shape [{expected_dim}], got {feature.get('shape')}")
         names = feature.get("names")
         if names is not None and names != expected_names:
             raise ValueError(f"Feature '{key}' names do not match walker_real_mapping order.")
@@ -340,8 +339,22 @@ def process_episode(
             )
             images = read_aligned_video(camera_mp4, mapping["image_size"], expected_frames)
 
-        observation_state = np.concatenate([body, left_grip_state, right_grip_state], axis=1).astype(np.float32)
-        action = np.concatenate([body, left_grip_cmd, right_grip_cmd], axis=1).astype(np.float32)
+        # Assemble state/action from body + only the grippers listed in gripper_order
+        # (defaults to both, preserving the original 19D behavior).
+        grips = mapping.get("gripper_order", ["left_grip", "right_grip"])
+        state_grips, action_grips = [], []
+        for g in grips:
+            if g == "left_grip":
+                state_grips.append(left_grip_state)
+                action_grips.append(left_grip_cmd)
+            elif g == "right_grip":
+                state_grips.append(right_grip_state)
+                action_grips.append(right_grip_cmd)
+            else:
+                raise ValueError(f"Unknown gripper in gripper_order: {g}")
+        expected_dim = len(mapping["body_joint_order"]) + len(grips)
+        observation_state = np.concatenate([body] + state_grips, axis=1).astype(np.float32)
+        action = np.concatenate([body] + action_grips, axis=1).astype(np.float32)
         num_frames = ensure_frame_counts(
             {
                 "observation.state": observation_state,
@@ -349,8 +362,8 @@ def process_episode(
                 "observation.images.camera_head": images,
             }
         )
-        if observation_state.shape[1] != 19 or action.shape[1] != 19:
-            raise ValueError(f"Expected 19D state/action, got {observation_state.shape}, {action.shape}")
+        if observation_state.shape[1] != expected_dim or action.shape[1] != expected_dim:
+            raise ValueError(f"Expected {expected_dim}D state/action, got {observation_state.shape}, {action.shape}")
 
         episode_fps = estimate_fps(timestamps)
         logging.info(

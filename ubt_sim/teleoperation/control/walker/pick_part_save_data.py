@@ -410,7 +410,7 @@ class WalkerDataRecorder(Node):
             return None
 
         ts = self.get_clock().now().seconds_nanoseconds()[0]
-        dataset_root = os.path.join(self._find_ubt_sim_dir(), "dataset")
+        dataset_root = os.path.join(self._find_ubt_sim_dir(), "dataset", "walker")
         dir_name = os.path.join(dataset_root, f"{ts}")
         new_dir = not os.path.exists(dir_name)
         os.makedirs(dir_name, exist_ok=True)
