@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Script to run ubt_sim simulation environments (Tiangong Pro / Walker S2)."""
+"""Script to run ubt_sim simulation environments (Tienkung Pro / Walker S2)."""
 
 import multiprocessing
 
@@ -18,12 +18,12 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="UBT Sim simulation environments.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default="UBTSim-TiangongPro-Parlor-v0", help="Name of the task.")
+parser.add_argument("--task", type=str, default="UBTSim-TienkungPro-Parlor-v0", help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed for the environment.")
 parser.add_argument("--step_hz", type=int, default=60, help="Environment stepping rate in Hz.")
 parser.add_argument("--perf_stats", action="store_true", help="Print performance statistics.")
 parser.add_argument("--load_only", action="store_true", help="Load and render the environment without ROS control.")
-# Walker S2 specific (ignored for Tiangong Pro)
+# Walker S2 specific (ignored for Tienkung Pro)
 parser.add_argument("--zmq_cmd_port", type=int, default=int(os.environ.get("UBT_SIM_WALKER_S2_CMD_PORT", 5655)))
 parser.add_argument("--zmq_status_port", type=int, default=int(os.environ.get("UBT_SIM_WALKER_S2_STATUS_PORT", 5656)))
 parser.add_argument("--zmq_image_port", type=int, default=int(os.environ.get("UBT_SIM_WALKER_S2_IMAGE_PORT", 5657)))
@@ -68,7 +68,7 @@ def _detect_robot(task_name: str | None) -> str:
     """Infer robot type from task name."""
     if task_name and "WalkerS2" in task_name:
         return "walker_s2"
-    return "tiangong_pro"
+    return "tienkung_pro"
 
 
 ROBOT = _detect_robot(args_cli.task)
@@ -96,7 +96,7 @@ def _apply_part_randomization_if_requested(env, teleop_interface) -> None:
 
 
 def main():
-    # Resolve physics device: Walker S2 uses a dedicated flag, Tiangong Pro uses the
+    # Resolve physics device: Walker S2 uses a dedicated flag, Tienkung Pro uses the
     # AppLauncher device (which may also come from env).
     physics_device = args_cli.physics_device if ROBOT == "walker_s2" else args_cli.device
     env_cfg = parse_env_cfg(args_cli.task, device=physics_device, num_envs=args_cli.num_envs)
@@ -117,7 +117,7 @@ def main():
     perf_monitor = None if args_cli.load_only else (PerfMonitor() if args_cli.perf_stats else None)
 
     if args_cli.load_only:
-        role = "Walker S2" if ROBOT == "walker_s2" else "Tiangong Pro"
+        role = "Walker S2" if ROBOT == "walker_s2" else "Tienkung Pro"
         print(f"[INFO] {role} load-only mode: ROS control and action preprocessing are disabled.")
         teleop_interface = None
     elif ROBOT == "walker_s2":
@@ -132,9 +132,9 @@ def main():
         )
         teleop_interface.display_controls()
     else:
-        from ubt_sim.devices import TiangongProController
+        from ubt_sim.devices import TienkungProController
 
-        teleop_interface = TiangongProController(env)
+        teleop_interface = TienkungProController(env)
         teleop_interface.display_controls()
 
     env.reset()

@@ -9,18 +9,18 @@ from isaaclab.envs import ViewerCfg
 from isaaclab.actuators import ImplicitActuatorCfg
 
 from isaaclab.scene import InteractiveSceneCfg
-from ubt_sim.devices.tiangong_pro.config import (
-    TIANGONG_PRO_CFG,
-    TIANGONG_PRO_HOME_POSE,
-    TIANGONG_PRO_LEFT_ARM_JOINTS,
-    TIANGONG_PRO_RIGHT_ARM_JOINTS,
-    TIANGONG_PRO_LEFT_HAND_JOINTS,
-    TIANGONG_PRO_RIGHT_HAND_JOINTS,
-    TIANGONG_PRO_HEAD_JOINTS,
-    TIANGONG_PRO_WAIST_JOINTS,
-    TIANGONG_PRO_LEFT_LEG_JOINTS,
-    TIANGONG_PRO_RIGHT_LEG_JOINTS,
-    TIANGONG_PRO_USD_PATH,
+from ubt_sim.devices.tienkung_pro.config import (
+    TIENKUNG_PRO_CFG,
+    TIENKUNG_PRO_HOME_POSE,
+    TIENKUNG_PRO_LEFT_ARM_JOINTS,
+    TIENKUNG_PRO_RIGHT_ARM_JOINTS,
+    TIENKUNG_PRO_LEFT_HAND_JOINTS,
+    TIENKUNG_PRO_RIGHT_HAND_JOINTS,
+    TIENKUNG_PRO_HEAD_JOINTS,
+    TIENKUNG_PRO_WAIST_JOINTS,
+    TIENKUNG_PRO_LEFT_LEG_JOINTS,
+    TIENKUNG_PRO_RIGHT_LEG_JOINTS,
+    TIENKUNG_PRO_USD_PATH,
 )
 from ubt_sim.utils.config_loader import load_config, resolve_asset_path
 from ubt_sim.env.digital_twin_env_cfg import (
@@ -28,7 +28,7 @@ from ubt_sim.env.digital_twin_env_cfg import (
 )
 
 # Load scene config from YAML
-_TASK_CFG = load_config("tiangong_pro/parlor.yaml")
+_TASK_CFG = load_config("tienkung_pro/parlor.yaml")
 _SCENE_USD_PATH = resolve_asset_path(_TASK_CFG["scene"]["usd_path"])
 
 PARLOR_SCENE_CFG = AssetBaseCfg(
@@ -37,17 +37,17 @@ PARLOR_SCENE_CFG = AssetBaseCfg(
 
 
 @configclass
-class TiangongParlorSceneCfg(InteractiveSceneCfg):
+class TienkungProParlorSceneCfg(InteractiveSceneCfg):
     # Scene
     scene = PARLOR_SCENE_CFG.replace(prim_path="{ENV_REGEX_NS}/Scene")
     # Robot
-    robot = TIANGONG_PRO_CFG.replace(
+    robot = TIENKUNG_PRO_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot",
         init_state=ArticulationCfg.InitialStateCfg(
             pos=(7.80, 6.08257, 0.02),
             rot=(0.99939, 0.0, 0.0349, 0.0), # 向前倾斜 4 度 (绕 Y 轴旋转)
             # rot=(0.99813, 0.0, 0.06105, 0.0), # 向前倾斜 7 度 (绕 Y 轴旋转) --- IGNORE ---
-            joint_pos=TIANGONG_PRO_HOME_POSE
+            joint_pos=TIENKUNG_PRO_HOME_POSE
         )
     )
 
@@ -105,48 +105,48 @@ class ActionsCfg:
     # Arms (Joint Position Control)
     left_arm_action = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=TIANGONG_PRO_LEFT_ARM_JOINTS,
+        joint_names=TIENKUNG_PRO_LEFT_ARM_JOINTS,
         scale=1.0,
     )
     right_arm_action = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=TIANGONG_PRO_RIGHT_ARM_JOINTS,
+        joint_names=TIENKUNG_PRO_RIGHT_ARM_JOINTS,
         scale=1.0,
     )
 
     # Hands (Joint Position Control)
     left_hand_action = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=TIANGONG_PRO_LEFT_HAND_JOINTS,
+        joint_names=TIENKUNG_PRO_LEFT_HAND_JOINTS,
         scale=1.0,
     )
     right_hand_action = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=TIANGONG_PRO_RIGHT_HAND_JOINTS,
+        joint_names=TIENKUNG_PRO_RIGHT_HAND_JOINTS,
         scale=1.0,
     )
 
     # Head and Waist
     head_action = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=TIANGONG_PRO_HEAD_JOINTS,
+        joint_names=TIENKUNG_PRO_HEAD_JOINTS,
         scale=1.0,
     )
     waist_action = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=TIANGONG_PRO_WAIST_JOINTS,
+        joint_names=TIENKUNG_PRO_WAIST_JOINTS,
         scale=1.0,
     )
 
     # Legs
     left_leg_action = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=TIANGONG_PRO_LEFT_LEG_JOINTS,
+        joint_names=TIENKUNG_PRO_LEFT_LEG_JOINTS,
         scale=1.0,
     )
     right_leg_action = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=TIANGONG_PRO_RIGHT_LEG_JOINTS,
+        joint_names=TIENKUNG_PRO_RIGHT_LEG_JOINTS,
         scale=1.0,
     )
 
@@ -191,10 +191,10 @@ class TerminationsCfg:
 
 
 @configclass
-class TiangongParlorEnvCfg(ManagerBasedRLDigitalTwinEnvCfg):
-    """Configuration for the Tiangong Parlor environment."""
+class TienkungProParlorEnvCfg(ManagerBasedRLDigitalTwinEnvCfg):
+    """Configuration for the Tienkung Pro Parlor environment."""
     # Scene
-    scene: TiangongParlorSceneCfg = TiangongParlorSceneCfg(num_envs=1, env_spacing=5.0)
+    scene: TienkungProParlorSceneCfg = TienkungProParlorSceneCfg(num_envs=1, env_spacing=5.0)
 
     # Viewer
     # Update viewer to focus on the robot at (7.9, 6.08, 0.02)

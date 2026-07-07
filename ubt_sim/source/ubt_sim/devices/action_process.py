@@ -3,16 +3,16 @@ from typing import Any
 
 import isaaclab.envs.mdp as mdp
 import torch
-from ubt_sim.devices.tiangong_pro.config import (
-    TIANGONG_PRO_JOINT_LIMITS,
-    TIANGONG_PRO_RIGHT_HAND_JOINTS,
-    TIANGONG_PRO_LEFT_HAND_JOINTS,
-    TIANGONG_PRO_MIMIC_JOINTS
+from ubt_sim.devices.tienkung_pro.config import (
+    TIENKUNG_PRO_JOINT_LIMITS,
+    TIENKUNG_PRO_RIGHT_HAND_JOINTS,
+    TIENKUNG_PRO_LEFT_HAND_JOINTS,
+    TIENKUNG_PRO_MIMIC_JOINTS
 )
 
 
 def init_action_cfg(action_cfg, device):
-    """Tiangong Pro action configuration."""
+    """Tienkung Pro action configuration."""
 
     """Check if all the action configurations are set"""
     for field in fields(action_cfg):
@@ -24,9 +24,9 @@ def init_action_cfg(action_cfg, device):
 
 
 def preprocess_device_action(action: dict[str, Any], teleop_device) -> torch.Tensor:
-    if action.get("tiangong_pro") is not None:
+    if action.get("tienkung_pro") is not None:
         # Expected input format from teleop se3 agent or other source
-        processed_action = action["tiangong_pro"]
+        processed_action = action["tienkung_pro"]
     else:
         raise NotImplementedError(f"Not implemented for this device now: {teleop_device.device_type}")
     return processed_action

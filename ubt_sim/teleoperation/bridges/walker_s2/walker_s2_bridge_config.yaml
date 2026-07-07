@@ -1,4 +1,4 @@
-# Walker S2 bridge configuration — independent from Tiangong bridge_config.yaml.
+# Walker S2 bridge configuration — independent from Tienkung Pro bridge_config.yaml.
 
 zmq:
   cmd_port: 5655

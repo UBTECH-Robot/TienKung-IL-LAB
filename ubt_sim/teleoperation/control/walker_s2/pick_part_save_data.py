@@ -102,7 +102,7 @@ PLACEHOLDER_IMG_SHAPE = (360, 640, 3)
 PLACEHOLDER_DEPTH_SHAPE = (360, 640)
 
 
-class WalkerDataRecorder(Node):
+class WalkerS2DataRecorder(Node):
     """Walker S2 抓取任务 HDF5 数据录制节点。"""
 
     _BUFFER_KEYS = (
@@ -121,7 +121,7 @@ class WalkerDataRecorder(Node):
         rgb_camera,
         depth_camera,
         save_hz=SAVE_HZ,
-        node_name="walker_pick_part_save_data_recorder",
+        node_name="walker_s2_pick_part_save_data_recorder",
     ):
         super().__init__(node_name)
         self.rgb_camera = rgb_camera
@@ -327,7 +327,7 @@ class WalkerDataRecorder(Node):
             self.data_buffer[key].clear()
         self.dropped_frames = 0
         self.is_saving = True
-        self.get_logger().info(f"Started recording Walker data at {self.save_hz:.0f}Hz")
+        self.get_logger().info(f"Started recording Walker S2 data at {self.save_hz:.0f}Hz")
 
     def stop_save_data(self):
         """停止录制。"""
@@ -410,7 +410,7 @@ class WalkerDataRecorder(Node):
             return None
 
         ts = self.get_clock().now().seconds_nanoseconds()[0]
-        dataset_root = os.path.join(self._find_ubt_sim_dir(), "dataset", "walker")
+        dataset_root = os.path.join(self._find_ubt_sim_dir(), "dataset", "walker_s2")
         dir_name = os.path.join(dataset_root, f"{ts}")
         new_dir = not os.path.exists(dir_name)
         os.makedirs(dir_name, exist_ok=True)
@@ -689,9 +689,9 @@ def main():
 
     controller = WalkerS2Controller(enable_ik=True, subscribe_images=False)
     part_monitor = PartStateMonitor()
-    rgb_camera = Camera(topic=DEFAULT_IMAGE_RGB_TOPIC, node_name="walker_save_rgb_camera")
-    depth_camera = Camera(topic=DEFAULT_IMAGE_DEPTH_TOPIC, node_name="walker_save_depth_camera")
-    recorder = WalkerDataRecorder(rgb_camera, depth_camera, save_hz=args.save_hz)
+    rgb_camera = Camera(topic=DEFAULT_IMAGE_RGB_TOPIC, node_name="walker_s2_save_rgb_camera")
+    depth_camera = Camera(topic=DEFAULT_IMAGE_DEPTH_TOPIC, node_name="walker_s2_save_depth_camera")
+    recorder = WalkerS2DataRecorder(rgb_camera, depth_camera, save_hz=args.save_hz)
 
     executor = MultiThreadedExecutor(num_threads=5)
     for node in (controller, part_monitor, rgb_camera, depth_camera, recorder):

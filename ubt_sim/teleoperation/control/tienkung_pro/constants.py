@@ -1,6 +1,6 @@
 """天工 Pro 机器人常量定义（teleoperation 侧）。
 
-此模块与 source/ubt_sim/devices/tiangong_pro/config.py 独立维护，
+此模块与 source/ubt_sim/devices/tienkung_pro/config.py 独立维护，
 两边运行在不同 Python 环境（3.10 vs 3.11），不交叉导入，仅通过 ZMQ 通信。
 """
 

@@ -21,8 +21,8 @@ import subprocess
 import threading
 import time
 
-# 从 control/tienkung/constants.py 导入共享常量（零依赖，纯数据）
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, "control", "tienkung"))
+# 从 control/tienkung_pro/constants.py 导入共享常量（零依赖，纯数据）
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, "control", "tienkung_pro"))
 from constants import ID_TO_NAME as _ID_TO_NAME, NAME_TO_ID as _NAME_TO_ID
 from constants import HAND_L_MAP as _HAND_L_MAP, HAND_R_MAP as _HAND_R_MAP
 from constants import ID_HEAD, ID_ARM_L, ID_ARM_R, ID_WAIST, ID_LEG_L, ID_LEG_R
@@ -48,9 +48,9 @@ MSG_TYPES = {
 }
 
 
-class TiangongRosBridge(Node):
+class TienkungProRosBridge(Node):
     def __init__(self):
-        super().__init__('tiangong_ros_bridge')
+        super().__init__('tienkung_pro_ros_bridge')
 
         # Load config
         self.cfg = load_bridge_config()
@@ -118,7 +118,7 @@ class TiangongRosBridge(Node):
         self._running = True
         self._poll_thread = threading.Thread(target=self._poll_loop)
         self._poll_thread.start()
-        self.get_logger().info("Tiangong ROS 2 Bridge (Control Only) Started")
+        self.get_logger().info("Tienkung Pro ROS 2 Bridge (Control Only) Started")
 
         # Start C++ Image Bridge (skip with env var DISABLE_CPP_IMAGE_BRIDGE=1)
         self.cpp_bridge_process = None
@@ -301,7 +301,7 @@ class TiangongRosBridge(Node):
 
 if __name__ == '__main__':
     rclpy.init()
-    node = TiangongRosBridge()
+    node = TienkungProRosBridge()
     try: rclpy.spin(node)
     except KeyboardInterrupt: pass
     node.stop()

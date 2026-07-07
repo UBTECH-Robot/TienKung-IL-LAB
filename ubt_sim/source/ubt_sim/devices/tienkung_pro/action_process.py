@@ -1,7 +1,7 @@
 import torch
-from ubt_sim.devices.tiangong_pro.config import (
-    TIANGONG_PRO_JOINT_LIMITS,
-    TIANGONG_PRO_MIMIC_JOINTS
+from ubt_sim.devices.tienkung_pro.config import (
+    TIENKUNG_PRO_JOINT_LIMITS,
+    TIENKUNG_PRO_MIMIC_JOINTS
 )
 action_joint_names = None
 _joint_mapping_info = None
@@ -15,13 +15,13 @@ def to_controller_data(joint_pos_dict, env):
     num_envs = env.num_envs
     device = env.device
     def get_val(join_name):
-        if join_name in TIANGONG_PRO_MIMIC_JOINTS:
-            mimic_info = TIANGONG_PRO_MIMIC_JOINTS[join_name]
+        if join_name in TIENKUNG_PRO_MIMIC_JOINTS:
+            mimic_info = TIENKUNG_PRO_MIMIC_JOINTS[join_name]
             source_joint = mimic_info["joint"]
             multiplier = mimic_info.get("multiplier")
             return multiplier * get_val(source_joint)
-        elif join_name in TIANGONG_PRO_JOINT_LIMITS:
-            low, high, _, _ = TIANGONG_PRO_JOINT_LIMITS[join_name]
+        elif join_name in TIENKUNG_PRO_JOINT_LIMITS:
+            low, high, _, _ = TIENKUNG_PRO_JOINT_LIMITS[join_name]
             target_limit = low if abs(low) > abs(high) else high
             percentage = joint_pos_dict.get(join_name, 1.0)
             return (1.0 - percentage) * target_limit
@@ -43,8 +43,8 @@ def to_ros_data(env):
     finger_percentages = {}
 
     # 处理限位关节的百分比反算 (仅针对非 mimic 关节)
-    for name, limits in TIANGONG_PRO_JOINT_LIMITS.items():
-        if name not in TIANGONG_PRO_MIMIC_JOINTS and name in joint_pos_map:
+    for name, limits in TIENKUNG_PRO_JOINT_LIMITS.items():
+        if name not in TIENKUNG_PRO_MIMIC_JOINTS and name in joint_pos_map:
             current_val = joint_pos_map[name]
             low, high = limits[0], limits[1]
             # 选取非零的极限值作为 0.0 映射的目标

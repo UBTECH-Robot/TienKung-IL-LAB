@@ -16,17 +16,41 @@ UBT_SIM_TASK=UBTSim-WalkerS2-PartSorting-v0 bash scripts/start_sim.sh
 
 # 天工数据采集（同一容器内，用系统 Python 3.10）
 source /opt/ros/humble/setup.bash && export ROS_DOMAIN_ID=0
-/usr/bin/python3 teleoperation/control/tienkung/pick_place_save_data.py
+/usr/bin/python3 teleoperation/control/tienkung_pro/pick_place_save_data.py
 ```
 
 ## 架构
 
-单容器架构，ROS2 与 Isaac Sim 共存：
+单容器架构，ROS2 Humble（Py 3.10）与 Isaac Sim（Py 3.11）共存：
 
 ```
-Isaac Sim (Py 3.11) ←ZMQ 5555/5556/5557→ ROS2 Bridge (Py 3.10, 同容器子进程) ←ROS2 DDS→ 控制脚本
+┌─────────────────────────────────────────────────────────┐
+│ Docker Container (host network)                         │
+│                                                         │
+│  Isaac Sim (Py 3.11)                                    │
+│  └─ scripts/sim_runner.py (自动检测天工 Pro / Walker S2) │
+│       │                                                 │
+│       │  ZMQ PUB/SUB (127.0.0.1)                        │
+│       │  ├─ cmd port (5555 / 5655)                      │
+│       │  ├─ status port (5556 / 5656)                   │
+│       │  ├─ image port (5557 / 5657)                    │
+│       │  └─ jpeg port (N/A  / 5658)                     │
+│       ▼                                                 │
+│  ROS2 Bridge (Py 3.10, 子进程)                          │
+│  ├─ bridges/tienkung_pro/tienkung_pro_ros2_zmq_bridge.py (天工) │
+│  └─ bridges/walker_s2/walker_s2_ros2_zmq_bridge.py         │
+│       │                                                 │
+│       │  ROS2 DDS (domain 146 仿真 / 0 真机)            │
+│       ▼                                                 │
+│  控制脚本 (Py 3.10)                                     │
+│  ├─ teleoperation/control/tienkung_pro/  (天工 Pro)         │
+│  └─ teleoperation/control/walker_s2/    (Walker S2)        │
+└─────────────────────────────────────────────────────────┘
 ```
 
+- `source/`（Isaac Sim Py 3.11）和 `teleoperation/`（ROS2 Py 3.10）运行在不同 Python 环境，**零交叉导入**，仅通过 ZMQ 通信
+- Walker S2 桥接使用独立的 ZMQ 端口组（默认 5655-5658），天工 Pro 使用 5555-5557
+- 天工 Pro 桥接集成 C++ 图像桥接（`zmq_image_bridge`），支持 ZMQ 原始图像 → ROS2 Image 消息的高效转换
 - `start_sim.sh` 自动启动桥接子进程，`UBT_SIM_NO_BRIDGE=1` 可跳过
 - 真机部署：同一容器切换 `ROS_DOMAIN_ID=0` 即可
 

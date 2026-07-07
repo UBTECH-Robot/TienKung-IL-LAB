@@ -1,4 +1,4 @@
-# Tiangong Pro Parlor Task Configuration
+# Tienkung Pro Parlor Task Configuration
 # All paths are relative to the assets/ directory
 
 scene:
@@ -6,8 +6,8 @@ scene:
   prim_path: "{ENV_REGEX_NS}/Scene"
 
 robot:
-  name: "tiangong_pro"
-  usd_path: "robots/tiangong_pro/tiangong_pro_v2.usd"
+  name: "tienkung_pro"
+  usd_path: "robots/tienkung_pro/tienkung_pro_v2.usd"
   init_state:
     pos: [7.80, 6.08257, 0.02]
     rot: [0.99939, 0.0, 0.0349, 0.0]  # Forward tilt 4 degrees (Y-axis rotation)

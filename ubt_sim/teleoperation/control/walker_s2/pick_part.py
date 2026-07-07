@@ -198,7 +198,7 @@ def _base_y_rotation(pitch):
 
 
 def transform_world_delta_to_base(delta_world, world_to_base_quat_wxyz=DEFAULT_WORLD_TO_BASE_QUAT_WXYZ):
-    """把 world frame 位移向量旋转到 Walker URDF base frame。"""
+    """把 world frame 位移向量旋转到 Walker S2 URDF base frame。"""
     rot_world_to_base = _quat_wxyz_to_matrix(world_to_base_quat_wxyz)
     return rot_world_to_base @ np.asarray(delta_world, dtype=float)
 
@@ -208,13 +208,13 @@ def transform_world_point_to_base(
     base_in_world_pos=DEFAULT_BASE_IN_WORLD_POS,
     world_to_base_quat_wxyz=DEFAULT_WORLD_TO_BASE_QUAT_WXYZ,
 ):
-    """把 world frame 点坐标转换到 Walker URDF base frame。"""
+    """把 world frame 点坐标转换到 Walker S2 URDF base frame。"""
     delta_world = np.asarray(point_world, dtype=float) - np.asarray(base_in_world_pos, dtype=float)
     return transform_world_delta_to_base(delta_world, world_to_base_quat_wxyz)
 
 
 def transform_base_delta_to_world(delta_base, world_to_base_quat_wxyz=DEFAULT_WORLD_TO_BASE_QUAT_WXYZ):
-    """把 Walker URDF base frame 位移向量旋转到 world frame。"""
+    """把 Walker S2 URDF base frame 位移向量旋转到 world frame。"""
     rot_world_to_base = _quat_wxyz_to_matrix(world_to_base_quat_wxyz)
     return rot_world_to_base.T @ np.asarray(delta_base, dtype=float)
 
@@ -224,7 +224,7 @@ def transform_base_point_to_world(
     base_in_world_pos=DEFAULT_BASE_IN_WORLD_POS,
     world_to_base_quat_wxyz=DEFAULT_WORLD_TO_BASE_QUAT_WXYZ,
 ):
-    """把 Walker URDF base frame 点坐标转换到 world frame。"""
+    """把 Walker S2 URDF base frame 点坐标转换到 world frame。"""
     return np.asarray(base_in_world_pos, dtype=float) + transform_base_delta_to_world(point_base, world_to_base_quat_wxyz)
 
 

@@ -17,7 +17,7 @@ cd /home/qingxiangliu/work/UBTECH-IL-LAB/ubt_sim
 UBT_SIM_TASK=UBTSim-WalkerS2-PartSorting-v0 bash scripts/start_sim.sh
 
 # Terminal 2: query state / run small tests
-cd /home/qingxiangliu/work/UBTECH-IL-LAB/ubt_sim/teleoperation/control/walker
+cd /home/qingxiangliu/work/UBTECH-IL-LAB/ubt_sim/teleoperation/control/walker_s2
 /usr/bin/python3 walker_s2_controller.py --print-state
 /usr/bin/python3 walker_s2_joint_test.py --print
 /usr/bin/python3 walker_s2_camera.py --msg-type sensor_msgs/Image

@@ -24,8 +24,8 @@ try:
 except ImportError:
     HAS_ZMQ = False
 
-class TiangongProController(DeviceBase):
-    """Controller for Tiangong Pro that receives actions via ZMQ bridge.
+class TienkungProController(DeviceBase):
+    """Controller for Tienkung Pro that receives actions via ZMQ bridge.
     This allows ROS 2 Humble (Python 3.10) to communicate with this environment (Python 3.11).
     """
     def __init__(self, env, **kwargs):
@@ -79,7 +79,7 @@ class TiangongProController(DeviceBase):
             print("[WARNING] zmq not found. ZMQ control will not be available.")
 
     def __str__(self) -> str:
-        return "Tiangong Pro ZMQ Controller"
+        return "Tienkung Pro ZMQ Controller"
 
     def _init_prim(self, prim_path, rigid=True):
         if not RigidPrim and rigid:
@@ -364,12 +364,12 @@ class TiangongProController(DeviceBase):
             except Exception:
                 pass
 
-        return {"tiangong_pro": to_controller_data(self._action,self.env)}
+        return {"tienkung_pro": to_controller_data(self._action,self.env)}
 
     def display_controls(self):
         """Display the controls."""
         if HAS_ZMQ:
-            print("Tiangong Pro Controller: Full ROS Interface enabled via ZMQ Bridge")
+            print("Tienkung Pro Controller: Full ROS Interface enabled via ZMQ Bridge")
             print("  - Command Sub: tcp://127.0.0.1:5555")
             print("  - Status Pub:  tcp://127.0.0.1:5556")
             print("  - Image Pub:   tcp://*:5557 (raw multipart)")

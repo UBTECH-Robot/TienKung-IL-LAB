@@ -2,7 +2,7 @@
 # UBT Sim unified launcher — auto-detects robot type from UBT_SIM_TASK.
 #
 # Usage:
-#   bash scripts/start_sim.sh                          # default: Tiangong Pro
+#   bash scripts/start_sim.sh                          # default: Tienkung Pro
 #   UBT_SIM_TASK=UBTSim-WalkerS2-PartSorting-v0 bash scripts/start_sim.sh
 #   UBT_SIM_NO_BRIDGE=1 bash scripts/start_sim.sh       # skip ZMQ bridge
 #   UBT_SIM_LOAD_ONLY=1 bash scripts/start_sim.sh        # scene preview only
@@ -12,14 +12,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # --- Resolve defaults ---
-UBT_SIM_TASK="${UBT_SIM_TASK:-UBTSim-TiangongPro-Parlor-v0}"
+UBT_SIM_TASK="${UBT_SIM_TASK:-UBTSim-TienkungPro-Parlor-v0}"
 UBT_SIM_NUM_ENVS="${UBT_SIM_NUM_ENVS:-1}"
 
 # Detect robot from task name
 if [[ "$UBT_SIM_TASK" == *"WalkerS2"* ]]; then
     ROBOT="walker_s2"
 else
-    ROBOT="tiangong_pro"
+    ROBOT="tienkung_pro"
 fi
 BRIDGE_PID=""
 
@@ -64,11 +64,11 @@ if [ -z "${UBT_SIM_NO_BRIDGE:-}" ]; then
                 exit 1
             fi
             export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
-            BRIDGE_CFG="${UBT_SIM_WALKER_S2_BRIDGE_CONFIG:-$PROJECT_DIR/teleoperation/bridges/walker/walker_s2_bridge_config.yaml}"
-            /usr/bin/python3 "$PROJECT_DIR/teleoperation/bridges/walker/walker_s2_ros2_zmq_bridge.py" \
+            BRIDGE_CFG="${UBT_SIM_WALKER_S2_BRIDGE_CONFIG:-$PROJECT_DIR/teleoperation/bridges/walker_s2/walker_s2_bridge_config.yaml}"
+            /usr/bin/python3 "$PROJECT_DIR/teleoperation/bridges/walker_s2/walker_s2_ros2_zmq_bridge.py" \
                 --config "$BRIDGE_CFG" &
         else
-            /usr/bin/python3 "$PROJECT_DIR/teleoperation/bridges/tienkung/tiangong_ros2_zmq_bridge.py" &
+            /usr/bin/python3 "$PROJECT_DIR/teleoperation/bridges/tienkung_pro/tienkung_pro_ros2_zmq_bridge.py" &
         fi
 
         BRIDGE_PID=$!

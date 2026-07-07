@@ -73,3 +73,4 @@ ubt_IL/walker/**/__pycache__/
 ubt_IL/walker/**/*.pyc
 ubt_IL/walker/**/*.egg-info/
 ubt_sim/teleoperation/control/walker/camera_*.png
+.claude/plans/

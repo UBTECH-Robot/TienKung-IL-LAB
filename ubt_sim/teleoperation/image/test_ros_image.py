@@ -4,15 +4,15 @@
 订阅指定 topic，收到第一帧后打印分辨率、编码等信息，
 保存前 N 帧到 test_output/ 目录，超时则报错退出。
 
-天工（tienkung）相机的 ROS2 类型为 sensor_msgs/msg/Image，QoS 为 BEST_EFFORT
-（由 C++ image bridge 发布）。注意：只有 walker S2 使用 shm_msgs/msg/Image2m，
-本脚本不适用于 walker S2 的相机 topic。
+天工（tienkung_pro）相机的 ROS2 类型为 sensor_msgs/msg/Image，QoS 为 BEST_EFFORT
+（由 C++ image bridge 发布）。注意：只有 Walker S2 使用 shm_msgs/msg/Image2m，
+本脚本不适用于 Walker S2 的相机 topic。
 
 Usage:
   # 真机
-  ROS_DOMAIN_ID=0 /usr/bin/python3 tool/test_ros_image.py
+  ROS_DOMAIN_ID=0 /usr/bin/python3 image/test_ros_image.py
   # 仿真
-  ROS_DOMAIN_ID=146 /usr/bin/python3 tool/test_ros_image.py
+  ROS_DOMAIN_ID=146 /usr/bin/python3 image/test_ros_image.py
 """
 
 import argparse

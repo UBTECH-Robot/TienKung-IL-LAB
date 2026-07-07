@@ -8,7 +8,7 @@ Python module serving as a project/extension template.
 """
 
 # Register Gym environments.
-from .task.tiangong_parlor import *
+from .task.tienkung_pro_parlor import *
 from .task.walker_s2_parlor import *
 from .task.walker_s2_part_sorting import *
 from .utils import monkey_patch
