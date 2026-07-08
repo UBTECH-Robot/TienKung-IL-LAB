@@ -28,6 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-cv-bridge \
     ros-humble-message-filters \
     ros-humble-rclcpp \
+    ros-humble-rclcpp-components \
     ros-humble-std-msgs \
     ros-humble-sensor-msgs \
     ros-humble-geometry-msgs \
@@ -41,9 +42,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-3-0 libcanberra-gtk3-module \
     && rm -rf /var/lib/apt/lists/*
 
-# ARM64 note: docker/ros2_msgs/ros-humble-bodyctrl-msgs_0.0.1-1_amd64.deb
-# contains x86_64 native ROS type-support libraries, so it is intentionally not
-# installed here. Walker ROS2 message packages are built by entrypoint.sh.
+# bodyctrl_msgs (天工 msgs): arm64 无预编译 deb，从源码编译。
+# 源码备份自 ubt_sim/teleoperation/msgs/body_crtl_msgs_src（包名 bodyctrl_msgs，与 x86 deb 同名）。
+COPY docker/ros2_msgs/bodyctrl_msgs_src /opt/bodyctrl_msgs_ws/src
+RUN . /opt/ros/humble/setup.bash \
+    && cd /opt/bodyctrl_msgs_ws \
+    && colcon build --packages-select bodyctrl_msgs \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    && rm -rf build log
 
 # System Python dependencies for ROS2 Bridge2.
 RUN /usr/bin/python3 -m pip install --upgrade pip \

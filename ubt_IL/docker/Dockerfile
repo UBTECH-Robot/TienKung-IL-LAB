@@ -67,7 +67,9 @@ WORKDIR /ubt_IL
 # LeRobot [dataset] extra 运行时依赖：rollout 模块在 import 时硬性 require
 # datasets/av（lerobot.datasets 录制回放视频用）。lerobot 源码是 bind-mount，
 # entrypoint 只做 editable 安装不含此 extra，故构建时预装这 4 个独立 PyPI 包。
-RUN /lerobot/.venv/bin/python -m pip install --no-cache-dir \
+# 基镜像 lerobot-gpu:latest 的 /lerobot/.venv 可能不含 pip（:latest drift），ensurepip 补齐。
+RUN /lerobot/.venv/bin/python -m ensurepip --upgrade \
+    && /lerobot/.venv/bin/python -m pip install --no-cache-dir \
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
     "datasets>=4.7.0,<5.0.0" "pandas>=2.0.0,<3.0.0" \
     "pyarrow>=21.0.0,<30.0.0" "av>=15.0.0,<16.0.0"

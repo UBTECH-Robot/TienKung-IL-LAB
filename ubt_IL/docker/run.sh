@@ -165,6 +165,7 @@ PY' >/dev/null 2>&1
         fi
         sudo docker exec -it "$CONTAINER_NAME" bash -c "\
             source /opt/ros/humble/setup.bash 2>/dev/null || true; \
+            source /opt/bodyctrl_msgs_ws/install/setup.bash 2>/dev/null || true; \
             source $WALKER_WS/install/setup.bash 2>/dev/null || true; \
             export ROS_DOMAIN_ID=$DOMAIN_ID; \
             export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/fastdds_no_shm.xml; \
@@ -266,14 +267,12 @@ PY" 2>/dev/null; then
             ERRORS=$((ERRORS + 1))
         fi
 
-        # bodyctrl_msgs (x86_64 TianKung package; ARM64 image skips the amd64 deb by design)
-        if sudo docker exec "$CONTAINER_NAME" dpkg -l ros-humble-bodyctrl-msgs >/dev/null 2>&1; then
-            echo "[OK] bodyctrl_msgs: installed"
-        elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-            echo "[WARN] bodyctrl_msgs: not installed on ARM64 (expected unless an arm64 package/source is added)"
-            WARNINGS=$((WARNINGS + 1))
+        # bodyctrl_msgs: x86 由 deb 装入 /opt/ros/humble，arm64 由源码编译到 /opt/bodyctrl_msgs_ws
+        if sudo docker exec "$CONTAINER_NAME" bash -lc \
+          "source /opt/ros/humble/setup.bash 2>/dev/null; source /opt/bodyctrl_msgs_ws/install/setup.bash 2>/dev/null; /usr/bin/python3 -c 'from bodyctrl_msgs.msg import MotorCtrl'" 2>/dev/null; then
+            echo "[OK] bodyctrl_msgs: available"
         else
-            echo "[WARN] bodyctrl_msgs: NOT installed"
+            echo "[WARN] bodyctrl_msgs: NOT available"
             WARNINGS=$((WARNINGS + 1))
         fi
 

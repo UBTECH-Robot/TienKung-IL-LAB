@@ -6,6 +6,11 @@ if [ -f /opt/ros/humble/setup.bash ]; then
     source /opt/ros/humble/setup.bash
 fi
 
+# 天工 bodyctrl_msgs（arm64 构建时源码编译产物；x86 由 deb 装入 /opt/ros/humble）
+if [ -f /opt/bodyctrl_msgs_ws/install/setup.bash ]; then
+    source /opt/bodyctrl_msgs_ws/install/setup.bash
+fi
+
 # Fast-DDS: disable shared memory transport (required for Docker, even with --network=host)
 # Without this, ros2 topic list works but ros2 topic echo / subscribe fails
 export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/fastdds_no_shm.xml
