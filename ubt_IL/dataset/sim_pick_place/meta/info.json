@@ -1,38 +1,60 @@
 {
     "codebase_version": "v3.0",
-    "fps": 15,
+    "fps": 30,
     "features": {
-        "observation.images.camera_head": {
+        "observation.images.head": {
             "dtype": "video",
             "shape": [
+                3,
                 360,
-                640,
-                3
+                640
             ],
             "names": [
+                "channels",
                 "height",
-                "width",
-                "channel"
+                "width"
             ],
-            "video_info": {
-                "video.fps": 15.0,
-                "video.codec": "libx264",
-                "video.pix_fmt": "yuv420p",
-                "video.is_depth_map": false,
-                "has_audio": false
-            },
             "info": {
                 "video.height": 360,
                 "video.width": 640,
-                "video.codec": "av1",
+                "video.codec": "h264",
                 "video.pix_fmt": "yuv420p",
                 "video.is_depth_map": false,
-                "video.fps": 15,
+                "video.fps": 30,
                 "video.channels": 3,
                 "has_audio": false,
                 "video.g": 2,
                 "video.crf": 30,
-                "video.preset": 12,
+                "video.preset": null,
+                "video.fast_decode": 0,
+                "video.video_backend": "pyav",
+                "video.extra_options": {}
+            }
+        },
+        "observation.images.head_depth": {
+            "dtype": "video",
+            "shape": [
+                3,
+                360,
+                640
+            ],
+            "names": [
+                "channels",
+                "height",
+                "width"
+            ],
+            "info": {
+                "video.height": 360,
+                "video.width": 640,
+                "video.codec": "h264",
+                "video.pix_fmt": "yuv420p",
+                "video.is_depth_map": false,
+                "video.fps": 30,
+                "video.channels": 3,
+                "has_audio": false,
+                "video.g": 2,
+                "video.crf": 30,
+                "video.preset": null,
                 "video.fast_decode": 0,
                 "video.video_backend": "pyav",
                 "video.extra_options": {}
@@ -42,12 +64,68 @@
             "dtype": "float32",
             "shape": [
                 26
+            ],
+            "names": [
+                "left_shoulder_pitch_joint",
+                "left_shoulder_roll_joint",
+                "left_shoulder_yaw_joint",
+                "left_elbow_pitch_joint",
+                "left_wrist_yaw_joint",
+                "left_wrist_pitch_joint",
+                "left_wrist_roll_joint",
+                "right_shoulder_pitch_joint",
+                "right_shoulder_roll_joint",
+                "right_shoulder_yaw_joint",
+                "right_elbow_pitch_joint",
+                "right_wrist_yaw_joint",
+                "right_wrist_pitch_joint",
+                "right_wrist_roll_joint",
+                "left_little_finger_joint",
+                "left_ring_finger_joint",
+                "left_middle_finger_joint",
+                "left_index_finger_joint",
+                "left_thumb_bend_joint",
+                "left_thumb_rotation_joint",
+                "right_little_finger_joint",
+                "right_ring_finger_joint",
+                "right_middle_finger_joint",
+                "right_index_finger_joint",
+                "right_thumb_bend_joint",
+                "right_thumb_rotation_joint"
             ]
         },
         "action": {
             "dtype": "float32",
             "shape": [
                 26
+            ],
+            "names": [
+                "left_shoulder_pitch_target",
+                "left_shoulder_roll_target",
+                "left_shoulder_yaw_target",
+                "left_elbow_pitch_target",
+                "left_wrist_yaw_target",
+                "left_wrist_pitch_target",
+                "left_wrist_roll_target",
+                "right_shoulder_pitch_target",
+                "right_shoulder_roll_target",
+                "right_shoulder_yaw_target",
+                "right_elbow_pitch_target",
+                "right_wrist_yaw_target",
+                "right_wrist_pitch_target",
+                "right_wrist_roll_target",
+                "left_little_finger_target",
+                "left_ring_finger_target",
+                "left_middle_finger_target",
+                "left_index_finger_target",
+                "left_thumb_bend_target",
+                "left_thumb_rotation_target",
+                "right_little_finger_target",
+                "right_ring_finger_target",
+                "right_middle_finger_target",
+                "right_index_finger_target",
+                "right_thumb_bend_target",
+                "right_thumb_rotation_target"
             ]
         },
         "episode_index": {
@@ -86,16 +164,16 @@
             "names": null
         }
     },
-    "total_episodes": 1,
-    "total_frames": 279,
+    "total_episodes": 10,
+    "total_frames": 6774,
     "total_tasks": 1,
     "chunks_size": 1000,
     "data_files_size_in_mb": 100,
     "video_files_size_in_mb": 200,
     "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
     "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
-    "robot_type": "tienkung",
+    "robot_type": "tiangong",
     "splits": {
-        "train": "0:1"
+        "train": "0:10"
     }
 }
