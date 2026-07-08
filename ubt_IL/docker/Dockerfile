@@ -41,11 +41,12 @@ RUN dpkg -i /tmp/ros-humble-bodyctrl-msgs_0.0.1-1_amd64.deb \
     && rm -f /tmp/ros-humble-bodyctrl-msgs_0.0.1-1_amd64.deb
 
 # 系统 Python 依赖 + rospython 别名
+# pandas/pyarrow 供系统 Python 读取 LeRobot 数据集 (tasks/episodes parquet)
 RUN /usr/bin/python3 -m pip install --upgrade pip \
     && /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir \
     --retries 5 --timeout 60 \
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    pyzmq "numpy<2" "opencv-python<4.10" ikpy h5py \
+    pyzmq "numpy<2" "opencv-python<4.10" ikpy h5py pandas pyarrow \
     && ln -sf /usr/bin/python3 /usr/local/bin/rospython
 
 # Fast-DDS config: disable shared memory (fixes ROS2 data delivery inside Docker)

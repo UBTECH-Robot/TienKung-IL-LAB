@@ -7,9 +7,9 @@ set -e
 # === 配置 ===
 POLICY_PATH="${POLICY_PATH:-/ubt_IL/model/real_pick_place_act/checkpoints/last/pretrained_model}"
 STRATEGY="${STRATEGY:-base}"
-FPS="${FPS:-15}"
+FPS="${FPS:-30}"
 DURATION="${DURATION:-60}"
-TASK="${TASK:-pick and place}"
+TASK="${TASK:-sim_pick_place}"
 # ZMQ_HOST="${ZMQ_HOST:-192.168.41.2}" # 真机地址
 ZMQ_HOST="${ZMQ_HOST:-127.0.0.1}" # 仿真器地址
 

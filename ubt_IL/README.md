@@ -65,19 +65,20 @@ SRC_ROOT=path/to/hdf5_episodes TGT_PATH=path/to/output REPO_ID=my_dataset \
 
 # 或直接调用 Python 脚本获得更细粒度控制
 python scripts/convert/convert_to_lerobot.py \
-  --config scripts/convert/configs/Tien_Kung_26_1RGB.json \
+  --config scripts/convert/configs/Tien_Kung_26_1RGB_sim.json \
   --src_root path/to/hdf5_episodes --tgt_path path/to/output \
-  --repo_id my_dataset --fps 15 --robot_type tienkung --task_name pick_and_place
+  --repo_id my_dataset --fps 30 --robot_type tienkung --task_name pick_and_place
 ```
 
 主要参数（完整列表见 `convert_to_lerobot.py --help`）：
 
 | 参数 | 环境变量 | 默认值 | 说明 |
 |------|----------|--------|------|
-| `--config` | `CONFIG` | `Tien_Kung_26_1RGB.json` | 特征映射配置文件 |
-| `--src_root` | `SRC_ROOT` | `dataset/hdf5` | HDF5 源数据目录 |
+| `--config` | `CONFIG` | `Tien_Kung_26_1RGB_sim.json` | 特征映射配置文件 |
+| `--src_root` | `SRC_ROOT` | `/ubt_IL/dataset/sim_pick_place_hdf5` | HDF5 源数据目录 |
 | `--tgt_path` | `TGT_PATH` | `/ubt_IL/dataset` | 输出父目录 |
-| `--repo_id` | `REPO_ID` | `real_pick_place` | 数据集名称 |
+| `--repo_id` | `REPO_ID` | `sim_pick_place` | 数据集名称 |
+| `--fps` | `FPS` | `30` | 采样帧率 |
 
 ### 配置文件
 
@@ -85,7 +86,7 @@ python scripts/convert/convert_to_lerobot.py \
 
 | 配置文件 | 场景 | 维度 | 说明 |
 |----------|------|------|------|
-| `Tien_Kung_26_1RGB.json` | 仿真 | 26 | action 从 `action/` 读取 |
+| `Tien_Kung_26_1RGB_sim.json` | 仿真 | 26 | action 从 `action/` 读取 |
 | `Tien_Kung_26_1RGB_real.json` | 真机 | 26 | action 从 `master/` 读取，含灵巧手 invert/padding |
 | `Tien_Kung_Gello_1RGB.json` | Gello | 16 | 关节空间，单相机 |
 
@@ -119,7 +120,7 @@ HF_HUB_OFFLINE=1 lerobot-dataset-viz \
 将数据集的 action 原样发回真机/仿真。容器内运行，先跑 `reset.py` 复位。
 
 ```bash
-# --rate 需匹配数据集 fps：真机 30，仿真 15
+# --rate 需匹配数据集 fps（真机/仿真均为 30）
 /usr/bin/python3 /ubt_IL/scripts/deploy/replay.py \
   --dataset /ubt_IL/dataset/real_grasp_bottle --episode 0 --rate 30
 ```
@@ -133,31 +134,39 @@ HF_HUB_OFFLINE=1 lerobot-dataset-viz \
 
 ## 3. 模型训练
 
-在容器内运行：
+在 `lerobot-tienkung` 容器内运行。`train.sh` 通过 `--config_path` 加载训练配置（默认 `train_config_sim_act.json`），环境变量覆盖的字段优先级高于配置文件。
 
 ```bash
-# 默认配置（50k 步，ACT 模型）
+# 默认配置（仿真 ACT）
 bash /ubt_IL/scripts/deploy/train.sh
 
+# 使用真机数据训练
+CONFIG_PATH=/ubt_IL/scripts/deploy/train_config_real_act.json \
+DATASET_ROOT=/ubt_IL/dataset/Pick_up_real_data \
+DATASET_REPO_ID=Pick_up_real_data \
+OUTPUT_DIR=/ubt_IL/model/Pick_up_real_act \
+  bash /ubt_IL/scripts/deploy/train.sh
+
 # 自定义参数
-DATASET_ROOT=/ubt_IL/dataset/my_data \
-STEPS=10000 \
-OUTPUT_DIR=/ubt_IL/model/my_model \
+STEPS=100000 BATCH_SIZE=8 SEED=10000 \
   bash /ubt_IL/scripts/deploy/train.sh
 ```
 
-可覆盖的环境变量：
+可覆盖的环境变量（CLI 优先级高于配置文件）：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `DATASET_ROOT` | `/ubt_IL/dataset/real_merged` | 数据集路径 |
-| `OUTPUT_DIR` | `/ubt_IL/model/real_pick_place_act` | 模型输出路径 |
-| `STEPS` | `50000` | 训练总步数 |
-| `BATCH_SIZE` | `8` | 批次大小 |
+| `CONFIG_PATH` | `/ubt_IL/scripts/deploy/train_config_sim_act.json` | 训练配置文件路径 |
+| `DATASET_ROOT` | `/ubt_IL/dataset/sim_pick_place` | 数据集根目录 |
+| `DATASET_REPO_ID` | `sim_pick_place` | 数据集 repo id |
+| `OUTPUT_DIR` | `/ubt_IL/model/sim_pick_place_act` | 模型与检查点输出目录 |
+| `STEPS` | `500000` | 训练总步数 |
+| `BATCH_SIZE` | `8` | 批大小 |
+| `SEED` | `10000` | 随机种子 |
 | `DEVICE` | `cuda` | 训练设备 |
-| `SEED` | `1000` | 随机种子 |
+| `HF_HUB_OFFLINE` | `1` | 离线模式，不访问 HuggingFace Hub |
 
-Checkpoint 每 10,000 步保存一次，模型路径为 `{OUTPUT_DIR}/checkpoints/last/pretrained_model`。
+Checkpoint 每 `save_freq`（默认 100000 步）保存一次，另有 `checkpoints/last/pretrained_model`，部署默认使用它。路径：`{OUTPUT_DIR}/checkpoints/last/pretrained_model`。
 
 ---
 
@@ -197,8 +206,8 @@ POLICY_PATH=/ubt_IL/model/test_model DURATION=60 \
 /lerobot/.venv/bin/lerobot-rollout \
     --policy.path=/ubt_IL/model/test_model \
     --robot.type=tienkung --robot.bridge_enabled=true \
-    --robot.cameras="{camera_head: {type: image_server, server_address: '192.168.41.2', port: 5558, width: 640, height: 360, fps: 15, display: true}}" \
-    --task="pick and place" --fps=15 --duration=60
+    --robot.cameras="{head: {type: image_server, server_address: '192.168.41.2', port: 5558, offset_x: 0, width: 640, height: 360, fps: 30, display: true}}" \
+    --task="sim_pick_place" --fps=30 --duration=60
 ```
 
 ### 相机 & 部署参数
@@ -209,7 +218,7 @@ POLICY_PATH=/ubt_IL/model/test_model DURATION=60 \
 | `port` | `5558` | ImageServer ZMQ 端口 |
 | `offset_x` | `0` | 拼接帧水平偏移（多相机时用） |
 | `width` / `height` | `640` / `360` | 截取尺寸 |
-| `display` | `false` | 是否弹窗实时显示 |
+| `display` | `true` | 是否弹窗实时显示 |
 | `POLICY_PATH` | `.../real_pick_place_act/.../pretrained_model` | 模型路径 |
 | `DURATION` | `60` | 运行时长（秒） |
 | `ZMQ_HOST` | `127.0.0.1` | ZMQ 连接主机 |

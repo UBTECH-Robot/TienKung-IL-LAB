@@ -71,6 +71,16 @@ python3 /ubt_sim/teleoperation/image_client.py
 | 仿真 | 146 | ZMQ 桥接连接 Isaac Sim |
 | 真机 | 0（默认） | ZMQ 桥接连接真实机器人 |
 
+
+## 真机数采
+使用Thinker Studio 遥操数采平台进行数据采集，官方提供 [Thinker Studio](https://thinkercosmos.ubtrobot.com/#/studio) 遥操数采平台，可进行数据采集。具体参见官网使用文档，直接导出lerobot v3.0 数据集。
+```bash
+# 合并采集到的数据集
+INPUT_DATASETS="Pick_up_the_red_bottle_1 Pick_up_the_red_bottle_2 Pick_up_the_red_bottle_3 Pick_up_the_red_bottle_4" \
+  OUTPUT_DATASET=Pick_up_the_red_bottle \
+  bash /ubt_IL/scripts/convert/merge_datasets.sh
+```
+
 ## 训练模块
 
 基于 LeRobot ACT 策略，数据集来源于仿真采集的 HDF5 或真机遥操作数据，训练在 `lerobot-tienkung` 容器内完成。`bash run.sh check` 用于环境健康检查。
@@ -88,17 +98,71 @@ bash /ubt_IL/scripts/convert/convert.sh
 
 # 3. 训练（默认使用仿真ACT配置）
 bash /ubt_IL/scripts/deploy/train.sh
+# 使用真机数据训练
+CONFIG_PATH=/ubt_IL/scripts/deploy/train_config_real_act.json \
+DATASET_ROOT=/ubt_IL/dataset/Pick_up_real_data \
+DATASET_REPO_ID=Pick_up_real_data \
+OUTPUT_DIR=/ubt_IL/model/Pick_up_real_act \
+bash /ubt_IL/scripts/deploy/train.sh
+
 ```
 
 `train.sh` 通过 `--config_path` 加载 `train_config_sim_act.json` 作为完整配置，环境变量覆盖的字段优先级高于配置文件。
 
-Checkpoint 路径：`{OUTPUT_DIR}/checkpoints/last/pretrained_model`。
+### 关键参数（均可通过环境变量覆盖，CLI 优先级高于配置文件）：
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `CONFIG_PATH` | `/ubt_IL/scripts/deploy/train_config_sim_act.json` | 训练配置文件路径 |
+| `DATASET_ROOT` | `/ubt_IL/dataset/sim_pick_place` | 数据集根目录 |
+| `DATASET_REPO_ID` | `sim_pick_place` | 数据集 repo id |
+| `OUTPUT_DIR` | `/ubt_IL/model/sim_pick_place_act` | 模型与检查点输出目录 |
+| `STEPS` | `500000` | 训练步数 |
+| `BATCH_SIZE` | `8` | 批大小 |
+| `SEED` | `10000` | 随机种子 |
+| `DEVICE` | `cuda` | 训练设备 |
+| `HF_HUB_OFFLINE` | `1` | 离线模式，不访问 HuggingFace Hub |
+
+
 
 详细参数、ACT 配置、数据可视化命令见 [ubt_IL/README.md](ubt_IL/README.md#3-模型训练)。
 
+## 仿真部署
+天工仿真部署使用上述ubt_sim模块代替机器人真机进行测试。该仿真环境与真机ROS话题部署和通信方法一致，可用于真机部署前的验证工作，避免真机动作错误造成损坏等严重后果。仿真模块容器独立运行，与模型训练推理容器在同一主机通过本地回环`127.0.0.1`网段进行ROS通信。
+### 快速开始
+
+```bash
+# 1. 启动仿真（已启动可跳过）
+cd ubt_sim/docker/isaac_sim
+bash run.sh bash
+bash /ubt_sim/scripts/start_sim.sh 
+# 按R机器人可复位
+
+# 2. 初始化动作（抬起手臂到桌面上）
+/usr/bin/python3 /ubt_sim/teleoperation/control/reset.py  
+
+# 3. 启动推理容器，运行推理脚本
+cd ubt_IL/docker
+bash run.sh bash
+POLICY_PATH=/ubt_IL/model/sim_pick_place_act/checkpoints/last/pretrained_model     bash /ubt_IL/scripts/deploy/rollout.sh
+
+# （可选操作）仿真中回放数据集动作
+ /usr/bin/python3 /ubt_IL/scripts/deploy/replay.py   --dataset /ubt_IL/dataset/sim_pick_place --episode 0 --rate 30
+```
+### 关键参数
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `POLICY_PATH` | `.../real_pick_place_act/.../pretrained_model` | 模型 checkpoint |
+| `STRATEGY` | `base` | 推理策略（`base` 自主执行不录制；`sentry`/`highlight`/`dagger` 用于录制或交互） |
+| `TASK` | `sim_pick_place` | 任务描述（注入 policy 的任务条件） |
+| `ZMQ_HOST` | `127.0.0.1` | ImageServer 相机地址（仿真使用本地回环） |
+| `DURATION` | `60` | 运行时长（秒） |
+| `FPS` | `30` | 控制环频率（与训练 fps 对齐） |
+
 ## 真机部署
 
-天工真机部署需 `ROS_DOMAIN_ID=0`，部署机与机器人需同网段（如 `192.168.41.x`）。架构为容器内 LeRobot 通过 ZMQ 与 Bridge2 通信，相机由机器人端 ImageServer 提供 JPEG 流。
+天工真机部署需确认 `ROS_DOMAIN_ID=0`，部署机与机器人需同网段（如 `192.168.41.x`）。架构为容器内 LeRobot 通过 ZMQ 与 Bridge2 通信，相机由机器人端 ImageServer 提供 JPEG 流。
 
 ### 快速开始
 
@@ -111,6 +175,9 @@ bash run.sh restart
 # 1. 机器人端启动相机服务（仅真机部署需要）
 scp ubt_IL/scripts/deploy/camera/image_server.py nvidia@192.168.41.2:~
 ssh nvidia@192.168.41.2 'python3 image_server.py'
+# 若机器人端未安装pyorbbec相机驱动请安装相关依赖包
+python3 -m pip install evdev
+python3 -m pip install pyorbbecsdk2
 
 # 2. 容器内复位 + 推理
 bash run.sh bash
@@ -128,8 +195,10 @@ POLICY_PATH=/ubt_IL/model/test_model ZMQ_HOST=192.168.41.2 DURATION=60 \
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `POLICY_PATH` | `.../real_pick_place_act/.../pretrained_model` | 模型 checkpoint |
-| `ZMQ_HOST` | `127.0.0.1` | ImageServer 地址（真机改机器人 IP） |
+| `STRATEGY` | `base` | 推理策略（`base` 自主执行不录制；`sentry`/`highlight`/`dagger` 用于录制或交互） |
+| `TASK` | `pick and place` | 任务描述（注入 policy 的任务条件） |
+| `ZMQ_HOST` | `192.168.41.2` | ImageServer 地址（真机改机器人 IP） |
 | `DURATION` | `60` | 运行时长（秒） |
-| `FPS` | `15` | 控制环频率（与训练 fps 对齐） |
+| `FPS` | `30` | 控制环频率（与训练 fps 对齐） |
 
 注意：`ubt_IL/docker/fastdds_no_shm.xml` 中的 IP 必须改为本机 IP，否则 ROS 无法与真机通信。详细架构图、26 维向量布局见 [ubt_IL/CLAUDE.md](ubt_IL/CLAUDE.md)；完整部署参数与 `lerobot-rollout` CLI 调用见 [ubt_IL/README.md](ubt_IL/README.md#4-模型部署)。
