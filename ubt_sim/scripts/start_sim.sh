@@ -10,13 +10,16 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+export PYTHONPATH="$PROJECT_DIR/source:${PYTHONPATH:-}"
 
 # --- Resolve defaults ---
 UBT_SIM_TASK="${UBT_SIM_TASK:-UBTSim-TienkungPro-Parlor-v0}"
 UBT_SIM_NUM_ENVS="${UBT_SIM_NUM_ENVS:-1}"
 
 # Detect robot from task name
-if [[ "$UBT_SIM_TASK" == *"WalkerS2"* ]]; then
+if [[ "$UBT_SIM_TASK" == *"WalkerC1"* ]]; then
+    ROBOT="walker_c1"
+elif [[ "$UBT_SIM_TASK" == *"WalkerS2"* ]]; then
     ROBOT="walker_s2"
 else
     ROBOT="tienkung_pro"
@@ -52,7 +55,10 @@ if [ -z "${UBT_SIM_NO_BRIDGE:-}" ]; then
         set -u
         export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 
-        if [ "$ROBOT" = "walker_s2" ]; then
+        if [ "$ROBOT" = "walker_c1" ]; then
+            echo "[INFO] Walker C1 ROS2-ZMQ bridge is not implemented yet. Skipping bridge."
+            BRIDGE_PID=""
+        elif [ "$ROBOT" = "walker_s2" ]; then
             # Walker S2: SDK message packages are required
             if [ -f /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash ]; then
                 set +u
@@ -67,13 +73,16 @@ if [ -z "${UBT_SIM_NO_BRIDGE:-}" ]; then
             BRIDGE_CFG="${UBT_SIM_WALKER_S2_BRIDGE_CONFIG:-$PROJECT_DIR/teleoperation/bridges/walker_s2/walker_s2_bridge_config.yaml}"
             /usr/bin/python3 "$PROJECT_DIR/teleoperation/bridges/walker_s2/walker_s2_ros2_zmq_bridge.py" \
                 --config "$BRIDGE_CFG" &
+            BRIDGE_PID=$!
         else
             /usr/bin/python3 "$PROJECT_DIR/teleoperation/bridges/tienkung_pro/tienkung_pro_ros2_zmq_bridge.py" &
+            BRIDGE_PID=$!
         fi
 
-        BRIDGE_PID=$!
-        echo "[INFO] ${ROBOT} ROS2-ZMQ bridge started (PID=$BRIDGE_PID)"
-        sleep 2
+        if [ -n "$BRIDGE_PID" ]; then
+            echo "[INFO] ${ROBOT} ROS2-ZMQ bridge started (PID=$BRIDGE_PID)"
+            sleep 2
+        fi
     else
         echo "[WARN] ROS2 not found in container. Skipping bridge. Set UBT_SIM_NO_BRIDGE=1 to suppress."
     fi
@@ -86,6 +95,8 @@ if [ -n "${UBT_SIM_LOAD_ONLY:-}" ]; then
     if [ -z "${UBT_SIM_LOAD_ONLY_KEEP_DEVICE:-}" ]; then
         if [ "$ROBOT" = "walker_s2" ]; then
             EXTRA_ARGS+=(--device "${UBT_SIM_LOAD_ONLY_DEVICE:-${UBT_SIM_WALKER_S2_DEVICE:-cuda:0}}")
+        elif [ "$ROBOT" = "walker_c1" ]; then
+            EXTRA_ARGS+=(--device "${UBT_SIM_LOAD_ONLY_DEVICE:-cpu}")
         else
             EXTRA_ARGS+=(--device "${UBT_SIM_LOAD_ONLY_DEVICE:-cpu}")
         fi
@@ -93,7 +104,7 @@ if [ -n "${UBT_SIM_LOAD_ONLY:-}" ]; then
 fi
 
 # --- Launch simulation ---
-/isaac-sim/python.sh "$SCRIPT_DIR/sim_runner.py" \
+/isaac-sim/python.sh -u "$SCRIPT_DIR/sim_runner.py" \
     --task "$UBT_SIM_TASK" \
     --enable_cameras \
     --num_envs "$UBT_SIM_NUM_ENVS" \

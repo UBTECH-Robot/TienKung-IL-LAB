@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Script to run ubt_sim simulation environments (Tienkung Pro / Walker S2)."""
+"""Script to run ubt_sim simulation environments."""
 
 import multiprocessing
 
@@ -23,7 +23,7 @@ parser.add_argument("--seed", type=int, default=None, help="Seed for the environ
 parser.add_argument("--step_hz", type=int, default=60, help="Environment stepping rate in Hz.")
 parser.add_argument("--perf_stats", action="store_true", help="Print performance statistics.")
 parser.add_argument("--load_only", action="store_true", help="Load and render the environment without ROS control.")
-# Walker S2 specific (ignored for Tienkung Pro)
+# Walker S2 specific (ignored for other robots)
 parser.add_argument("--zmq_cmd_port", type=int, default=int(os.environ.get("UBT_SIM_WALKER_S2_CMD_PORT", 5655)))
 parser.add_argument("--zmq_status_port", type=int, default=int(os.environ.get("UBT_SIM_WALKER_S2_STATUS_PORT", 5656)))
 parser.add_argument("--zmq_image_port", type=int, default=int(os.environ.get("UBT_SIM_WALKER_S2_IMAGE_PORT", 5657)))
@@ -66,6 +66,8 @@ from ubt_sim.utils.loop_utils import KeyboardResetController, PerfMonitor, RateL
 
 def _detect_robot(task_name: str | None) -> str:
     """Infer robot type from task name."""
+    if task_name and "WalkerC1" in task_name:
+        return "walker_c1"
     if task_name and "WalkerS2" in task_name:
         return "walker_s2"
     return "tienkung_pro"
@@ -96,7 +98,7 @@ def _apply_part_randomization_if_requested(env, teleop_interface) -> None:
 
 
 def main():
-    # Resolve physics device: Walker S2 uses a dedicated flag, Tienkung Pro uses the
+    # Resolve physics device: Walker S2 uses a dedicated flag, other robots use the
     # AppLauncher device (which may also come from env).
     physics_device = args_cli.physics_device if ROBOT == "walker_s2" else args_cli.device
     env_cfg = parse_env_cfg(args_cli.task, device=physics_device, num_envs=args_cli.num_envs)
@@ -117,9 +119,11 @@ def main():
     perf_monitor = None if args_cli.load_only else (PerfMonitor() if args_cli.perf_stats else None)
 
     if args_cli.load_only:
-        role = "Walker S2" if ROBOT == "walker_s2" else "Tienkung Pro"
+        role = {"walker_c1": "Walker C1", "walker_s2": "Walker S2"}.get(ROBOT, "Tienkung Pro")
         print(f"[INFO] {role} load-only mode: ROS control and action preprocessing are disabled.")
         teleop_interface = None
+    elif ROBOT == "walker_c1":
+        raise NotImplementedError("Walker C1 currently supports load-only simulation only. Set UBT_SIM_LOAD_ONLY=1.")
     elif ROBOT == "walker_s2":
         from ubt_sim.devices.walker_s2 import WalkerS2Controller
 

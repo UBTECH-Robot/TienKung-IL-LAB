@@ -48,12 +48,15 @@ ubt_sim/scripts/export_walker_c1_usd.py
 ubt_sim/scripts/import_walker_c1_urdf_test.py
 ubt_sim/scripts/test_walker_c1_cfg_spawn.py
 ubt_sim/source/ubt_sim/devices/walker_c1/
+ubt_sim/source/ubt_sim/task/walker_c1_parlor/
+ubt_sim/config/walker_c1/
 ```
 
 注意：运行测试后可能生成：
 
 ```text
 ubt_sim/source/ubt_sim/devices/walker_c1/__pycache__/
+ubt_sim/source/ubt_sim/task/walker_c1_parlor/__pycache__/
 ```
 
 这是 Python 运行缓存，不是源码改动。
@@ -266,6 +269,122 @@ docker exec walker-c1-ubt-sim /isaac-sim/python.sh -u /ubt_sim/scripts/test_walk
 
 注意：这个 smoke test 脚本在成功后使用 `os._exit(0)` 直接退出，原因是 Isaac/AppLauncher 在这个最小脚本里关闭阶段会卡住。这个处理只影响测试脚本，不影响正式仿真入口。
 
+### 5. Walker C1 Parlor Load-Only Task
+
+新增：
+
+```text
+ubt_sim/source/ubt_sim/task/walker_c1_parlor/__init__.py
+ubt_sim/source/ubt_sim/task/walker_c1_parlor/walker_c1_parlor_env_cfg.py
+ubt_sim/config/walker_c1/parlor.yaml
+```
+
+已注册 task：
+
+```text
+UBTSim-WalkerC1-Parlor-v0
+```
+
+同时小范围更新：
+
+```text
+ubt_sim/source/ubt_sim/__init__.py
+ubt_sim/scripts/start_sim.sh
+ubt_sim/scripts/sim_runner.py
+```
+
+更新目的：
+
+```text
+注册 Walker C1 task
+start_sim.sh 识别 WalkerC1，不再误走 tienkung_pro
+Walker C1 暂时跳过 ROS2-ZMQ bridge
+start_sim.sh 自动加入 /ubt_sim/source 到 PYTHONPATH
+start_sim.sh 使用 /isaac-sim/python.sh -u 输出实时日志
+sim_runner.py 对 Walker C1 非 load-only 明确报错，避免误接旧 controller
+```
+
+验证命令：
+
+```bash
+docker start walker-c1-ubt-sim
+docker exec walker-c1-ubt-sim bash -lc "cd /ubt_sim && UBT_SIM_TASK=UBTSim-WalkerC1-Parlor-v0 UBT_SIM_LOAD_ONLY=1 timeout 120s bash scripts/start_sim.sh --headless"
+```
+
+结果：
+
+```text
+[INFO]: Parsing configuration from: ubt_sim.task.walker_c1_parlor.walker_c1_parlor_env_cfg:WalkerC1ParlorEnvCfg
+[INFO] Action Manager: <ActionManager> contains 8 active terms.
+Active Action Terms (shape: 53)
+left_arm_action=7
+right_arm_action=7
+left_hand_action=11
+right_hand_action=11
+head_action=2
+waist_action=3
+left_leg_action=6
+right_leg_action=6
+[INFO] Observation Manager: policy joint_pos shape=(53,)
+[INFO]: Completed setting up the environment...
+[INFO] Walker C1 load-only mode: ROS control and action preprocessing are disabled.
+[INFO] Load-only app update enabled: physics/action/observation stepping is disabled.
+```
+
+说明：
+
+```text
+Walker C1 USD 已能在 parlor 场景中通过 Isaac Lab task 正常加载
+相机配置未报错
+action manager 已识别全部 53 个可动关节
+```
+
+### 6. Tiangong Parlor Local Scene Assets
+
+用户打开 GUI 后只看到机器人和空白背景。原因是新 clone 里的：
+
+```text
+ubt_sim/assets/scenes/parlor/scene_v2.usd
+```
+
+以及 parlor 下很多 USD/PNG 都是 Git LFS pointer 文件，当前机器没有 `git lfs`，所以实际客厅/桌子/水果资产没有拉下来。
+
+为了不把 tracked LFS pointer 文件直接替换成大二进制，已从旧探索目录复制 Tienkung 可见的 parlor 真实资产到本地忽略目录：
+
+```text
+/home/changzhang/VLA/C1-IL-LAB/ubt_sim/assets/scenes/parlor/
+  -> ubt_sim/assets/local_scenes/tiangong_parlor/
+```
+
+并在 `.gitignore` 增加：
+
+```text
+ubt_sim/assets/local_scenes/
+```
+
+`ubt_sim/config/walker_c1/parlor.yaml` 当前场景路径已改为：
+
+```text
+scene:
+  usd_path: "local_scenes/tiangong_parlor/scene_v2.usd"
+```
+
+重新验证：
+
+```bash
+docker exec walker-c1-ubt-sim bash -lc "cd /ubt_sim && UBT_SIM_TASK=UBTSim-WalkerC1-Parlor-v0 UBT_SIM_LOAD_ONLY=1 timeout 120s bash scripts/start_sim.sh --headless"
+```
+
+结果：
+
+```text
+环境 setup 完成
+Action Manager shape=53
+进入 Walker C1 load-only mode
+```
+
+注意：日志里仍有少量 MDL/默认贴图 warning，例如 `Clear_Glass.mdl` 和 fruit 默认贴图路径；这不阻止 scene setup。如果 GUI 中水果材质显示异常，后续再单独整理这些材质路径。
+
 ## ROS / SDK Notes
 
 SDK 文档显示 Astron/C1 低层 ROS2 接口和当前 `walker_s2` 使用的 SDK message 基本一致：
@@ -314,10 +433,10 @@ ubt_sim/teleoperation/msgs/walker_sdk_ros2_msgs_src/src/ecat_task_msgs
 
 ## Current Architecture Decision
 
-现在已经从 URDF 路线推进到 USD 路线：
+现在已经从 URDF 路线推进到 USD/task 路线：
 
 ```text
-URDF import OK -> USD export OK -> WALKER_C1_CFG spawn OK
+URDF import OK -> USD export OK -> WALKER_C1_CFG spawn OK -> Walker C1 parlor load-only task OK
 ```
 
 后续应按 `walker_s2` 结构继续新增同级目录，而不是覆盖已有文件：
@@ -331,25 +450,12 @@ ubt_sim/teleoperation/control/walker_c1/
 
 ## Recommended Next Step
 
-下一步做最小 task：
+下一步建议继续保持小步：
 
 ```text
-ubt_sim/source/ubt_sim/task/walker_c1_parlor/
-ubt_sim/config/walker_c1/parlor.yaml
-```
-
-目标先支持 load-only：
-
-```bash
-UBT_SIM_TASK=UBTSim-WalkerC1-Parlor-v0 UBT_SIM_LOAD_ONLY=1 bash scripts/start_sim.sh
-```
-
-还不要急着接 ROS/controller。先确认：
-
-```text
-Walker C1 USD 能在 parlor 场景里通过 Isaac Lab task 正常加载
-相机配置不报错
-action manager 的 joint list 能识别
+1. 确认 C1/Astron 真实 SDK joint order，尤其身体 RobotCommand 顺序和左右手 JointCommand 顺序。
+2. 再按 walker_s2 结构新增 walker_c1 controller/action_process 的最小版本。
+3. controller 通过后再新增 teleoperation/bridges/walker_c1/，不要先写 ROS bridge。
 ```
 
 ## Important Do Not Do Yet
@@ -374,5 +480,5 @@ asset -> URDF import -> USD export -> devices config -> CFG spawn test -> task -
 目前已经完成到：
 
 ```text
-CFG spawn test
+Walker C1 parlor load-only task
 ```

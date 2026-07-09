@@ -1,0 +1,35 @@
+# Walker C1 / Astron Parlor Task Configuration
+# All paths are relative to the assets/ directory.
+
+scene:
+  usd_path: "local_scenes/tiangong_parlor/scene_v2.usd"
+  prim_path: "{ENV_REGEX_NS}/Scene"
+
+robot:
+  name: "walker_c1"
+  usd_path: "robots/walker_c1/walker_c1.usd"
+  init_state:
+    pos: [7.80, 6.08257, 0.90]
+    rot: [0.99939, 0.0, 0.0349, 0.0]
+
+cameras:
+  head_rgb:
+    prim_path: "{ENV_REGEX_NS}/Robot/head_pitch_link/Camera_RGB"
+    data_types: ["rgb"]
+    resolution: [640, 480]
+    offset:
+      pos: [0.08, 0.0, 0.04]
+      rot: [1.0, 0.0, 0.0, 0.0]
+      convention: "ros"
+    intrinsics:
+      focal_length: 24.0
+      focus_distance: 400.0
+      horizontal_aperture: 44.76
+      vertical_aperture: 24.99
+      clipping_range: [0.1, 100000.0]
+
+simulation:
+  dt: 0.01
+  decimation: 1
+  render_interval: 3
+  episode_length_s: 1000
