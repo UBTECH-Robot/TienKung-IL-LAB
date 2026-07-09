@@ -202,3 +202,77 @@ POLICY_PATH=/ubt_IL/model/test_model ZMQ_HOST=192.168.41.2 DURATION=60 bash /ubt
 | `FPS`         | `30`                                           | 控制环频率（与训练 fps 对齐）                                                           |
 
 注意：`ubt_IL/docker/fastdds_no_shm.xml` 中的 IP 必须改为本机 IP，否则 ROS 无法与真机通信。详细架构图、26 维向量布局见 [ubt_IL/CLAUDE.md](ubt_IL/CLAUDE.md)；完整部署参数与 `lerobot-rollout` CLI 调用见 [ubt_IL/README.md](ubt_IL/README.md#4-模型部署)。
+
+
+
+## 真机本体ARM板部署
+
+天工真机本体部署教程，使用机器人Orin板做推理部署，由于docker容器使用x86构建系统架构不同，使用conda在Orin板构建虚拟部署环境。详细操作流程见 [arm板部署详细文档](ubt_IL/scripts/deploy/arm_64/README.md#2-使用流程)。
+
+### 快速开始
+
+```bash
+# 0. 环境初始化
+mkdir /home/nvidia/vla/   # 将项目代码复制到此处
+cd /home/nvidia/vla/TienKung-IL-LAB/ubt_IL/scripts/deploy/arm_64
+bash setup_env.sh  # 构建conda环境env_vla
+
+# 1. 机器人端启动相机服务（仅真机部署需要）
+conda activate env_vla
+bash /home/nvidia/vla/TienKung-IL-LAB/ubt_IL/scripts/deploy/arm_64/image_server_host.sh
+
+# 若机器人端未安装pyorbbec相机驱动请安装相关依赖包（仅安装一次）
+python3 -m pip install evdev
+python3 -m pip install pyorbbecsdk2
+
+# （可选）机器人相机预览测试
+bash /home/nvidia/vla/TienKung-IL-LAB/ubt_IL/scripts/deploy/arm_64/image_client_host.sh --show
+
+# 2. 机器人预备动作（抬起右手）
+bash /home/nvidia/vla/TienKung-IL-LAB/ubt_IL/scripts/deploy/arm_64/robot_ready.sh     # 机器人准备动作
+
+# 3. 运行推理脚本
+conda activate env_vla
+POLICY_PATH=/home/nvidia/vla/TienKung-IL-LAB/ubt_IL/model/Pick_up_tiangong_all_act/checkpoints/last/pretrained_model  DURATION=60 bash /home/nvidia/vla/TienKung-IL-LAB/ubt_IL/scripts/deploy/arm_64/rollout_host.sh
+
+# 4. （可选）数据集回放，在真机上播放采集的动作
+/usr/bin/python3 /home/nvidia/vla/TienKung-IL-LAB/ubt_IL/scripts/deploy/replay.py --dataset /home/nvidia/vla/TienKung-IL-LAB/ubt_IL/dataset/Pick_up_the_apple_all --episode 0 --rate 30
+```
+
+### 关键参数
+
+本土部署（conda `env_vla`）的推理与环境构建参数均可通过环境变量覆盖，CLI 优先级高于配置文件。
+
+**推理部署（`rollout_host.sh`）**
+
+| 变量            | 默认值                                                                                  | 说明                                                    |
+| --------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `POLICY_PATH` | `$PROJECT_ROOT/model/Pick_up_tiangong_all_act/checkpoints/last/pretrained_model` | ACT checkpoint                                          |
+| `STRATEGY`    | `base`                                                                                 | 推理策略（`base` 自主执行；`sentry`/`highlight`/`dagger` 用于录制或交互） |
+| `TASK`        | `sim_pick_place`                                                                       | 任务描述（注入 policy 的任务条件）                      |
+| `ZMQ_HOST`    | `127.0.0.1`                                                                            | image_server 地址（真机相机在机器人端则改其 IP）        |
+| `DURATION`    | `60`                                                                                   | 运行时长（秒）                                          |
+| `FPS`         | `30`                                                                                   | 控制环频率（与训练 fps 对齐）                           |
+| `DISPLAY_CAM` | `true`                                                                                 | 相机显示（SSH 无 X 设 `false`）                         |
+
+
+**关键约束**
+
+- **Python 3.12**：LeRobot 0.5.2 + tienkung 插件原生运行，免源码补丁；勿降级 3.10。
+- **本地 wheel**：torch/torchvision 用本目录的 cp312 Jetson 专属 wheel（链接本机 glibc 2.35）；勿用 PyPI 的 aarch64 wheel（CPU-only 无 CUDA），亦勿用需 GLIBC_2.38 的预编译 wheel（本机 2.35 会崩）。
+- **numpy 必须 <2**：本地 torch 按 numpy 1.x 编译，`setup_env.sh` 已强制 `numpy==1.26.4`，勿手动升级。
+- **双栈别混**：`image_server_host.sh`、`robot_ready.sh` 走系统 python3.10（无需 activate）；`rollout_host.sh`、`train_host.sh`、`image_client_host.sh` 走 env_vla (3.12)，需先 `conda activate env_vla`。
+- **真机网络**：需把 `ubt_IL/docker/fastdds_no_shm.xml` 中的 IP 改为本机 IP，否则 ROS2 无法与真机通信。
+
+完整参数表、双栈架构图与注意事项见 [arm板部署详细文档](ubt_IL/scripts/deploy/arm_64/README.md)。
+
+## 致谢
+
+本项目站在以下开源项目的肩膀上，谨致谢忱：
+
+- [NVIDIA Isaac Sim](https://developer.nvidia.com/isaac-sim) - 高保真机器人仿真环境
+- [HuggingFace LeRobot](https://github.com/huggingface/lerobot) - 模仿学习框架（ACT 策略、数据格式与训练/推理工具链）
+- [Thinker Studio](https://thinkercosmos.ubtrobot.com/#/studio) - 优必选遥操数采平台
+
+感谢以上社区与所有贡献者的卓越工作。如本项目对您有帮助，欢迎 Star ⭐ 支持。
+

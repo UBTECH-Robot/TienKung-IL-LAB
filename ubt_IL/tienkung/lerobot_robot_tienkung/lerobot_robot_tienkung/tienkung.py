@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import signal
 import subprocess
 import threading
 import time
@@ -28,6 +30,42 @@ logger = logging.getLogger(__name__)
 
 # Path where _start_bridge() writes the config JSON for external scripts to read.
 _BRIDGE_CONFIG_PATH = "/tmp/tienkung_bridge_config.json"
+
+
+def _kill_orphan_bridges() -> None:
+    """Terminate any already-running ros2_deploy_bridge.py processes.
+
+    Matches only processes whose argv[1] is ros2_deploy_bridge.py (the script
+    being executed), NOT the lerobot-rollout main process, which carries the
+    bridge path as the value of --robot.bridge_script=... but whose argv[1] is
+    the lerobot entrypoint. Using pkill -f / pgrep -f here would match the
+    lerobot main process's cmdline too and SIGTERM our own parent on startup.
+    """
+    own_pid = os.getpid()
+    parent_pid = os.getppid()
+    pids = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid in (own_pid, parent_pid):
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                parts = f.read().split(b"\x00")
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+        if len(parts) < 2:
+            continue
+        if parts[1].decode("utf-8", "replace").endswith("ros2_deploy_bridge.py"):
+            pids.append(pid)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    if pids:
+        time.sleep(0.5)
 
 
 class TienKungRobot(Robot):
@@ -142,8 +180,7 @@ class TienKungRobot(Robot):
 
     def _start_bridge(self) -> None:
         # Stop any existing Bridge2 process first (avoid conflicts from auto-start)
-        subprocess.run(["pkill", "-f", "ros2_deploy_bridge.py"], check=False)
-        time.sleep(0.5)
+        _kill_orphan_bridges()
 
         config_json = json.dumps(self.config.to_bridge_config())
         cmd = [

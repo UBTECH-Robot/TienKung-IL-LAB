@@ -335,29 +335,30 @@ def kill_existing_bridge() -> None:
     released before returning.
     """
     current_pid = os.getpid()
+    parent_pid = os.getppid()
 
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", "ros2_deploy_bridge"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return  # pgrep unavailable or timed out — skip check
-
-    if result.returncode != 0:
-        return  # no existing processes found
-
+    # Match only processes whose argv[1] is ros2_deploy_bridge.py (the script
+    # being executed). The lerobot-rollout main process carries the bridge
+    # path as the *value* of --robot.bridge_script=..., so its argv[1] is the
+    # lerobot entrypoint -- it must NOT be matched, otherwise the bridge kills
+    # its own parent on startup. (pgrep -f / pkill -f match the whole cmdline
+    # and would hit the lerobot main process too.)
     pids = []
-    for line in result.stdout.strip().splitlines():
-        line = line.strip()
-        if not line:
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid in (current_pid, parent_pid):
             continue
         try:
-            pid = int(line)
-            if pid != current_pid:
-                pids.append(pid)
-        except ValueError:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                parts = f.read().split(b"\x00")
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
             continue
+        if len(parts) < 2:
+            continue
+        if parts[1].decode("utf-8", "replace").endswith("ros2_deploy_bridge.py"):
+            pids.append(pid)
 
     if not pids:
         return
