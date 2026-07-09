@@ -4,7 +4,7 @@
         "root": "/ubt_IL/dataset/sim_pick_place",
         "episodes": null,
         "image_transforms": {
-            "enable": false,
+            "enable": true,
             "max_num_transforms": 3,
             "random_order": false,
             "tfs": {
@@ -118,7 +118,7 @@
         "license": null,
         "pretrained_path": null,
         "chunk_size": 100,
-        "n_action_steps": 100,
+        "n_action_steps": 10,
         "normalization_mapping": {
             "VISUAL": "MEAN_STD",
             "STATE": "MEAN_STD",
@@ -140,7 +140,7 @@
         "temporal_ensemble_coeff": null,
         "dropout": 0.1,
         "kl_weight": 10.0,
-        "optimizer_lr": 1e-05,
+        "optimizer_lr": 1e-4,
         "optimizer_weight_decay": 0.0001,
         "optimizer_lr_backbone": 1e-05
     },
@@ -154,12 +154,12 @@
     "batch_size": 8,
     "prefetch_factor": 4,
     "persistent_workers": true,
-    "steps": 500000,
-    "eval_freq": 20000,
+    "steps": 50000,
+    "eval_freq": 2000,
     "log_freq": 200,
     "tolerance_s": 0.0001,
     "save_checkpoint": true,
-    "save_freq": 100000,
+    "save_freq": 10000,
     "use_policy_training_preset": true,
     "optimizer": {
         "type": "adamw",
