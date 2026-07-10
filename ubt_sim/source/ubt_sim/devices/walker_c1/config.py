@@ -160,8 +160,8 @@ WALKER_C1_HOME_POSE = {
 
 WALKER_C1_ARM_STIFFNESS = {name: 80 for name in WALKER_C1_ARM_JOINTS}
 WALKER_C1_ARM_DAMPING = {name: 20 for name in WALKER_C1_ARM_JOINTS}
-WALKER_C1_HAND_STIFFNESS = {name: 10 for name in WALKER_C1_HAND_JOINTS}
-WALKER_C1_HAND_DAMPING = {name: 2 for name in WALKER_C1_HAND_JOINTS}
+WALKER_C1_HAND_STIFFNESS = {name: 200 for name in WALKER_C1_HAND_JOINTS}
+WALKER_C1_HAND_DAMPING = {name: 20 for name in WALKER_C1_HAND_JOINTS}
 WALKER_C1_HEAD_STIFFNESS = {name: 80 for name in WALKER_C1_HEAD_JOINTS}
 WALKER_C1_HEAD_DAMPING = {name: 10 for name in WALKER_C1_HEAD_JOINTS}
 WALKER_C1_WAIST_STIFFNESS = {name: 120 for name in WALKER_C1_WAIST_JOINTS}
@@ -214,15 +214,15 @@ WALKER_C1_CFG = ArticulationCfg(
         ),
         "left_hand": ImplicitActuatorCfg(
             joint_names_expr=WALKER_C1_LEFT_HAND_JOINTS,
-            effort_limit_sim=2,
-            velocity_limit_sim=3,
+            effort_limit_sim=50,
+            velocity_limit_sim=10,
             stiffness={name: WALKER_C1_HAND_STIFFNESS[name] for name in WALKER_C1_LEFT_HAND_JOINTS},
             damping={name: WALKER_C1_HAND_DAMPING[name] for name in WALKER_C1_LEFT_HAND_JOINTS},
         ),
         "right_hand": ImplicitActuatorCfg(
             joint_names_expr=WALKER_C1_RIGHT_HAND_JOINTS,
-            effort_limit_sim=2,
-            velocity_limit_sim=3,
+            effort_limit_sim=50,
+            velocity_limit_sim=10,
             stiffness={name: WALKER_C1_HAND_STIFFNESS[name] for name in WALKER_C1_RIGHT_HAND_JOINTS},
             damping={name: WALKER_C1_HAND_DAMPING[name] for name in WALKER_C1_RIGHT_HAND_JOINTS},
         ),

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Docker environment variables for Isaac Sim container
-CONTAINER_NAME="ubt-sim"
+CONTAINER_NAME="walker-c1-ubt-sim"
 IMAGE="ubt-sim-isaac:latest"
 BASE_IMAGE="nvcr.nju.edu.cn/nvidia/isaac-lab:2.2.0"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

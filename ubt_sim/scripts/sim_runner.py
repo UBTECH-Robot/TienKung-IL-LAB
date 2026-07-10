@@ -123,7 +123,16 @@ def main():
         print(f"[INFO] {role} load-only mode: ROS control and action preprocessing are disabled.")
         teleop_interface = None
     elif ROBOT == "walker_c1":
-        raise NotImplementedError("Walker C1 currently supports load-only simulation only. Set UBT_SIM_LOAD_ONLY=1.")
+        from ubt_sim.devices.walker_c1 import WalkerC1Controller
+
+        teleop_interface = WalkerC1Controller(
+            env,
+            cmd_port=args_cli.zmq_cmd_port,
+            status_port=args_cli.zmq_status_port,
+            image_port=args_cli.zmq_image_port,
+            jpeg_image_port=args_cli.zmq_jpeg_image_port,
+        )
+        teleop_interface.display_controls()
     elif ROBOT == "walker_s2":
         from ubt_sim.devices.walker_s2 import WalkerS2Controller
 
