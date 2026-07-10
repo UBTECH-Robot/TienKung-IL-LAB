@@ -26,4 +26,5 @@ cd /ubt_IL/lerobot
     --robot.cameras="{head: {type: image_server, server_address: '${ZMQ_HOST}', port: 5558, offset_x: 0, width: 640, height: 360, fps: $FPS, display: true}}" \
     --task="$TASK" \
     --fps="$FPS" \
-    --duration="$DURATION"
+    --duration="$DURATION" \
+    --return_to_initial_position=true  # 退出推理时默认返回初始位置（若需保持位置请设为 false）

@@ -52,4 +52,6 @@ lerobot-rollout \
     --robot.cameras="{head: {type: image_server, server_address: '${ZMQ_HOST}', port: 5558, offset_x: 0, width: 640, height: 360, fps: $FPS, display: ${DISPLAY_CAM}}}" \
     --task="$TASK" \
     --fps="$FPS" \
-    --duration="$DURATION"
+    --duration="$DURATION" \
+    --return_to_initial_position=false  # 退出推理时不返回初始位置（核心策略默认 True 会回零）
+
