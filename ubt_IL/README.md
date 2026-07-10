@@ -63,6 +63,11 @@ bash scripts/convert/convert.sh
 SRC_ROOT=path/to/hdf5_episodes TGT_PATH=path/to/output REPO_ID=my_dataset \
   bash scripts/convert/convert.sh
 
+# 转换 13-DOF 数据集（右臂7+右手6）
+REPO_ID=sim_pick_place_right13 TGT_PATH=/ubt_IL/dataset \
+CONFIG=/ubt_IL/scripts/convert/configs/Tien_Kung_13_1RGB_sim.json \
+  bash scripts/convert/convert.sh
+
 # 或直接调用 Python 脚本获得更细粒度控制
 python scripts/convert/convert_to_lerobot.py \
   --config scripts/convert/configs/Tien_Kung_26_1RGB_sim.json \
@@ -87,6 +92,7 @@ python scripts/convert/convert_to_lerobot.py \
 | 配置文件 | 场景 | 维度 | 说明 |
 |----------|------|------|------|
 | `Tien_Kung_26_1RGB_sim.json` | 仿真 | 26 | action 从 `action/` 读取 |
+| `Tien_Kung_13_1RGB_sim.json` | 仿真 | 13 | 右臂7+右手6，action 从 `action/` 读取（仅右侧） |
 | `Tien_Kung_26_1RGB_real.json` | 真机 | 26 | action 从 `master/` 读取，含灵巧手 invert/padding |
 | `Tien_Kung_Gello_1RGB.json` | Gello | 16 | 关节空间，单相机 |
 
@@ -147,10 +153,40 @@ DATASET_REPO_ID=Pick_up_real_data \
 OUTPUT_DIR=/ubt_IL/model/Pick_up_real_act \
   bash /ubt_IL/scripts/deploy/train.sh
 
+# 训练 13-DOF 模型（右臂7+右手6，须先转换 13-DOF 数据集）
+CONFIG_PATH=/ubt_IL/scripts/deploy/train_config_sim_act_right13.json \
+DATASET_REPO_ID=sim_pick_place_right13 \
+DATASET_ROOT=/ubt_IL/dataset/sim_pick_place_right13 \
+OUTPUT_DIR=/ubt_IL/model/sim_pick_place_right13_act \
+STEPS=50000 \
+  bash /ubt_IL/scripts/deploy/train.sh
+
 # 自定义参数
 STEPS=100000 BATCH_SIZE=8 SEED=10000 \
   bash /ubt_IL/scripts/deploy/train.sh
 ```
+
+### 续训（从 checkpoint 恢复）
+
+`RESUME=true` 时 `train.sh` 从 `CONFIG_PATH` 指向的 checkpoint 内 `train_config.json` 定位 `training_state`，加载已训步数后继续训练到 `STEPS`。**`STEPS` 为总目标步数（非增量），须大于当前 checkpoint 步数才会继续训**。
+
+```bash
+# 续训 13-DOF 模型（须显式设 dataset/output_dir 为 13-DOF 值，否则用默认 26-DOF 配置导致 shape 不匹配）
+CONFIG_PATH=/ubt_IL/model/sim_pick_place_right13_act/checkpoints/last/pretrained_model/train_config.json \
+RESUME=true \
+DATASET_REPO_ID=sim_pick_place_right13 \
+DATASET_ROOT=/ubt_IL/dataset/sim_pick_place_right13 \
+OUTPUT_DIR=/ubt_IL/model/sim_pick_place_right13_act \
+STEPS=100000 \
+  bash /ubt_IL/scripts/deploy/train.sh
+
+# 续训 26-DOF 模型（默认值已匹配，仅需 CONFIG_PATH/RESUME/STEPS）
+CONFIG_PATH=/ubt_IL/model/sim_pick_place_act/checkpoints/last/pretrained_model/train_config.json \
+RESUME=true STEPS=300000 \
+  bash /ubt_IL/scripts/deploy/train.sh
+```
+
+> 续训 13-DOF 时 `DATASET_REPO_ID`/`DATASET_ROOT`/`OUTPUT_DIR` 三个必须显式设为 13-DOF 的值：`train.sh` 始终用环境变量覆盖这几项，默认值是 26-DOF 的，不覆盖会加载错误数据集。若首次训练是被中断（未到 STEPS），用相同的 STEPS 续训即可跑完；要超过原 STEPS 才需调大。
 
 可覆盖的环境变量（CLI 优先级高于配置文件）：
 
@@ -188,24 +224,69 @@ python3 image_server.py
 python3 ubt_IL/scripts/deploy/camera/image_client.py
 ```
 
-### 部署步骤
+### 仿真部署
+
+仿真使用 `ubt_sim` 模块代替真机，ROS 话题与通信方式与真机一致，用于真机部署前验证。仿真容器与推理容器在同一主机经 `127.0.0.1` 通信。
+
+```bash
+# 1. 启动仿真（已启动可跳过）
+cd ubt_sim/docker/isaac_sim && bash run.sh bash
+bash /ubt_sim/scripts/start_sim.sh        # 按R复位机器人
+
+# 2. 初始化动作（抬起手臂到桌面）
+/usr/bin/python3 /ubt_sim/teleoperation/control/reset.py
+
+# 3. 启动推理容器并运行 rollout
+cd ubt_IL/docker && bash run.sh bash
+
+# 部署 26-DOF 模型（默认）
+POLICY_PATH=/ubt_IL/model/sim_pick_place_act/checkpoints/last/pretrained_model \
+DURATION=60 bash /ubt_IL/scripts/deploy/rollout.sh
+
+# 部署 13-DOF 模型（右臂7+右手6，JOINT_CONFIG 须与训练 DOF 一致）
+POLICY_PATH=/ubt_IL/model/sim_pick_place_right13_act/checkpoints/last/pretrained_model \
+JOINT_CONFIG=tienkung_13 DURATION=60 \
+  bash /ubt_IL/scripts/deploy/rollout.sh
+
+# （可选）仿真中回放数据集动作校验链路
+/usr/bin/python3 /ubt_IL/scripts/deploy/replay.py \
+  --dataset /ubt_IL/dataset/sim_pick_place --episode 0 --rate 30
+```
+
+### 真机部署步骤
 
 ```bash
 # 1. 机器人复位
 bash run.sh bash
 /usr/bin/python3 /ubt_IL/scripts/deploy/reset.py
 
-# 2. 启动推理（推荐脚本方式）
-POLICY_PATH=/ubt_IL/model/test_model DURATION=60 \
+# 2. 启动推理（真机 ZMQ_HOST 改为机器人 IP）
+POLICY_PATH=/ubt_IL/model/test_model ZMQ_HOST=192.168.41.2 DURATION=60 \
   bash /ubt_IL/scripts/deploy/rollout.sh
 ```
 
-也可使用 `lerobot-rollout` CLI 直接调用（真机需修改 `server_address` 为机器人实际 IP）：
+### 关节 DOF 配置（JOINT_CONFIG）
+
+`JOINT_CONFIG` 决定 policy 的关节维度与顺序，须与模型训练时的数据集顺序一致。配置定义在 `tienkung/lerobot_robot_tienkung/lerobot_robot_tienkung/constants.py` 的 `JOINT_INDEX_ENUMS`：
+
+| `JOINT_CONFIG` | 维度 | 关节 | 说明 |
+|----------------|------|------|------|
+| `tienkung_26` | 26 | 左臂7+右臂7+左手6+右手6 | 默认，全自由度 |
+| `tienkung_13` | 13 | 右臂7+右手6 | 仅右侧，左侧自动用 home 位姿/张开手填充 |
+
+- **policy ↔ 数据集按位映射**：枚举成员顺序须与数据集 action/state 顺序一致（枚举可任意重排以匹配）。
+- **policy ↔ 硬件按名散射**：4 个硬件分组为固定物理 motor/手指序（bridge 按位寻址），与枚举顺序无关；二者解耦，故枚举可随意重排/取子集。
+- **新增自定义 DOF**：在 `constants.py` 定义一个 `IntEnum`（成员名取自 canonical 26，顺序匹配数据集）并注册到 `JOINT_INDEX_ENUMS`，设 `JOINT_CONFIG=<名>` 即可，无需改逻辑代码。非激活关节默认臂取 `ARM_HOME`、手取 1.0，可用 `INACTIVE_FILL_OVERRIDES` 覆盖。
+
+### lerobot-rollout CLI 直接调用
+
+也可不经过 `rollout.sh`，直接调用 CLI（真机改 `server_address` 为机器人 IP）：
 
 ```bash
 /lerobot/.venv/bin/lerobot-rollout \
     --policy.path=/ubt_IL/model/test_model \
     --robot.type=tienkung --robot.bridge_enabled=true \
+    --robot.joint_config=tienkung_26 \
     --robot.cameras="{head: {type: image_server, server_address: '192.168.41.2', port: 5558, offset_x: 0, width: 640, height: 360, fps: 30, display: true}}" \
     --task="sim_pick_place" --fps=30 --duration=60
 ```
@@ -220,7 +301,11 @@ POLICY_PATH=/ubt_IL/model/test_model DURATION=60 \
 | `width` / `height` | `640` / `360` | 截取尺寸 |
 | `display` | `true` | 是否弹窗实时显示 |
 | `POLICY_PATH` | `.../real_pick_place_act/.../pretrained_model` | 模型路径 |
+| `JOINT_CONFIG` | `tienkung_26` | 关节 DOF 配置，须与训练 DOF 一致 |
+| `STRATEGY` | `base` | 推理策略（`base`/`sentry`/`highlight`/`dagger`） |
+| `TASK` | `sim_pick_place` | 任务描述（注入 policy 条件） |
 | `DURATION` | `60` | 运行时长（秒） |
+| `FPS` | `30` | 控制环频率（与训练 fps 对齐） |
 | `ZMQ_HOST` | `127.0.0.1` | ZMQ 连接主机 |
 
 ---

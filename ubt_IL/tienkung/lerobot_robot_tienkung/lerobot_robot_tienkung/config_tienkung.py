@@ -7,6 +7,7 @@ from lerobot.robots.config import RobotConfig
 
 from .constants import (
     ARM_HOME,
+    CANONICAL_JOINT_NAMES,
     DEFAULT_ARM_CURRENT,
     DEFAULT_ARM_SPEED,
     DEFAULT_RESET_CURRENT,
@@ -14,6 +15,11 @@ from .constants import (
     HAND_OPEN,
     ID_ARM_L,
     ID_ARM_R,
+    JOINT_INDEX_ENUMS,
+    LEFT_ARM_JOINTS,
+    LEFT_HAND_JOINTS,
+    RIGHT_ARM_JOINTS,
+    RIGHT_HAND_JOINTS,
     TOPIC_ARM_CMD,
     TOPIC_ARM_STATUS,
     TOPIC_HEAD_CMD,
@@ -21,12 +27,14 @@ from .constants import (
     TOPIC_LEFT_HAND_STATUS,
     TOPIC_RIGHT_HAND_CMD,
     TOPIC_RIGHT_HAND_STATUS,
+    inactive_fill_for,
+    joint_names_with_pos,
 )
 
 
-def _make_joints(prefix: str, n: int) -> list[str]:
-    """Generate joint feature names: prefix_j1.pos, prefix_j2.pos, ..."""
-    return [f"{prefix}_j{i}.pos" for i in range(1, n + 1)]
+def _pos(names: list[str]) -> list[str]:
+    """Append LeRobot-required ``.pos`` suffix to semantic joint names."""
+    return [f"{n}.pos" for n in names]
 
 
 @RobotConfig.register_subclass("tienkung")
@@ -46,19 +54,21 @@ class TienKungRobotConfig(RobotConfig):
     # Hand type: "inspire" (currently the only supported type)
     hand_type: str = "inspire"
 
-    # Joint group definitions (used for ZMQ message grouping)
-    left_arm_joints: list[str] = field(default_factory=lambda: _make_joints("left_arm", 7))
-    right_arm_joints: list[str] = field(default_factory=lambda: _make_joints("right_arm", 7))
-    left_hand_joints: list[str] = field(default_factory=lambda: _make_joints("left_hand", 6))
-    right_hand_joints: list[str] = field(default_factory=lambda: _make_joints("right_hand", 6))
+    # Joint group definitions (固定物理 motor/手指顺序，bridge 按位寻址，严禁重排)
+    left_arm_joints: list[str] = field(default_factory=lambda: _pos(LEFT_ARM_JOINTS))
+    right_arm_joints: list[str] = field(default_factory=lambda: _pos(RIGHT_ARM_JOINTS))
+    left_hand_joints: list[str] = field(default_factory=lambda: _pos(LEFT_HAND_JOINTS))
+    right_hand_joints: list[str] = field(default_factory=lambda: _pos(RIGHT_HAND_JOINTS))
+
+    # DOF 配置名（取自 JOINT_INDEX_ENUMS）。决定 all_joints 的维度与顺序（= 数据集顺序）。
+    # 默认 "tienkung_26"（全 26，物理序）。部署 13-DOF 模型时设为 "tienkung_13"。
+    # 新增 DOF：在 constants.py 定义 IntEnum 并注册到 JOINT_INDEX_ENUMS，然后设此字段即可。
+    joint_config: str = "tienkung_26"
 
     # Full joint ordering (determines model action/observation tensor dimension mapping).
-    # Must be a permutation of the union of the 4 joint groups above.
-    # 根据顺序排列的关节配置修改
-    all_joints: list[str] = field(default_factory=lambda: (
-        _make_joints("left_arm", 7) + _make_joints("right_arm", 7)
-        + _make_joints("left_hand", 6) + _make_joints("right_hand", 6)
-    ))
+    # 默认全 26（物理序）；__post_init__ 会按 joint_config 从对应 DOF 枚举派生覆盖。
+    # 枚举成员顺序须与数据集 action/state 顺序一致（可重排），成员名须取自 4 分组并集。
+    all_joints: list[str] = field(default_factory=lambda: _pos(CANONICAL_JOINT_NAMES))
 
     # Motor IDs (1:1 mapping with arm joint groups, used by Bridge2 to address hardware)
     left_arm_motor_ids: list[int] = field(default_factory=lambda: list(ID_ARM_L))
@@ -86,7 +96,10 @@ class TienKungRobotConfig(RobotConfig):
 
     # Safety
     max_relative_target: float | None = None
-    disable_torque_on_disconnect: bool = True
+    # 推理结束 disconnect() 时是否回到 home_position（默认 False：不归位）。
+    # 注：lerobot 其它机器人的 disable_torque_on_disconnect 语义为"下力矩"，
+    # tienkung 无下力矩逻辑，此字段仅控制回零，故改名以正语义。
+    return_home_on_disconnect: bool = False
 
     # Home position (14-dim: left arm 7 + right arm 7)
     home_position: list[float] = field(default_factory=lambda: list(ARM_HOME))
@@ -95,14 +108,26 @@ class TienKungRobotConfig(RobotConfig):
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
 
     def __post_init__(self):
-        # Validate all_joints is a permutation of the union of 4 joint groups
+        # Resolve DOF enum and derive all_joints (policy 维度与顺序 = 数据集顺序)
+        # + inactive_fill (非激活关节的静态填充值)。
+        if self.joint_config not in JOINT_INDEX_ENUMS:
+            raise ValueError(
+                f"joint_config {self.joint_config!r} not registered. "
+                f"Available: {list(JOINT_INDEX_ENUMS)}. "
+                f"新增 DOF 请在 constants.py 定义 IntEnum 并注册到 JOINT_INDEX_ENUMS。"
+            )
+        enum_cls = JOINT_INDEX_ENUMS[self.joint_config]
+        self.all_joints = joint_names_with_pos(enum_cls)
+        self._inactive_fill = inactive_fill_for(self.joint_config, enum_cls)
+
+        # Validate all_joints is a subset of the union of 4 joint groups (no extra joints)
         group_set = set(self.left_arm_joints + self.right_arm_joints
                         + self.left_hand_joints + self.right_hand_joints)
         all_set = set(self.all_joints)
-        if group_set != all_set:
+        if not all_set.issubset(group_set):
             raise ValueError(
-                f"all_joints must be a permutation of the union of 4 joint groups. "
-                f"Missing: {group_set - all_set}, Extra: {all_set - group_set}"
+                f"all_joints contains joints not in the 4 hardware groups. "
+                f"Unknown: {all_set - group_set}"
             )
         if len(self.all_joints) != len(all_set):
             raise ValueError(

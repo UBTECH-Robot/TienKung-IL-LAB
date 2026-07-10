@@ -113,12 +113,18 @@ bash rollout_host.sh
 POLICY_PATH=/home/nvidia/vla/TienKung-IL-LAB/ubt_IL/model/Pick_up_tiangong_all_act/checkpoints/last/pretrained_model \
 DURATION=60 bash rollout_host.sh
 
+# 部署 13-DOF 模型（右臂7+右手6，JOINT_CONFIG 须与训练 DOF 一致）
+JOINT_CONFIG=tienkung_13 \
+POLICY_PATH=/home/nvidia/vla/TienKung-IL-LAB/ubt_IL/model/sim_pick_place_right13_act/checkpoints/last/pretrained_model \
+DURATION=60 bash rollout_host.sh
+
 DISPLAY_CAM=false bash rollout_host.sh        # SSH 无 X 时关相机显示
 ```
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `POLICY_PATH` | `$PROJECT_ROOT/model/Pick_up_tiangong_all_act/checkpoints/last/pretrained_model` | ACT checkpoint |
+| `JOINT_CONFIG` | `tienkung_26` | 关节 DOF 配置（`tienkung_26`=全26；`tienkung_13`=右臂7+右手6），须与训练 DOF 一致 |
 | `STRATEGY` | `base` | 推理策略（`base` 自主执行；`sentry`/`highlight`/`dagger` 用于录制/交互） |
 | `TASK` | `sim_pick_place` | 任务描述（注入 policy 的任务条件） |
 | `ZMQ_HOST` | `127.0.0.1` | image_server 地址（真机相机在机器人上则改其 IP） |

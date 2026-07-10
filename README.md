@@ -95,7 +95,9 @@ bash run.sh build && bash run.sh start && bash run.sh check
 
 # 2. 数据转换：HDF5 -> LeRobot 格式（默认仿真配置）
 bash /ubt_IL/scripts/convert/convert.sh
-# 自定义数据集路径：SRC_ROOT=“你的数据集目录” TGT_PATH="转换后数据保存目录" REPO_ID="任务ID" bash ubt_IL/scripts/convert/convert.sh
+# 自定义数据集路径：SRC_ROOT=“你的数据集目录” REPO_ID="任务ID" CONFIG="自定义数据转换配置文件"
+# 举例：转换 13-DOF 数据集（右臂7+右手6）
+SRC_ROOT=ubt_IL/dataset/sim_pick_place_hdf5  REPO_ID=sim_pick_place_right13 CONFIG=/ubt_IL/scripts/convert/configs/Tien_Kung_13_1RGB_sim.json bash scripts/convert/convert.sh
 
 # 3. 训练（默认使用仿真ACT配置）
 bash /ubt_IL/scripts/deploy/train.sh
@@ -144,7 +146,12 @@ bash /ubt_sim/scripts/start_sim.sh
 # 3. 启动推理容器，运行推理脚本
 cd ubt_IL/docker
 bash run.sh bash
-POLICY_PATH=/ubt_IL/model/sim_pick_place_act/checkpoints/last/pretrained_model     bash /ubt_IL/scripts/deploy/rollout.sh
+
+# 部署 26-DOF 模型（默认，全 26 自由度）
+POLICY_PATH=/ubt_IL/model/sim_pick_place_act/checkpoints/last/pretrained_model bash /ubt_IL/scripts/deploy/rollout.sh
+
+# 部署 13-DOF 模型（右臂7+右手6，JOINT_CONFIG 须与训练 DOF 一致），支持自定义关节配置
+POLICY_PATH=/ubt_IL/model/sim_pick_place_right13_act/checkpoints/last/pretrained_model JOINT_CONFIG=tienkung_13 bash /ubt_IL/scripts/deploy/rollout.sh
 
 # （可选操作）仿真中回放数据集动作
  /usr/bin/python3 /ubt_IL/scripts/deploy/replay.py   --dataset /ubt_IL/dataset/sim_pick_place --episode 0 --rate 30
@@ -155,11 +162,14 @@ POLICY_PATH=/ubt_IL/model/sim_pick_place_act/checkpoints/last/pretrained_model  
 | 变量            | 默认值                                           | 说明                                                                                    |
 | --------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------- |
 | `POLICY_PATH` | `.../real_pick_place_act/.../pretrained_model` | 模型 checkpoint                                                                         |
+| `JOINT_CONFIG`| `tienkung_26`                                   | 关节 DOF 配置（`tienkung_26`=全26；`tienkung_13`=右臂7+右手6），须与数据/模型训练 DOF 一致 |
 | `STRATEGY`    | `base`                                         | 推理策略（`base` 自主执行不录制；`sentry`/`highlight`/`dagger` 用于录制或交互） |
 | `TASK`        | `sim_pick_place`                               | 任务描述（注入 policy 的任务条件）                                                      |
 | `ZMQ_HOST`    | `127.0.0.1`                                    | ImageServer 相机地址（仿真使用本地回环）                                                |
 | `DURATION`    | `60`                                           | 运行时长（秒）                                                                          |
 | `FPS`         | `30`                                           | 控制环频率（与训练 fps 对齐）                                                           |
+
+> `JOINT_CONFIG` 决定 policy 的关节维度与顺序，须与模型训练时的数据集顺序一致；非激活关节（如 13-DOF 的左侧）自动用 home 位姿/张开手填充。13-DOF 数据集转换、训练、续训与部署的完整流程见 [ubt_IL/README.md](ubt_IL/README.md#4-模型部署)。
 
 ## 真机部署
 
@@ -195,6 +205,7 @@ POLICY_PATH=/ubt_IL/model/test_model ZMQ_HOST=192.168.41.2 DURATION=60 bash /ubt
 | 变量            | 默认值                                           | 说明                                                                                    |
 | --------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------- |
 | `POLICY_PATH` | `.../real_pick_place_act/.../pretrained_model` | 模型 checkpoint                                                                         |
+| `JOINT_CONFIG`| `tienkung_26`                                   | 关节 DOF 配置（`tienkung_26`=默认全26；`tienkung_13`=右臂7+右手6），支持自定义关节配置 |
 | `STRATEGY`    | `base`                                         | 推理策略（`base` 自主执行不录制；`sentry`/`highlight`/`dagger` 用于录制或交互） |
 | `TASK`        | `pick and place`                               | 任务描述（注入 policy 的任务条件）                                                      |
 | `ZMQ_HOST`    | `192.168.41.2`                                 | ImageServer 地址（真机改机器人 IP）                                                     |
@@ -233,6 +244,7 @@ bash /home/nvidia/vla/TienKung-IL-LAB/ubt_IL/scripts/deploy/arm_64/robot_ready.s
 
 # 3. 运行推理脚本
 conda activate env_vla
+# 部署 26-DOF 模型（默认）
 POLICY_PATH=/home/nvidia/vla/TienKung-IL-LAB/ubt_IL/model/Pick_up_tiangong_all_act/checkpoints/last/pretrained_model  DURATION=60 bash /home/nvidia/vla/TienKung-IL-LAB/ubt_IL/scripts/deploy/arm_64/rollout_host.sh
 
 # 4. （可选）数据集回放，在真机上播放采集的动作
@@ -241,13 +253,14 @@ POLICY_PATH=/home/nvidia/vla/TienKung-IL-LAB/ubt_IL/model/Pick_up_tiangong_all_a
 
 ### 关键参数
 
-本土部署（conda `env_vla`）的推理与环境构建参数均可通过环境变量覆盖，CLI 优先级高于配置文件。
+本体部署（conda `env_vla`）的推理与环境构建参数均可通过环境变量覆盖，CLI 优先级高于配置文件。
 
 **推理部署（`rollout_host.sh`）**
 
 | 变量            | 默认值                                                                                  | 说明                                                    |
 | --------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------- |
 | `POLICY_PATH` | `$PROJECT_ROOT/model/Pick_up_tiangong_all_act/checkpoints/last/pretrained_model` | ACT checkpoint                                          |
+| `JOINT_CONFIG`| `tienkung_26`                                                                           | 关节 DOF 配置（`tienkung_26`=全26；`tienkung_13`=右臂7+右手6），支持自定义配置，须与训练时 DOF 一致 |
 | `STRATEGY`    | `base`                                                                                 | 推理策略（`base` 自主执行；`sentry`/`highlight`/`dagger` 用于录制或交互） |
 | `TASK`        | `sim_pick_place`                                                                       | 任务描述（注入 policy 的任务条件）                      |
 | `ZMQ_HOST`    | `127.0.0.1`                                                                            | image_server 地址（真机相机在机器人端则改其 IP）        |

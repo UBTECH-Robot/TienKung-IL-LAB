@@ -20,6 +20,9 @@ STRATEGY="${STRATEGY:-base}"
 FPS="${FPS:-30}"
 DURATION="${DURATION:-60}"
 TASK="${TASK:-sim_pick_place}"
+# 关节 DOF 配置名（取自 constants.JOINT_INDEX_ENUMS）：tienkung_26=全26；tienkung_13=右臂7+右手6。
+# 须与 POLICY_PATH 指向模型的训练 DOF/关节顺序一致。
+JOINT_CONFIG="${JOINT_CONFIG:-tienkung_26}"
 ZMQ_HOST="${ZMQ_HOST:-127.0.0.1}"        # image_server 地址：本机/仿真=127.0.0.1；真机相机在机器人上则改其 IP
 DISPLAY_CAM="${DISPLAY_CAM:-true}"        # SSH 无 DISPLAY 时设 false
 BRIDGE_SCRIPT="$PROJECT_ROOT/tienkung/ros2_deploy_bridge.py"
@@ -45,6 +48,7 @@ lerobot-rollout \
     --robot.type=tienkung \
     --robot.bridge_enabled=true \
     --robot.bridge_script="$BRIDGE_SCRIPT" \
+    --robot.joint_config="$JOINT_CONFIG" \
     --robot.cameras="{head: {type: image_server, server_address: '${ZMQ_HOST}', port: 5558, offset_x: 0, width: 640, height: 360, fps: $FPS, display: ${DISPLAY_CAM}}}" \
     --task="$TASK" \
     --fps="$FPS" \

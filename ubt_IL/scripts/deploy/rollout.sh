@@ -10,6 +10,8 @@ STRATEGY="${STRATEGY:-base}"
 FPS="${FPS:-30}"
 DURATION="${DURATION:-60}"
 TASK="${TASK:-sim_pick_place}"
+# 机器人关节DOF配置：tienkung_26（默认上肢26 DOF）/tienkung_13（右臂7+右手6（13 DOF）。
+JOINT_CONFIG="${JOINT_CONFIG:-tienkung_26}"
 # ZMQ_HOST="${ZMQ_HOST:-192.168.41.2}" # 真机地址
 ZMQ_HOST="${ZMQ_HOST:-127.0.0.1}" # 仿真器地址
 
@@ -20,6 +22,7 @@ cd /ubt_IL/lerobot
     --policy.path="$POLICY_PATH" \
     --robot.type=tienkung \
     --robot.bridge_enabled=true \
+    --robot.joint_config="$JOINT_CONFIG" \
     --robot.cameras="{head: {type: image_server, server_address: '${ZMQ_HOST}', port: 5558, offset_x: 0, width: 640, height: 360, fps: $FPS, display: true}}" \
     --task="$TASK" \
     --fps="$FPS" \
