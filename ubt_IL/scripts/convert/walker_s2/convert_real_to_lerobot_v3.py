@@ -86,7 +86,7 @@ _patch_compute_stats_object_dtype()
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG = SCRIPT_DIR / "configs" / "Walker_S2_real_19_1RGBD.json"
+DEFAULT_CONFIG = SCRIPT_DIR / "configs" / "walker_s2_real_19d_1RGBD.json"
 DEFAULT_NUMERIC_FEATURES = {"episode_index", "frame_index", "index", "task_index"}
 
 

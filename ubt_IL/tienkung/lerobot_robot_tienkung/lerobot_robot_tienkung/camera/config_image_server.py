@@ -16,7 +16,7 @@ from lerobot.cameras.configs import CameraConfig, ColorMode
 class ImageServerCameraConfig(CameraConfig):
     """Configuration for a camera that receives frames from ImageServer via ZMQ.
 
-    The ImageServer (scripts/deploy/image_server.py) publishes concatenated
+    The ImageServer (scripts/deploy/tienkung_pro/image_server.py) publishes concatenated
     JPEG frames over ZMQ PUB. Each ImageServerCamera extracts its own portion
     of the frame using offset_x + width.
 

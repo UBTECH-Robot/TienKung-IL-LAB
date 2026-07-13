@@ -4,7 +4,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CONFIG_DIR="$SCRIPT_DIR/configs/walker"
+CONFIG_DIR="$SCRIPT_DIR/configs"
 
 POLICY_PATH="${POLICY_PATH:-}"
 ROBOT_MODEL="${ROBOT_MODEL:-walker_s2_v4_hand_31d}"
@@ -27,7 +27,7 @@ PREVIEW_CAMERA_WINDOW="${PREVIEW_CAMERA_WINDOW:-Walker camera}"
 if [ -z "$POLICY_PATH" ]; then
     echo "[ERROR] POLICY_PATH is required."
     echo "[INFO] Example:"
-    echo "       ROBOT_MODEL=walker_s2_gripper_19d POLICY_PATH=/ubt_IL/model/<walker_policy>/checkpoints/last/pretrained_model bash /ubt_IL/scripts/deploy/rollout_walker.sh"
+    echo "       ROBOT_MODEL=walker_s2_gripper_19d POLICY_PATH=/ubt_IL/model/<walker_policy>/checkpoints/last/pretrained_model bash /ubt_IL/scripts/deploy/walker_s2/rollout.sh"
     exit 1
 fi
 
@@ -124,7 +124,7 @@ cleanup_preview() {
 
 if [ "$PREVIEW_CAMERA" = "1" ]; then
     PREVIEW_CMD=(
-        /lerobot/.venv/bin/python /ubt_IL/scripts/deploy/preview_walker_camera.py
+        /lerobot/.venv/bin/python "$SCRIPT_DIR/preview_camera.py"
         --host "$PREVIEW_CAMERA_HOST"
         --port "$PREVIEW_CAMERA_PORT"
         --camera "$PREVIEW_CAMERA_NAME"

@@ -3,18 +3,18 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # 默认参数（可通过环境变量覆盖）
 SRC_ROOT="${SRC_ROOT:-/home/qingxiangliu/下载/vla-dataset(1)/2026-01-09_grasp_bottle}"
 TGT_PATH="${TGT_PATH:-$PROJECT_ROOT/dataset}"
-CONFIG="${CONFIG:-$SCRIPT_DIR/configs/Tien_Kung_26_1RGB_real.json}"
+CONFIG="${CONFIG:-$SCRIPT_DIR/configs/tienkung_pro_26d_1RGB_real.json}"
 REPO_ID="${REPO_ID:-real_grasp_bottle}"
 FPS="${FPS:-30}"
 ROBOT_TYPE="${ROBOT_TYPE:-tienkung}"
 TASK_NAME="${TASK_NAME:-grasp_bottle}"
 
-python "$SCRIPT_DIR/convert_to_lerobot.py" \
+python "$SCRIPT_DIR/../common/convert_to_lerobot.py" \
   --config "$CONFIG" \
   --repo_id "$REPO_ID" \
   --src_root "$SRC_ROOT" \

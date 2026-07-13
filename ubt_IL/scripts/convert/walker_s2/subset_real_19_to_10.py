@@ -12,7 +12,7 @@ Because per-dim stats are independent, slicing preserves correct q01/q99 etc.,
 so no stats recompute is needed. Videos are reused as-is via symlink.
 
 Run inside the lerobot container venv (has pyarrow/pandas):
-    /lerobot/.venv/bin/python /ubt_IL/scripts/convert/subset_walker_real_19_to_10.py \
+    /lerobot/.venv/bin/python /ubt_IL/scripts/convert/walker_s2/subset_real_19_to_10.py \
         --src /ubt_IL/dataset/Walker_S2_real_19_1RGBD \
         --dst /ubt_IL/dataset/Walker_S2_real_10d_1RGBD
 """

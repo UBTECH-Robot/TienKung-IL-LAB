@@ -4,7 +4,7 @@
 
 在 lerobot-tienkung 容器内运行：
     source /opt/ros/humble/setup.bash
-    python3 /ubt_IL/scripts/deploy/reset.py
+    python3 /ubt_IL/scripts/deploy/tienkung_pro/reset.py
 
 前置条件：ROS2 DDS 可达（真机或 Isaac Sim 已启动）。
 

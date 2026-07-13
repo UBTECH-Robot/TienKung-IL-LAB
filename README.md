@@ -59,15 +59,15 @@ cd ubt_IL/docker
 bash run.sh build && bash run.sh start && bash run.sh check
 
 # 2. 数据转换：HDF5 -> LeRobot 格式（宿主机 conda 环境）
-bash ubt_IL/scripts/convert/convert.sh
+bash ubt_IL/scripts/convert/tienkung_pro/convert.sh
 # 自定义：SRC_ROOT=path/to/hdf5 TGT_PATH=path/to/out REPO_ID=my_dataset \
-#          bash ubt_IL/scripts/convert/convert.sh
+#          bash ubt_IL/scripts/convert/tienkung_pro/convert.sh
 
 # 3. 训练（容器内）
 bash ubt_IL/docker/run.sh bash
-bash /ubt_IL/scripts/deploy/train.sh
+bash /ubt_IL/scripts/train/tienkung_pro/train.sh
 # 自定义：DATASET_ROOT=/ubt_IL/dataset/my_data STEPS=10000 \
-#          OUTPUT_DIR=/ubt_IL/model/my_model bash /ubt_IL/scripts/deploy/train.sh
+#          OUTPUT_DIR=/ubt_IL/model/my_model bash /ubt_IL/scripts/train/tienkung_pro/train.sh
 ```
 
 ### 关键参数
@@ -96,17 +96,17 @@ cd ubt_IL/docker
 bash run.sh restart
 
 # 1. 机器人端启动相机服务（仅真机部署需要）
-scp ubt_IL/scripts/deploy/camera/image_server.py nvidia@192.168.41.2:~
+scp ubt_IL/scripts/deploy/tienkung_pro/image_server.py nvidia@192.168.41.2:~
 ssh nvidia@192.168.41.2 'python3 image_server.py'
 
 # 2. 容器内复位 + 推理
 bash run.sh bash
-/usr/bin/python3 /ubt_IL/scripts/deploy/reset.py     # 机器人回零
+/usr/bin/python3 /ubt_IL/scripts/deploy/tienkung_pro/reset.py     # 机器人回零
 POLICY_PATH=/ubt_IL/model/test_model ZMQ_HOST=192.168.41.2 DURATION=60 \
-  bash /ubt_IL/scripts/deploy/rollout.sh
+  bash /ubt_IL/scripts/deploy/tienkung_pro/rollout.sh
 
 # 3. （可选）数据集回放校验链路
-/usr/bin/python3 /ubt_IL/scripts/deploy/replay.py \
+/usr/bin/python3 /ubt_IL/scripts/deploy/tienkung_pro/replay.py \
   --dataset /ubt_IL/dataset/real_grasp_bottle --episode 0 --rate 30
 ```
 

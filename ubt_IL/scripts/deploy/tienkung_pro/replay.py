@@ -9,7 +9,7 @@
 
 在 lerobot-tienkung 容器内运行：
     source /opt/ros/humble/setup.bash
-    python3 /ubt_IL/scripts/deploy/replay.py --episode 0 --rate 30
+    python3 /ubt_IL/scripts/deploy/tienkung_pro/replay.py --episode 0 --rate 30
 
 前置条件：ROS2 DDS 可达（真机或 Isaac Sim 已启动）；建议先跑一次 reset.py。
 """
@@ -74,8 +74,8 @@ DEFAULT_LAYOUT_BY_ROBOT: Dict[str, str] = {
     "tienkung": "interleaved",
 }
 
-# 默认数据集路径：脚本位于 ubt_IL/scripts/deploy/replay.py
-DEFAULT_DATASET = Path(__file__).resolve().parents[2] / "dataset" / "Pick_up_tiangong_all"
+# 默认数据集路径：脚本位于 ubt_IL/scripts/deploy/tienkung_pro/replay.py
+DEFAULT_DATASET = Path(__file__).resolve().parents[3] / "dataset" / "Pick_up_tiangong_all"
 
 # 配置文件路径（由 TienKungRobot._start_bridge() 写出）
 DEFAULT_CONFIG_FILE = "/tmp/tienkung_bridge_config.json"

@@ -1,12 +1,12 @@
 """ImageServerCamera — LeRobot Camera backed by a ZMQ ImageServer.
 
-Receives JPEG frames from ImageServer (scripts/deploy/image_server.py) via
+Receives JPEG frames from ImageServer (scripts/deploy/tienkung_pro/image_server.py) via
 ZMQ SUB, decodes them, and extracts this camera's portion by offset.
 
 Inherits:
     - Camera: LeRobot standard camera interface
     - ZMQImageReceiver: ZMQ SUB + JPEG decode + offset split + display
-      (extracted from scripts/deploy/image_client.py)
+      (extracted from scripts/deploy/tienkung_pro/image_client.py)
 """
 
 from __future__ import annotations

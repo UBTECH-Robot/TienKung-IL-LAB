@@ -21,7 +21,7 @@ LeRobot Inference (Python 3.12)       Bridge2 (Python 3.10)
 
 Walker rollout is configured by JSON files under:
 
-`/ubt_IL/scripts/deploy/configs/walker/`
+`/ubt_IL/scripts/deploy/walker_s2/configs/`
 
 Initial models:
 
@@ -44,12 +44,12 @@ Run examples:
 # 31D V4 hand model
 ROBOT_MODEL=walker_s2_v4_hand_31d \
 POLICY_PATH=/ubt_IL/model/<walker_31d_policy>/checkpoints/last/pretrained_model \
-bash /ubt_IL/scripts/deploy/rollout_walker.sh
+bash /ubt_IL/scripts/deploy/walker_s2/rollout.sh
 
 # 19D 1-DOF gripper model
 ROBOT_MODEL=walker_s2_gripper_19d \
 POLICY_PATH=/ubt_IL/model/<walker_19d_policy>/checkpoints/last/pretrained_model \
-bash /ubt_IL/scripts/deploy/rollout_walker.sh
+bash /ubt_IL/scripts/deploy/walker_s2/rollout.sh
 ```
 
 Use `ROBOT_CONFIG=/path/to/config.json` to bypass `ROBOT_MODEL` preset lookup.

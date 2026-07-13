@@ -1,6 +1,6 @@
 """ZMQ image receiver base class.
 
-Extracted from scripts/deploy/image_client.py, this base class provides:
+Extracted from scripts/deploy/tienkung_pro/image_client.py, this base class provides:
 - ZMQ SUB connection and subscription
 - JPEG frame decoding (cv2.imdecode)
 - Offset-based frame splitting (from concatenated ImageServer output)
