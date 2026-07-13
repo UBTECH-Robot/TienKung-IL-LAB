@@ -208,6 +208,50 @@ The entrypoint auto-installs on container start:
 | ecat_task_msgs | colcon build or .deb | `/opt/ros/humble/` |
 | shm_msgs | colcon build or .deb | `/opt/ros/humble/` |
 
+## DOF Architecture
+
+Walker S2 supports variable-DOF deployment via an `IntEnum` registry pattern, identical to the TienKung architecture.
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `lerobot_robot_walker/constants.py` | DOF enums, `JOINT_INDEX_ENUMS` registry, `inactive_fill_for()`, `joint_names_with_pos()` |
+| `lerobot_robot_walker/config_walker.py` | `joint_config` field, `_rebuild_groups_from_enum()`, `__post_init__` derives `all_joints` + `_inactive_fill` |
+| `lerobot_robot_walker/walker.py` | `send_action` uses `get_val()` + `_inactive_fill`; `get_observation` filters to `_all_joints` |
+
+### Registered DOF Configs
+
+| Name | Dim | Joints |
+|------|-----|--------|
+| `walker_s2_31d` | 31 | Body(17) + L V4 hand(7) + R V4 hand(7) |
+| `walker_s2_19d` | 19 | Body(17) + L grip(1) + R grip(1) |
+| `walker_s2_10d` | 10 | R arm(7) + head(2) + R grip(1) |
+
+### How inactive_fill works
+
+1. 6 hardware groups (`left_arm`, `right_arm`, `head`, `waist`, `left_hand`, `right_hand`) are fixed — bridge expects all 6 in ZMQ messages
+2. Policy outputs only joints in the selected DOF enum
+3. `send_action` looks up each hardware joint by name in the action dict
+4. Missing joints get their value from `DEFAULT_INACTIVE_FILL`: body joints → `READY_POSE`, V4 hands → `0.0` (extended), grippers → `0.0` (safe closed)
+5. A complete 6-group ZMQ message is assembled and sent to the bridge
+
+### Adding a custom DOF
+
+1. Define an `IntEnum` class in `constants.py` — member order = dataset order
+2. Register in `JOINT_INDEX_ENUMS` dict
+3. Deploy with `JOINT_CONFIG=my_dof_name`
+4. Create matching convert config + train config with `shape: [N]`
+
+### Deployment
+
+```bash
+# Deploy subset policy (10D: right arm + head + right grip)
+JOINT_CONFIG=walker_s2_10d \
+POLICY_PATH=/ubt_IL/model/walker_s2_10d_policy/checkpoints/last/pretrained_model \
+  bash /ubt_IL/scripts/deploy/walker_s2/rollout.sh
+```
+
 ## Plugin Registration
 
 Package name `lerobot_robot_walker` follows the `lerobot_robot_` prefix convention, auto-discovered by `register_third_party_plugins()`. No modifications to upstream lerobot source required.

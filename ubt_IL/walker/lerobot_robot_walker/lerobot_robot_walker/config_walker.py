@@ -19,6 +19,7 @@ from .constants import (
     HOME_POSITION,
     JOINT_INDEX_ENUMS,
     LEFT_ARM_JOINTS,
+    READY_POSE,
     RIGHT_ARM_JOINTS,
     TOPIC_BODY_CMD,
     TOPIC_BODY_STATE,
@@ -174,10 +175,15 @@ class WalkerRobotConfig(RobotConfig):
     def __post_init__(self):
         if self.robot_config_path:
             self._load_robot_config(Path(self.robot_config_path))
+            # 即使从 JSON 加载了完整硬件配置，仍允许 joint_config 覆盖
+            # all_joints + 生成 inactive_fill，以支持子集策略部署。
+            if self.joint_config in JOINT_INDEX_ENUMS:
+                enum_cls = JOINT_INDEX_ENUMS[self.joint_config]
+                self.all_joints = joint_names_with_pos(enum_cls)
+                self._inactive_fill = inactive_fill_for(self.joint_config, enum_cls)
         else:
             self._normalize_legacy_groups()
-            # 当无 robot_config_path 时，从 DOF 枚举派生 all_joints + inactive_fill，
-            # 并同步重建 6 组关节 feature 列表（真实关节名），确保 _validate() 通过。
+            # 当无 robot_config_path 时，从 DOF 枚举完整派生所有字段。
             if self.joint_config in JOINT_INDEX_ENUMS:
                 enum_cls = JOINT_INDEX_ENUMS[self.joint_config]
                 self.all_joints = joint_names_with_pos(enum_cls)
@@ -231,6 +237,8 @@ class WalkerRobotConfig(RobotConfig):
             self.right_hand_joint_names = ["right_grip"] if "right_grip" in member_names else []
         else:
             # 仅车身关节，无末端执行器
+            self.end_effector_type = "v4_hand_7dof"  # 占位，避免 _validate 报错
+            self.hand_type = "v4"
             self.left_hand_joint_names = []
             self.right_hand_joint_names = []
         self.left_hand_joints = [_feature_name(n) for n in self.left_hand_joint_names]
@@ -239,6 +247,9 @@ class WalkerRobotConfig(RobotConfig):
             "left_hand": list(self.left_hand_joint_names),
             "right_hand": list(self.right_hand_joint_names),
         }
+
+        # 从 READY_POSE 重建 home_position（仅包含 body_joint_names 中的关节）
+        self.home_position = [READY_POSE[n] for n in self.body_joint_names]
 
         # 末端执行器 open position
         if has_v4:
@@ -482,11 +493,14 @@ class WalkerRobotConfig(RobotConfig):
                 raise ValueError(f"lock_joint '{j}' is not in body_joint_names")
 
         if self.end_effector_type == "v4_hand_7dof":
-            if len(self.left_hand_joints) != 7 or len(self.right_hand_joints) != 7:
-                raise ValueError("v4_hand_7dof requires 7 joints per hand")
+            # 允许 0 关节（仅 body 的 DOF 枚举），否则每侧必须恰好 7 关节
+            if len(self.left_hand_joints) not in (0, 7) or len(self.right_hand_joints) not in (0, 7):
+                raise ValueError("v4_hand_7dof requires 0 or 7 joints per hand")
         if self.end_effector_type == "pgc_gripper_1dof":
-            if len(self.left_hand_joints) != 1 or len(self.right_hand_joints) != 1:
-                raise ValueError("pgc_gripper_1dof requires exactly one actuator per side")
+            if len(self.left_hand_joints) > 1 or len(self.right_hand_joints) > 1:
+                raise ValueError("pgc_gripper_1dof requires at most 1 actuator per side")
+            if len(self.left_hand_joints) == 0 and len(self.right_hand_joints) == 0:
+                raise ValueError("pgc_gripper_1dof requires at least one actuator")
 
     def to_bridge_config(self) -> dict:
         """Serialize config fields needed by ros2_walker_bridge.py (system Python 3.10).

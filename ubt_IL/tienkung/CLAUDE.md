@@ -145,6 +145,38 @@ bash run.sh check          # Environment health check
 
 The plugin registers via `make_device_from_device_class` fallback in `__init__.py`. No modifications to upstream lerobot source are required.
 
+## DOF Architecture
+
+TienKung supports variable-DOF deployment via an `IntEnum` registry pattern.
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `lerobot_robot_tienkung/constants.py` | DOF enums, `JOINT_INDEX_ENUMS` registry, `inactive_fill_for()` |
+| `lerobot_robot_tienkung/config_tienkung.py` | `joint_config` field, `__post_init__` derives `all_joints` + `_inactive_fill` |
+| `lerobot_robot_tienkung/tienkung.py` | `send_action` uses `get_val()` + `_inactive_fill`; `get_observation` filters to `_all_joints` |
+
+### Registered DOF Configs
+
+| Name | Dim | Joints |
+|------|-----|--------|
+| `tienkung_26` | 26 | L arm(7) + R arm(7) + L hand(6) + R hand(6) |
+| `tienkung_13` | 13 | R arm(7) + R hand(6) |
+
+### How inactive_fill works
+
+1. Policies output only the joints in the selected DOF enum
+2. `send_action` looks up each hardware joint by name in the action dict
+3. Missing (inactive) joints get their value from `DEFAULT_INACTIVE_FILL`: arm joints → `ARM_HOME`, hand joints → `1.0` (open)
+4. A complete 26D ZMQ message is assembled and sent to the bridge
+
+### Adding a custom DOF
+
+1. Define an `IntEnum` class in `constants.py` with desired joints
+2. Register it in `JOINT_INDEX_ENUMS` dict
+3. Use `JOINT_CONFIG=my_dof_name` during deployment
+
 ## Default Home Position (14-dim)
 
 ```python

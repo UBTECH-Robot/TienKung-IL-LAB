@@ -321,12 +321,15 @@ POLICY_PATH=/ubt_IL/model/<walker_31dim_policy>/checkpoints/last/pretrained_mode
 | `ROBOT_MODEL` | `walker_s2_v4_hand_31d` | 机器人模型：`walker_s2_gripper_19d` 或 `walker_s2_v4_hand_31d` |
 | `POLICY_PATH` | (必填) | 模型 checkpoint 路径，指向 `pretrained_model/` 目录 |
 | `ALLOW_DIM_ONLY_POLICY` | `0` | 19D 模型缺少 `action_feature_names` 时须设为 `1` |
+| `JOINT_CONFIG` | `walker_s2_31d` | DOF 配置（`walker_s2_31d`=全31；`walker_s2_19d`=19D夹爪；`walker_s2_10d`=右臂+头+右夹爪） |
 | `DURATION` | `30` | 运行时长（秒） |
 | `FPS` | `15` | 推理帧率 |
 | `STRATEGY` | `base` | 部署策略类型 |
 | `PREVIEW_CAMERA` | `1` | 是否启动相机预览窗口 |
 
 > **19D 模型注意**：当前 19D 模型 `config.json` 的 `output_features.action` 中不包含 `names` 字段，`rollout.sh` 默认拒绝仅靠维度匹配的部署。设置 `ALLOW_DIM_ONLY_POLICY=1` 前需确认训练数据 action 顺序与 `walker_s2_gripper_19d.json` 的 `action_order` 一致。
+>
+> **JOINT_CONFIG**：Walker 支持可变自由度部署（19D/10D/31D），通过 `JOINT_CONFIG` 环境变量选择。子集策略（如仅右臂的 10D）部署时，非激活关节自动用 `READY_POSE` / 安全位姿填充。在 `ubt_IL/walker/lerobot_robot_walker/lerobot_robot_walker/constants.py` 中注册新 `IntEnum` 即可新增自定义 DOF。
 
 ### 相机 & 部署参数 (TienKung)
 
@@ -340,5 +343,24 @@ POLICY_PATH=/ubt_IL/model/<walker_31dim_policy>/checkpoints/last/pretrained_mode
 | `POLICY_PATH` | `.../real_pick_place_act/.../pretrained_model` | 模型路径 |
 | `DURATION` | `60` | 运行时长（秒） |
 | `ZMQ_HOST` | `127.0.0.1` | ZMQ 连接主机 |
+| `JOINT_CONFIG` | `tienkung_26` | 关节 DOF 配置（`tienkung_26`=全26；`tienkung_13`=右臂7+右手6），须与训练时一致 |
+| `FPS` | `15` | 推理帧率 |
+
+### DOF（自由度）配置
+
+天工支持可变自由度部署。通过 `JOINT_CONFIG` 环境变量选择 DOF 配置，插件自动将策略子集动作 + 非激活关节的静态填充值组装为完整桥接命令发送给硬件。
+
+| 配置名 | 维度 | 关节组成 | 说明 |
+|--------|------|----------|------|
+| `tienkung_26` | 26 | 左臂7+右臂7+左手6+右手6 | 默认全自由度 |
+| `tienkung_13` | 13 | 右臂7+右手6 | 仅右侧，适合单手操作任务 |
+
+> 在 `ubt_IL/tienkung/lerobot_robot_tienkung/lerobot_robot_tienkung/constants.py` 中
+> 定义新 `IntEnum` 并注册到 `JOINT_INDEX_ENUMS` 即可新增自定义 DOF。
+
+### 真机本体 ARM 板部署
+
+天工真机本体部署使用机器人 Jetson AGX Orin 板，通过 conda 环境替代 Docker 容器。
+详细文档见 [scripts/deploy/tienkung_pro/arm_64/README.md](scripts/deploy/tienkung_pro/arm_64/README.md)。
 
 ---
