@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shlex
+import signal
 import subprocess
 import threading
 import time
@@ -29,6 +31,42 @@ logger = logging.getLogger(__name__)
 _BRIDGE_CONFIG_PATH = "/tmp/walker_bridge_config.json"
 
 
+def _kill_orphan_bridges() -> None:
+    """Terminate any already-running ros2_walker_bridge.py processes.
+
+    Matches only processes whose argv[1] is ros2_walker_bridge.py (the script
+    being executed), NOT the lerobot-rollout main process, which carries the
+    bridge path as the value of --robot.bridge_script=... but whose argv[1] is
+    the lerobot entrypoint. Using pkill -f / pgrep -f here would match the
+    lerobot main process's cmdline too and SIGTERM our own parent on startup.
+    """
+    own_pid = os.getpid()
+    parent_pid = os.getppid()
+    pids = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid in (own_pid, parent_pid):
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                parts = f.read().split(b"\x00")
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+        if len(parts) < 2:
+            continue
+        if parts[1].decode("utf-8", "replace").endswith("ros2_walker_bridge.py"):
+            pids.append(pid)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    if pids:
+        time.sleep(0.5)
+
+
 class WalkerRobot(Robot):
     config_class = WalkerRobotConfig
     name = "walker"
@@ -46,6 +84,9 @@ class WalkerRobot(Robot):
         self._left_hand_joints = config.left_hand_joints
         self._right_hand_joints = config.right_hand_joints
         self._all_joints = config.all_joints
+        # 非激活关节(不在 all_joints 中的硬件关节)的静态填充值,部署时用于
+        # 把 policy 的子集 action 散射回完整 6 组 bridge 命令。键已带 .pos 后缀。
+        self._inactive_fill: dict[str, float] = getattr(config, "_inactive_fill", {})
 
         # Real joint/actuator names used for hardware-side clipping/mapping.
         self._body_groups = config.body_groups
@@ -166,9 +207,8 @@ class WalkerRobot(Robot):
         logger.info("WalkerRobot connected.")
 
     def _start_bridge(self) -> None:
-        # Stop any existing Bridge2 process first
-        subprocess.run(["pkill", "-f", "ros2_walker_bridge.py"], check=False)
-        time.sleep(0.5)
+        # Stop any existing Bridge2 process first (avoid conflicts from auto-start)
+        _kill_orphan_bridges()
 
         config_json = json.dumps(self.config.to_bridge_config())
         cmd = [
@@ -233,12 +273,17 @@ class WalkerRobot(Robot):
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
-        missing = [name for name in self._all_joints if name not in action]
-        if missing:
-            raise KeyError(f"Walker action missing required keys: {missing}")
+        # action 仅含策略关节(self._all_joints);非激活关节用 _inactive_fill 填充,
+        # 以组装完整 6 组 bridge 命令(物理序)。按名查找,与 policy 顺序无关。
+        inactive = self._inactive_fill
+
+        def get_val(name: str) -> float:
+            if name in action:
+                return float(action[name])
+            return float(inactive.get(name, 0.0))
 
         grouped = {
-            group: [float(action[name]) for name in features]
+            group: [get_val(name) for name in features]
             for group, features in self._group_features.items()
         }
 

@@ -51,7 +51,7 @@ RUN /usr/bin/python3 -m pip install --upgrade pip \
     && /usr/bin/python3 -m pip install --break-system-packages --no-cache-dir \
     --retries 5 --timeout 60 \
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    pyzmq "numpy<2" "opencv-python<4.10" ikpy h5py \
+    pyzmq "numpy<2" "opencv-python<4.10" ikpy h5py pandas pyarrow \
     && ln -sf /usr/bin/python3 /usr/local/bin/rospython
 
 # Fast-DDS config: disable shared memory (fixes ROS2 data delivery inside Docker)

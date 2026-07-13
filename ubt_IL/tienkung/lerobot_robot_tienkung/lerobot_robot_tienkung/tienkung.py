@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import signal
 import subprocess
 import threading
 import time
@@ -30,6 +32,42 @@ logger = logging.getLogger(__name__)
 _BRIDGE_CONFIG_PATH = "/tmp/tienkung_bridge_config.json"
 
 
+def _kill_orphan_bridges() -> None:
+    """Terminate any already-running ros2_deploy_bridge.py processes.
+
+    Matches only processes whose argv[1] is ros2_deploy_bridge.py (the script
+    being executed), NOT the lerobot-rollout main process, which carries the
+    bridge path as the value of --robot.bridge_script=... but whose argv[1] is
+    the lerobot entrypoint. Using pkill -f / pgrep -f here would match the
+    lerobot main process's cmdline too and SIGTERM our own parent on startup.
+    """
+    own_pid = os.getpid()
+    parent_pid = os.getppid()
+    pids = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid in (own_pid, parent_pid):
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                parts = f.read().split(b"\x00")
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+        if len(parts) < 2:
+            continue
+        if parts[1].decode("utf-8", "replace").endswith("ros2_deploy_bridge.py"):
+            pids.append(pid)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    if pids:
+        time.sleep(0.5)
+
+
 class TienKungRobot(Robot):
     config_class = TienKungRobotConfig
     name = "tienkung"
@@ -45,6 +83,9 @@ class TienKungRobot(Robot):
         self._left_hand_joints = config.left_hand_joints
         self._right_hand_joints = config.right_hand_joints
         self._all_joints = config.all_joints
+        # 非激活关节(不在 all_joints 中的硬件关节)的静态填充值,部署时用于
+        # 把 policy 的子集 action 散射回完整 26 维 bridge 命令。键已带 .pos 后缀。
+        self._inactive_fill: dict[str, float] = getattr(config, "_inactive_fill", {})
 
         # ZMQ state (populated in connect)
         self._zmq_context: zmq.Context | None = None
@@ -142,8 +183,7 @@ class TienKungRobot(Robot):
 
     def _start_bridge(self) -> None:
         # Stop any existing Bridge2 process first (avoid conflicts from auto-start)
-        subprocess.run(["pkill", "-f", "ros2_deploy_bridge.py"], check=False)
-        time.sleep(0.5)
+        _kill_orphan_bridges()
 
         config_json = json.dumps(self.config.to_bridge_config())
         cmd = [
@@ -200,17 +240,19 @@ class TienKungRobot(Robot):
 
     @check_if_not_connected
     def get_observation(self) -> RobotObservation:
-        obs: RobotObservation = {}
-
+        # 先构建全 26 维硬件状态(4 组,物理序),再只返回 policy 关节(self._all_joints)。
+        full: dict[str, float] = {}
         with self._state_lock:
             for i, name in enumerate(self._left_arm_joints):
-                obs[name] = self._left_arm_jpos[i]
+                full[name] = self._left_arm_jpos[i]
             for i, name in enumerate(self._left_hand_joints):
-                obs[name] = self._left_hand_pos[i]
+                full[name] = self._left_hand_pos[i]
             for i, name in enumerate(self._right_arm_joints):
-                obs[name] = self._right_arm_jpos[i]
+                full[name] = self._right_arm_jpos[i]
             for i, name in enumerate(self._right_hand_joints):
-                obs[name] = self._right_hand_pos[i]
+                full[name] = self._right_hand_pos[i]
+
+        obs: RobotObservation = {name: full[name] for name in self._all_joints}
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
@@ -220,11 +262,19 @@ class TienKungRobot(Robot):
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
-        # Extract action values by joint group
-        left_arm = [action[name] for name in self._left_arm_joints]
-        left_hand = [action[name] for name in self._left_hand_joints]
-        right_arm = [action[name] for name in self._right_arm_joints]
-        right_hand = [action[name] for name in self._right_hand_joints]
+        # action 仅含 policy 关节(self._all_joints);非激活关节用 _inactive_fill 填充,
+        # 以组装完整 26 维 bridge 命令(4 组物理序)。按名查找,与 policy 顺序无关。
+        inactive = self._inactive_fill
+
+        def get_val(name: str) -> float:
+            if name in action:
+                return action[name]
+            return inactive.get(name, 0.0)
+
+        left_arm = [get_val(name) for name in self._left_arm_joints]
+        left_hand = [get_val(name) for name in self._left_hand_joints]
+        right_arm = [get_val(name) for name in self._right_arm_joints]
+        right_hand = [get_val(name) for name in self._right_hand_joints]
 
         # Apply safety clipping if configured
         if self.config.max_relative_target is not None:
@@ -248,18 +298,18 @@ class TienKungRobot(Robot):
         except zmq.Again:
             logger.warning("Action send dropped: ZMQ send buffer full (SNDHWM=1)")
 
-        # Return the actual action sent (after clipping).
-        # Apply hand clip to returned values so they match what Bridge2
-        # will send to the robot.
-        sent_action: RobotAction = {}
+        # Return the actual action sent (after clipping), only for policy joints.
+        # Apply hand clip to returned hand values so they match what Bridge2 sends.
+        sent_map: dict[str, float] = {}
         for i, name in enumerate(self._left_arm_joints):
-            sent_action[name] = left_arm[i]
+            sent_map[name] = left_arm[i]
         for i, name in enumerate(self._left_hand_joints):
-            sent_action[name] = clip_hand_value(left_hand[i], self.config.hand_type)
+            sent_map[name] = clip_hand_value(left_hand[i], self.config.hand_type)
         for i, name in enumerate(self._right_arm_joints):
-            sent_action[name] = right_arm[i]
+            sent_map[name] = right_arm[i]
         for i, name in enumerate(self._right_hand_joints):
-            sent_action[name] = clip_hand_value(right_hand[i], self.config.hand_type)
+            sent_map[name] = clip_hand_value(right_hand[i], self.config.hand_type)
+        sent_action: RobotAction = {name: sent_map[name] for name in self._all_joints}
         return sent_action
 
     @staticmethod
@@ -277,7 +327,7 @@ class TienKungRobot(Robot):
     @check_if_not_connected
     def disconnect(self) -> None:
         # Optionally return to home position
-        if self.config.disable_torque_on_disconnect and self._state_ready.is_set():
+        if self.config.return_home_on_disconnect and self._state_ready.is_set():
             logger.info("Returning to home position...")
             home_action = {
                 "left_arm": self.config.home_position[:len(self._left_arm_joints)],

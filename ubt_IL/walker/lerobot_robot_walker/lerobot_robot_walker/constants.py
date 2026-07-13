@@ -127,3 +127,177 @@ TOPIC_RIGHT_GRIP_STATE = "/ecat/right_grip/state"
 TOPIC_CAMERA_STEREO = "/sensor/camera/stereo/color/raw"
 TOPIC_CAMERA_WRIST_LEFT = "/sensor/camera/wrist_left/color/raw"
 TOPIC_CAMERA_WRIST_RIGHT = "/sensor/camera/wrist_right/color/raw"
+
+
+# =====================================================================
+# 关节 DOF 映射配置（支持任意自由度 / 任意关节顺序的模型训练与部署）
+# =====================================================================
+#
+# 设计要点（两套映射机制解耦，与天工 DOF 架构一致）：
+#   - policy ↔ 数据集：按位映射。枚举成员顺序 == 数据集 action/state 顺序。
+#     故枚举成员可任意重排以匹配数据集顺序。
+#   - policy ↔ 硬件：按名散射。6 个硬件分组是【固定物理 motor/手指/夹爪顺序】
+#     （bridge 按位寻址，严禁重排），与枚举顺序无关。
+#     send_action 按名从 action 字典取值、按物理序拼 bridge list。
+# 二者解耦后，枚举可随意重排、可取任意子集，均能正确部署。
+
+from enum import IntEnum
+
+# ── 固定硬件分组（物理顺序，bridge 按位寻址，严禁重排）──
+LEFT_ARM_JOINTS = [
+    "L_elbow_roll_joint", "L_elbow_yaw_joint", "L_shoulder_pitch_joint",
+    "L_shoulder_roll_joint", "L_shoulder_yaw_joint", "L_wrist_pitch_joint",
+    "L_wrist_roll_joint",
+]
+RIGHT_ARM_JOINTS = [
+    "R_elbow_roll_joint", "R_elbow_yaw_joint", "R_shoulder_pitch_joint",
+    "R_shoulder_roll_joint", "R_shoulder_yaw_joint", "R_wrist_pitch_joint",
+    "R_wrist_roll_joint",
+]
+HEAD_JOINTS = ["head_pitch_joint", "head_yaw_joint"]
+WAIST_JOINTS = ["waist_yaw_joint"]
+
+# canonical 全集（物理序），供派生填充迭代用
+CANONICAL_JOINT_NAMES = (
+    LEFT_ARM_JOINTS + RIGHT_ARM_JOINTS + HEAD_JOINTS + WAIST_JOINTS
+    + V4_HAND_LEFT_JOINTS + V4_HAND_RIGHT_JOINTS
+    + ["left_grip", "right_grip"]
+)  # 33: 17 body + 14 V4 hand + 2 PGC gripper
+
+
+# ── DOF 枚举：定义 all_joints（policy 维度与顺序 = 数据集顺序）──
+# 成员名须取自 CANONICAL_JOINT_NAMES；成员顺序须与数据集 action/state 顺序一致（可重排）。
+# 不含 .pos 后缀，由 joint_names_with_pos() 统一追加。
+
+class WalkerS219DofJointIndex(IntEnum):
+    """19-DOF：全 17 body + 左右 PGC 1-DOF 夹爪（顺序与 walker_s2_gripper_19d.json 一致）"""
+
+    # Left arm (0-6)
+    L_elbow_roll_joint = 0
+    L_elbow_yaw_joint = 1
+    L_shoulder_pitch_joint = 2
+    L_shoulder_roll_joint = 3
+    L_shoulder_yaw_joint = 4
+    L_wrist_pitch_joint = 5
+    L_wrist_roll_joint = 6
+    # Right arm (7-13)
+    R_elbow_roll_joint = 7
+    R_elbow_yaw_joint = 8
+    R_shoulder_pitch_joint = 9
+    R_shoulder_roll_joint = 10
+    R_shoulder_yaw_joint = 11
+    R_wrist_pitch_joint = 12
+    R_wrist_roll_joint = 13
+    # Head (14-15)
+    head_pitch_joint = 14
+    head_yaw_joint = 15
+    # Waist (16)
+    waist_yaw_joint = 16
+    # PGC grippers (17-18)
+    left_grip = 17
+    right_grip = 18
+
+
+class WalkerS210DofJointIndex(IntEnum):
+    """10-DOF：仅右臂 7 + 头 2 + 右 PGC 夹爪 1（顺序与 walker_s2_real_10d_1RGBD.json 一致）"""
+
+    # Right arm (0-6)
+    R_elbow_roll_joint = 0
+    R_elbow_yaw_joint = 1
+    R_shoulder_pitch_joint = 2
+    R_shoulder_roll_joint = 3
+    R_shoulder_yaw_joint = 4
+    R_wrist_pitch_joint = 5
+    R_wrist_roll_joint = 6
+    # Head (7-8)
+    head_pitch_joint = 7
+    head_yaw_joint = 8
+    # Right PGC gripper (9)
+    right_grip = 9
+
+
+class WalkerS231DofJointIndex(IntEnum):
+    """31-DOF：全 17 body + 左右 V4 7-DOF 手（顺序与 walker_s2_v4_hand_31d.json 一致）"""
+
+    # Left arm (0-6)
+    L_elbow_roll_joint = 0
+    L_elbow_yaw_joint = 1
+    L_shoulder_pitch_joint = 2
+    L_shoulder_roll_joint = 3
+    L_shoulder_yaw_joint = 4
+    L_wrist_pitch_joint = 5
+    L_wrist_roll_joint = 6
+    # Right arm (7-13)
+    R_elbow_roll_joint = 7
+    R_elbow_yaw_joint = 8
+    R_shoulder_pitch_joint = 9
+    R_shoulder_roll_joint = 10
+    R_shoulder_yaw_joint = 11
+    R_wrist_pitch_joint = 12
+    R_wrist_roll_joint = 13
+    # Head (14-15)
+    head_pitch_joint = 14
+    head_yaw_joint = 15
+    # Waist (16)
+    waist_yaw_joint = 16
+    # Left V4 hand (17-23)
+    left_thumb_swing = 17
+    left_thumb_mcp = 18
+    left_thumb_pip = 19
+    left_index_mcp = 20
+    left_middle_mcp = 21
+    left_ring_mcp = 22
+    left_little_mcp = 23
+    # Right V4 hand (24-30)
+    right_thumb_swing = 24
+    right_thumb_mcp = 25
+    right_thumb_pip = 26
+    right_index_mcp = 27
+    right_middle_mcp = 28
+    right_ring_mcp = 29
+    right_little_mcp = 30
+
+
+# DOF 名 -> 枚举类 注册表（新增 DOF：定义 IntEnum + 在此注册即可）
+JOINT_INDEX_ENUMS: dict[str, type] = {
+    "walker_s2_19d": WalkerS219DofJointIndex,
+    "walker_s2_10d": WalkerS210DofJointIndex,
+    "walker_s2_31d": WalkerS231DofJointIndex,
+}
+
+
+# ── 非激活关节的静态填充 ──
+# 任何非激活关节（不在所选 DOF 枚举中）的默认静态值：
+#   车身关节取 READY_POSE 对应位，V4 手取 0.0（伸直），夹爪取 0.0（闭合安全位）。
+DEFAULT_INACTIVE_FILL: dict[str, float] = {
+    **READY_POSE,
+    **{j: 0.0 for j in V4_HAND_LEFT_JOINTS + V4_HAND_RIGHT_JOINTS},
+    "left_grip": 0.0,
+    "right_grip": 0.0,
+}
+
+# 可选：per-DOF 非激活关节填充覆盖（裸关节名 -> 值）。空时全用默认。
+# 例：让 10-DOF 的非激活左手张到全开而非默认 0.0
+#   {"walker_s2_10d": {"left_grip": 0.03, "left_thumb_swing": 0.5, ...}}
+INACTIVE_FILL_OVERRIDES: dict[str, dict[str, float]] = {}
+
+
+def inactive_fill_for(dof_name: str, enum_cls: type) -> dict[str, float]:
+    """选中 DOF 枚举未包含的关节 -> .pos 键的静态填充值（按名，与枚举顺序无关）。
+
+    先取 DEFAULT_INACTIVE_FILL，再用 INACTIVE_FILL_OVERRIDES[dof_name] 覆盖。
+    返回的 dict 键已补 ``.pos`` 后缀，可直接用于 robot 的 action 字典。
+    """
+    active = {m.name for m in enum_cls}
+    fill = {
+        j: DEFAULT_INACTIVE_FILL.get(j, 0.0)
+        for j in CANONICAL_JOINT_NAMES
+        if j not in active
+    }
+    fill.update(INACTIVE_FILL_OVERRIDES.get(dof_name, {}))
+    return {f"{j}.pos": v for j, v in fill.items()}
+
+
+def joint_names_with_pos(enum_cls: type) -> list[str]:
+    """从 DOF 枚举派生 all_joints（成员名 + .pos 后缀，顺序 = 枚举顺序 = 数据集顺序）。"""
+    return [f"{m.name}.pos" for m in enum_cls]

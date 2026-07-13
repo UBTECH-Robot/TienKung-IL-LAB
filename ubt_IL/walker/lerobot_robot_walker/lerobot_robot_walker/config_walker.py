@@ -15,7 +15,11 @@ from .constants import (
     BODY_JOINT_NAMES,
     DEFAULT_LOCK_JOINTS,
     HAND_OPEN_POSITION,
+    HEAD_JOINTS,
     HOME_POSITION,
+    JOINT_INDEX_ENUMS,
+    LEFT_ARM_JOINTS,
+    RIGHT_ARM_JOINTS,
     TOPIC_BODY_CMD,
     TOPIC_BODY_STATE,
     TOPIC_CAMERA_STEREO,
@@ -26,6 +30,9 @@ from .constants import (
     V4_HAND_JOINT_LIMITS,
     V4_HAND_LEFT_JOINTS,
     V4_HAND_RIGHT_JOINTS,
+    WAIST_JOINTS,
+    inactive_fill_for,
+    joint_names_with_pos,
 )
 
 _BODY_GROUPS = ("left_arm", "right_arm", "head", "waist")
@@ -66,6 +73,12 @@ class WalkerRobotConfig(RobotConfig):
     robot_config_path: str | None = None
     robot_model: str = "walker_s2_v4_hand_31d"
     description: str = ""
+
+    # DOF 配置名（取自 JOINT_INDEX_ENUMS）。当非空且 robot_config_path 为 None 时，
+    # __post_init__ 会从对应 DOF 枚举派生 all_joints + inactive_fill。
+    # 默认 "walker_s2_31d"（全 31，物理序）。
+    # 部署子集策略时设为 "walker_s2_10d" 等；新增 DOF 请在 constants.py 注册。
+    joint_config: str = "walker_s2_31d"
 
     # ZMQ configuration (LeRobot ↔ Bridge2 internal communication)
     zmq_host: str = "127.0.0.1"
@@ -154,12 +167,87 @@ class WalkerRobotConfig(RobotConfig):
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     camera_topics: dict[str, str] = field(default_factory=dict)
 
+    # Populated by __post_init__ when joint_config resolves to a valid DOF enum.
+    # Keys already carry .pos suffix; values are floats.
+    _inactive_fill: dict[str, float] = field(default_factory=dict, init=False, repr=False)
+
     def __post_init__(self):
         if self.robot_config_path:
             self._load_robot_config(Path(self.robot_config_path))
         else:
             self._normalize_legacy_groups()
+            # 当无 robot_config_path 时，从 DOF 枚举派生 all_joints + inactive_fill，
+            # 并同步重建 6 组关节 feature 列表（真实关节名），确保 _validate() 通过。
+            if self.joint_config in JOINT_INDEX_ENUMS:
+                enum_cls = JOINT_INDEX_ENUMS[self.joint_config]
+                self.all_joints = joint_names_with_pos(enum_cls)
+                self._inactive_fill = inactive_fill_for(self.joint_config, enum_cls)
+                self._rebuild_groups_from_enum(enum_cls)
+            else:
+                raise ValueError(
+                    f"joint_config {self.joint_config!r} not registered. "
+                    f"Available: {list(JOINT_INDEX_ENUMS)}. "
+                    f"新增 DOF 请在 walker constants.py 定义 IntEnum 并注册到 JOINT_INDEX_ENUMS。"
+                )
         self._validate()
+
+    def _rebuild_groups_from_enum(self, enum_cls: type) -> None:
+        """从 DOF 枚举重建 6 组关节 feature 列表（真实关节名 + .pos 后缀）。
+
+        同时推导 end_effector_type：若枚举含 V4 手关节，则为 v4_hand_7dof；
+        若含 PGC 夹爪执行器名（left_grip/right_grip），则为 pgc_gripper_1dof。
+        """
+        member_names = {m.name for m in enum_cls}
+
+        # 车身分组（按固定硬件组归类）
+        self.left_arm_joints = [_feature_name(n)
+                                for n in LEFT_ARM_JOINTS if n in member_names]
+        self.right_arm_joints = [_feature_name(n)
+                                 for n in RIGHT_ARM_JOINTS if n in member_names]
+        self.head_joints = [_feature_name(n)
+                            for n in HEAD_JOINTS if n in member_names]
+        self.waist_joints = [_feature_name(n)
+                             for n in WAIST_JOINTS if n in member_names]
+        self.body_joint_names = [n for n in BODY_JOINT_NAMES if n in member_names]
+        self.body_groups = {
+            "left_arm": [n for n in LEFT_ARM_JOINTS if n in member_names],
+            "right_arm": [n for n in RIGHT_ARM_JOINTS if n in member_names],
+            "head": [n for n in HEAD_JOINTS if n in member_names],
+            "waist": [n for n in WAIST_JOINTS if n in member_names],
+        }
+
+        # 末端执行器分组
+        has_v4 = bool(member_names & {*V4_HAND_LEFT_JOINTS, *V4_HAND_RIGHT_JOINTS})
+        has_grip = "left_grip" in member_names or "right_grip" in member_names
+        if has_v4:
+            self.end_effector_type = "v4_hand_7dof"
+            self.hand_type = "v4"
+            self.left_hand_joint_names = [n for n in V4_HAND_LEFT_JOINTS if n in member_names]
+            self.right_hand_joint_names = [n for n in V4_HAND_RIGHT_JOINTS if n in member_names]
+        elif has_grip:
+            self.end_effector_type = "pgc_gripper_1dof"
+            self.hand_type = "pgc_gripper_1dof"
+            self.left_hand_joint_names = ["left_grip"] if "left_grip" in member_names else []
+            self.right_hand_joint_names = ["right_grip"] if "right_grip" in member_names else []
+        else:
+            # 仅车身关节，无末端执行器
+            self.left_hand_joint_names = []
+            self.right_hand_joint_names = []
+        self.left_hand_joints = [_feature_name(n) for n in self.left_hand_joint_names]
+        self.right_hand_joints = [_feature_name(n) for n in self.right_hand_joint_names]
+        self.end_effector_groups = {
+            "left_hand": list(self.left_hand_joint_names),
+            "right_hand": list(self.right_hand_joint_names),
+        }
+
+        # 末端执行器 open position
+        if has_v4:
+            self.left_hand_open_position = [0.0] * len(self.left_hand_joint_names)
+            self.right_hand_open_position = [0.0] * len(self.right_hand_joint_names)
+        elif has_grip:
+            self.left_hand_open_position = [0.0] * len(self.left_hand_joint_names)
+            self.right_hand_open_position = [0.0] * len(self.right_hand_joint_names)
+        self.hand_open_position = list(self.left_hand_open_position or [])
 
     def _load_robot_config(self, path: Path) -> None:
         with path.open("r", encoding="utf-8") as f:
@@ -360,10 +448,11 @@ class WalkerRobotConfig(RobotConfig):
         )
         group_set = set(group_joints)
         all_set = set(self.all_joints)
-        if group_set != all_set:
+        # 子集模式：all_joints 只需是 6 组并集的子集（允许用 inactive_fill 补全硬件关节）
+        if not all_set.issubset(group_set):
             raise ValueError(
-                f"all_joints must be a permutation of the union of 6 joint groups. "
-                f"Missing: {group_set - all_set}, Extra: {all_set - group_set}"
+                f"all_joints contains joints not in the 6 hardware groups. "
+                f"Unknown: {all_set - group_set}"
             )
         _validate_unique(self.all_joints, label="all_joints")
         for name in self.all_joints:

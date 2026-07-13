@@ -11,6 +11,7 @@ import numpy as np
 from tqdm import tqdm
 
 from lerobot.datasets import LeRobotDataset
+from lerobot.configs.video import VideoEncoderConfig
 
 # lerobot 0.5.x validate_feature_numpy_array compares numpy .shape (tuple)
 # against feature spec shape (list) directly with !=, which always fails.
@@ -118,8 +119,39 @@ def validate_mapping(mapping: dict, features: dict) -> None:
             )
 
 
+def validate_features(features: dict) -> None:
+    """Warn about feature-schema issues lerobot silently ignores or mis-handles.
+
+    - lerobot 0.5.x ignores a ``video_info`` key on video features; only the
+      ``info`` field (auto-filled after encoding) is used. Flag it so configs
+      get cleaned up.
+    - lerobot expects image/video feature shape as CHW ``[C, H, W]``. A common
+      mistake is HWC ``[H, W, C]``; flag it so stored metadata is correct.
+    """
+    for name, spec in features.items():
+        if not isinstance(spec, dict):
+            continue
+        dtype = spec.get("dtype")
+        if dtype not in ("video", "image"):
+            continue
+        if "video_info" in spec:
+            logging.warning(
+                f"Feature '{name}' has a 'video_info' field which lerobot "
+                "ignores (it auto-fills 'info' after encoding). Remove "
+                "'video_info' from the config."
+            )
+        shape = spec.get("shape")
+        if isinstance(shape, list) and len(shape) == 3 and shape[0] != 3 and shape[-1] == 3:
+            logging.warning(
+                f"Feature '{name}' shape {shape} looks HWC [H,W,C]; lerobot "
+                "expects CHW [C,H,W] (e.g. [3,360,640]). Stored metadata would "
+                "be wrong otherwise."
+            )
+
+
 def initialize_dataset(
     repo_id: str, tgt_path: str, fps: int, robot_type: str, features: dict,
+    vcodec: str = "h264",
     image_writer_processes: int = 4, image_writer_threads: int = 4,
 ) -> LeRobotDataset:
     """Initialize dataset instance, removing existing data if present."""
@@ -129,13 +161,17 @@ def initialize_dataset(
         shutil.rmtree(dataset_path)
         logging.warning(f"Removed existing dataset: {dataset_path}")
 
-    logging.info(f"Creating new dataset: {dataset_path}")
+    # Pick_up_tiangong_all uses mp4v; lerobot's vcodec whitelist rejects mpeg4,
+    # so h264 is the closest compatible default. Override via --vcodec.
+    camera_encoder = VideoEncoderConfig(vcodec=vcodec, pix_fmt="yuv420p")
+    logging.info(f"Creating new dataset: {dataset_path} (vcodec={vcodec})")
     return LeRobotDataset.create(
         repo_id=repo_id,
         root=str(dataset_path),
         fps=fps,
         robot_type=robot_type,
         features=features,
+        camera_encoder=camera_encoder,
         image_writer_processes=image_writer_processes,
         image_writer_threads=image_writer_threads,
     )
@@ -263,11 +299,15 @@ def main():
     parser.add_argument("--hdf5_rel_path", type=str, default="trajectory.hdf5", help="Relative path to HDF5 file within each episode dir")
     parser.add_argument("--image_writer_processes", type=int, default=4, help="Number of image writer processes")
     parser.add_argument("--image_writer_threads", type=int, default=4, help="Number of image writer threads")
+    parser.add_argument("--vcodec", type=str, default="h264",
+                        help="Video codec: h264 (default, closest to Pick_up's mp4v), libsvtav1 (av1), hevc, auto. "
+                             "Note: mpeg4/mp4v is rejected by lerobot's codec whitelist.")
     args = parser.parse_args()
 
     # Load configuration
     features, mapping = load_config(args.config)
     validate_mapping(mapping, features)
+    validate_features(features)
 
     # Initialize dataset
     dataset = initialize_dataset(
@@ -276,13 +316,20 @@ def main():
         fps=args.fps,
         robot_type=args.robot_type,
         features=features,
+        vcodec=args.vcodec,
         image_writer_processes=args.image_writer_processes,
         image_writer_threads=args.image_writer_threads,
     )
 
-    # Process all episodes
+    # Process all episodes: only directories that actually contain the HDF5
+    # file. This skips sibling LeRobot datasets / output dirs / empty dirs that
+    # happen to live under src_root (avoids noisy "Skipped" errors).
     src_root = Path(args.src_root)
-    episodes = sorted([ep for ep in src_root.iterdir() if ep.is_dir()])
+    all_dirs = sorted([ep for ep in src_root.iterdir() if ep.is_dir()])
+    episodes = [ep for ep in all_dirs if (ep / args.hdf5_rel_path).exists()]
+    skipped = [ep.name for ep in all_dirs if ep not in episodes]
+    if skipped:
+        logging.info(f"Skipping {len(skipped)} dir(s) without '{args.hdf5_rel_path}': {skipped}")
 
     success_count = 0
     logging.info(f"Found {len(episodes)} episodes to process...")
@@ -303,5 +350,7 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    # force=True: lerobot's import pre-configures the root logger, which makes a
+    # plain basicConfig() a no-op and silently drops INFO-level progress logs.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", force=True)
     main()

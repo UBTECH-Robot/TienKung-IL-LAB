@@ -9,6 +9,9 @@ CONFIG_DIR="$SCRIPT_DIR/configs"
 POLICY_PATH="${POLICY_PATH:-}"
 ROBOT_MODEL="${ROBOT_MODEL:-walker_s2_v4_hand_31d}"
 ROBOT_CONFIG="${ROBOT_CONFIG:-$CONFIG_DIR/$ROBOT_MODEL.json}"
+# 机器人关节 DOF 配置：walker_s2_31d（全 31 DOF）/ walker_s2_19d（19 DOF PGC 夹爪）/
+# walker_s2_10d（仅右臂+头+右夹爪）。当 ROBOT_CONFIG 未指定时，通过此变量从 DOF 枚举派生 all_joints。
+JOINT_CONFIG="${JOINT_CONFIG:-walker_s2_31d}"
 ALLOW_DIM_ONLY_POLICY="${ALLOW_DIM_ONLY_POLICY:-0}"
 STRATEGY="${STRATEGY:-base}"
 FPS="${FPS:-15}"
@@ -147,6 +150,7 @@ fi
     --policy.path="$POLICY_PATH" \
     --robot.type=walker \
     --robot.robot_config_path="$ROBOT_CONFIG" \
+    --robot.joint_config="$JOINT_CONFIG" \
     --task="$TASK" \
     --fps="$FPS" \
     --duration="$DURATION"

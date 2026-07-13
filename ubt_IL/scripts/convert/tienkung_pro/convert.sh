@@ -13,6 +13,7 @@ REPO_ID="${REPO_ID:-real_pick_place}"
 FPS="${FPS:-15}"
 ROBOT_TYPE="${ROBOT_TYPE:-tienkung}"
 TASK_NAME="${TASK_NAME:-real_pick_place}"
+VCODEC="${VCODEC:-h264}"
 
 python "$SCRIPT_DIR/../common/convert_to_lerobot.py" \
   --config "$CONFIG" \
@@ -22,4 +23,5 @@ python "$SCRIPT_DIR/../common/convert_to_lerobot.py" \
   --fps "$FPS" \
   --robot_type "$ROBOT_TYPE" \
   --task_name "$TASK_NAME" \
+  --vcodec "$VCODEC" \
   "$@"

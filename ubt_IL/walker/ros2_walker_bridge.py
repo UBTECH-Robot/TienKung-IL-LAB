@@ -752,23 +752,33 @@ def _is_alive(pid: int) -> bool:
 
 
 def kill_existing_bridge() -> None:
-    """Find and kill any already-running ros2_walker_bridge processes."""
+    """Find and kill any already-running ros2_walker_bridge processes.
+
+    Matches only processes whose argv[1] is ros2_walker_bridge.py, NOT the
+    lerobot-rollout parent process (which carries the bridge path as the value
+    of --robot.bridge_script=... in its cmdline). pgrep -f matches the whole
+    cmdline and would kill the parent — use /proc scanning instead.
+    """
     current_pid = os.getpid()
-    try:
-        result = subprocess.run(["pgrep", "-f", "ros2_walker_bridge"], capture_output=True, text=True, timeout=5)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return
-    if result.returncode != 0:
-        return
+    parent_pid = os.getppid()
 
     pids = []
-    for line in result.stdout.strip().splitlines():
-        try:
-            pid = int(line.strip())
-            if pid != current_pid:
-                pids.append(pid)
-        except ValueError:
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
             continue
+        pid = int(entry)
+        if pid in (current_pid, parent_pid):
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                parts = f.read().split(b"\x00")
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+        if len(parts) < 2:
+            continue
+        if parts[1].decode("utf-8", "replace").endswith("ros2_walker_bridge.py"):
+            pids.append(pid)
+
     if not pids:
         return
 
