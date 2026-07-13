@@ -2126,6 +2126,39 @@ def cmd_print_grip_state(controller, sides=None):
         )
 
 
+def cmd_print_ee(controller, sides=None):
+    """打印末端笛卡尔位姿(URDF base frame,xyz + rpy)。
+
+    依赖 IK solver;构造控制器时需传 enable_ik=True(或运行时 initialize_ik())。
+    """
+    sides = sides or ["left", "right"]
+    print("\n末端笛卡尔位姿 (URDF base frame):")
+    print(
+        f"{'side':<6s} {'x(m)':>10s} {'y(m)':>10s} {'z(m)':>10s} "
+        f"{'roll(rad)':>11s} {'pitch(rad)':>11s} {'yaw(rad)':>11s} "
+        f"{'roll(°)':>9s} {'pitch(°)':>9s} {'yaw(°)':>9s}"
+    )
+    print("-" * 106)
+    any_ok = False
+    for side in sides:
+        pose = controller.get_ee_pose(side, as_dict=True)
+        if pose is None:
+            print(f"{side:<6s}  N/A (IK 未初始化或未收到机器人状态)")
+            continue
+        any_ok = True
+        print(
+            f"{side:<6s} "
+            f"{pose['x']:>+10.4f} {pose['y']:>+10.4f} {pose['z']:>+10.4f} "
+            f"{pose['roll']:>+11.4f} {pose['pitch']:>+11.4f} {pose['yaw']:>+11.4f} "
+            f"{np.degrees(pose['roll']):>+9.1f} {np.degrees(pose['pitch']):>+9.1f} {np.degrees(pose['yaw']):>+9.1f}"
+        )
+    if not any_ok:
+        print(
+            "✗ 末端位姿获取失败。请确认:1) 已收到机器人状态  "
+            "2) URDF 存在(默认 ubt_sim/assets/robots/walker_s2/s2.urdf,或设 WALKER_S2_IK_URDF)"
+        )
+
+
 def cmd_demo(controller):
     """安全演示：先移动到默认起始位姿，再在右臂 elbow_yaw 上做 ±0.05 rad 的小幅运动"""
     pos = controller.get_current_position()
@@ -2291,6 +2324,14 @@ def main(args=None):
         help="仅打印当前关节状态后退出",
     )
     parser.add_argument(
+        "--print-ee", action="store_true",
+        help="打印末端笛卡尔位姿(URDF base frame,xyz + rpy,需启用 IK)",
+    )
+    parser.add_argument(
+        "--ee-side", choices=["left", "right", "both"], default="both",
+        help="末端位姿打印侧,默认 both",
+    )
+    parser.add_argument(
         "--init", action="store_true",
         help="分段移动到预备姿态（先 shoulder pitch / elbow roll，再 elbow yaw，最后 READY_POSE）",
     )
@@ -2427,6 +2468,7 @@ def main(args=None):
         lock_joints=lock_joints,
         enable_safety_check=not cli_args.no_safety,
         enable_limit_check=not cli_args.no_limits,
+        enable_ik=cli_args.print_ee,
     )
 
     executor = MultiThreadedExecutor(num_threads=2)
@@ -2444,6 +2486,9 @@ def main(args=None):
 
         if cli_args.print_state:
             cmd_print_state(controller)
+        elif cli_args.print_ee:
+            sides = ["left", "right"] if cli_args.ee_side == "both" else [cli_args.ee_side]
+            cmd_print_ee(controller, sides)
         elif cli_args.move_joint:
             if cli_args.joint is None or cli_args.pos is None:
                 print("[ERROR] --move-joint requires --joint and --pos")
@@ -2552,7 +2597,7 @@ def main(args=None):
             spin_thread.join()
         else:
             cmd_print_state(controller)
-            print("\n用法: --print-state | --init | --move-joint --joint JOINT --pos POS | --demo | --head-test | --hand-test | --grip-state | --grip-open | --grip-close | --grip-pos POS | --interactive")
+            print("\n用法: --print-state | --print-ee | --init | --move-joint --joint JOINT --pos POS | --demo | --head-test | --hand-test | --grip-state | --grip-open | --grip-close | --grip-pos POS | --interactive")
 
     except KeyboardInterrupt:
         controller.get_logger().info("Interrupted, shutting down")
