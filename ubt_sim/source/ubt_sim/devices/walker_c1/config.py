@@ -158,16 +158,38 @@ WALKER_C1_HOME_POSE = {
     "R_little_ip_joint": 0.0,
 }
 
-WALKER_C1_ARM_STIFFNESS = {name: 80 for name in WALKER_C1_ARM_JOINTS}
-WALKER_C1_ARM_DAMPING = {name: 20 for name in WALKER_C1_ARM_JOINTS}
+# Actuator gains aligned to the proven Walker S2 reference (same Isaac Lab stack,
+# same fixed-root upper-body setup, gravity enabled). The original C1 values
+# (arm/head 80, waist 120, leg 200) were untuned placeholders too weak to hold
+# HOME_POSE against gravity, which collapsed the legs (pigeon-toed feet) and let
+# the head droop at load. Hand gains are intentionally left as-is (separate work).
+WALKER_C1_ARM_STIFFNESS = {
+    name: (500 if ("shoulder_roll" in name or "elbow_pitch" in name) else 600)
+    for name in WALKER_C1_ARM_JOINTS
+}
+WALKER_C1_ARM_DAMPING = {name: 40 for name in WALKER_C1_ARM_JOINTS}
 WALKER_C1_HAND_STIFFNESS = {name: 200 for name in WALKER_C1_HAND_JOINTS}
 WALKER_C1_HAND_DAMPING = {name: 20 for name in WALKER_C1_HAND_JOINTS}
-WALKER_C1_HEAD_STIFFNESS = {name: 80 for name in WALKER_C1_HEAD_JOINTS}
-WALKER_C1_HEAD_DAMPING = {name: 10 for name in WALKER_C1_HEAD_JOINTS}
-WALKER_C1_WAIST_STIFFNESS = {name: 120 for name in WALKER_C1_WAIST_JOINTS}
-WALKER_C1_WAIST_DAMPING = {name: 20 for name in WALKER_C1_WAIST_JOINTS}
-WALKER_C1_LEG_STIFFNESS = {name: 200 for name in WALKER_C1_LEG_JOINTS}
-WALKER_C1_LEG_DAMPING = {name: 20 for name in WALKER_C1_LEG_JOINTS}
+WALKER_C1_HEAD_STIFFNESS = {name: 600 for name in WALKER_C1_HEAD_JOINTS}
+WALKER_C1_HEAD_DAMPING = {name: 60 for name in WALKER_C1_HEAD_JOINTS}
+WALKER_C1_WAIST_STIFFNESS = {name: 600 for name in WALKER_C1_WAIST_JOINTS}
+WALKER_C1_WAIST_DAMPING = {name: 60 for name in WALKER_C1_WAIST_JOINTS}
+WALKER_C1_LEG_STIFFNESS = {
+    name: (
+        1500 if ("hip_pitch" in name or "knee" in name)
+        else 1600 if "ankle" in name
+        else 1100  # hip_roll, hip_yaw
+    )
+    for name in WALKER_C1_LEG_JOINTS
+}
+WALKER_C1_LEG_DAMPING = {
+    name: (
+        65 if ("hip_pitch" in name or "knee" in name)
+        else 70 if "ankle" in name
+        else 55  # hip_roll, hip_yaw
+    )
+    for name in WALKER_C1_LEG_JOINTS
+}
 
 WALKER_C1_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(

@@ -226,12 +226,17 @@ def to_controller_data(command: dict[str, Any] | list[float] | tuple[float, ...]
         _mapping_logged = True
 
     if _hold_joint_targets is None:
-        current_joint_pos = _current_joint_map(env)
+        # Anchor startup hold targets to HOME_POSE, NOT the current joint positions.
+        # Right after env.reset() the articulation sits in an unsettled scrambled
+        # state (e.g. L_hip_roll ~2.9 rad); capturing that as the hold target made
+        # the actuators drive the legs to those garbage angles (legs flung out) once
+        # the gains were strong enough to reach them. HOME_POSE is the correct
+        # startup posture and the actuators hold it stably.
         _hold_joint_targets = {
-            name: float(current_joint_pos.get(name, WALKER_C1_HOME_POSE.get(name, 0.0)))
+            name: float(WALKER_C1_HOME_POSE.get(name, 0.0))
             for name in action_joint_names
         }
-        print("[INFO] Walker C1 startup hold targets captured from current joint positions.")
+        print("[INFO] Walker C1 startup hold targets set to HOME_POSE.")
 
     targets = {
         name: value
