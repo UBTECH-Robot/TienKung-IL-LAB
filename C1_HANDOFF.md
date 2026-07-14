@@ -1642,3 +1642,125 @@ docker exec -it walker-c1-ubt-sim bash -lc \
 4. 手部 droop 仍是独立未结项（拇指等在重力下 hold 不住，disable_gravity 时正常）。
 ```
 
+## 2026-07-14 Update（下午）：目标转仿真数据采集 + 上肢重力 droop 根因定案
+
+本节是最新、最重要的状态。**注意：上面几节把"手部 droop / 手臂 hold 不住"当独立未结项，这一轮把它们
+一锅端定案了——根因是 USD 关节 drive 是 acceleration 型，不是 force 型。**
+
+### 一句话总览
+
+```
+1. 目标变了：用户明确"暂不做真机，先在仿真里跑通规划数据采集，只需要数据生成 HDF5"。
+   （LeRobot 转换 out of scope；ROS bridge / 真机搁置。）
+2. M1 已完成：脚本化动作 -> 录制 -> HDF5（26 维 obs/action + camera_head），已验证。
+3. M2（真实抓取）挖出并定案了 droop 根因：
+   C1 所有关节 drive 是 type=acceleration -> 等效力矩刚度 = stiffness×inertia ≈ 0
+   -> 上肢重力下没劲、垂下去。改成 force 驱动后彻底 hold 住（已验证）。
+4. 正式修法（烤 force-drive USD）脚本已写好，尚未执行（等用户过一遍再动）。
+```
+
+### 目标转向（重要）
+
+用户新方向：**在仿真里跑通"脚本化运动规划 + 数据采集"，产物就是 HDF5**。
+- 采集链路对标 `ubt_IL/dataset/sim_pick_place`（天工采的：26 维 obs/action + `camera_head`，fps15）。
+- **只要 HDF5**：LeRobot 转换（`convert_to_lerobot.py` + 配置 `Walker_C1_26_1RGB.json`）备着但不跑。
+- 驱动方式用户选定：**脚本化运动规划**（自动抓放、批量录，无人 teleop），后来进一步要求**真实物理抓取**（不接受吸附/关重力）。
+
+### M1 已完成：HDF5 采集链路（in-process，不走 ZMQ/ROS）
+
+新脚本 `ubt_sim/scripts/collect_walker_c1_pick_place.py`：
+- 直接建 `UBTSim-WalkerC1-Parlor-v0` env（非 load-only，物理在跑），脚本化右臂波点 + 逐帧录制。
+- 产出 `ubt_sim/dataset/walker_c1/<ts>/trajectory.hdf5`，schema 与天工一致
+  （`puppet/*` + `action/*` + `camera_observations/color_images/camera_head` JPEG）。
+- 已验证：`observation.state`=26、`action`=26、相机解码 (480,640,3)。复用 `action_process.py`
+  的 `to_controller_data`/`to_ros_data`。
+- 运行：`docker exec walker-c1-ubt-sim /isaac-sim/python.sh -u /ubt_sim/scripts/collect_walker_c1_pick_place.py --headless --device cpu --enable_cameras --episodes 1`
+
+### M2（真实抓取）路上发现的场景问题
+
+- **parlor 场景自带的桌子没有碰撞**（只有外观）——物体会穿过去掉地上。
+- 场景里的 **fruit USD 不是刚体**（没有 RigidBodyAPI），不能直接当 RigidObject spawn。
+- 处理：在 `walker_c1_parlor_env_cfg.py` 里**自己加了一张静态碰撞桌 `GraspTable`（Cuboid）+ 一个球
+  RigidObject**（先用 primitive sphere，保证是正经刚体），放在右手够得到的桌面。
+- 抓取测试 `probe_walker_c1_grasp.py`：inconclusive——**卡在"手臂够不到球"**（手停在桌子近边后
+  15cm，抬手也几乎抬不动），暴露出真正的上游问题是**手臂在重力下 hold 不住**。
+
+### 关键结论：上肢 droop 根因 = 关节 drive 是 acceleration 型（已定案 + 已验证修复）
+
+用隔离探针 `ubt_sim/scripts/probe_walker_c1_arm_tracking.py`（机器人单独 spawn、量 命令vs实际 关节角）
+系统排查，**逐项确认正常并排除**：关节限位、config 刚度/阻尼/effort（runtime 确认生效 500/40/80）、
+连杆质量（臂+手 4.85kg、全身 57kg）、惯量（~0.0015）、质心偏移（几 cm）、USD 单位（1.0/1.0）、
+碰撞/tendon/friction/armature。**effort 从 25 提到 300 都扛不住，且停位与 effort 无关；重力关掉则一切正常。**
+
+根因（读 USD drive type 定案）：
+
+```
+[USD DRIVE] R_elbow_pitch_joint: TYPE=acceleration  maxForce=25  stiffness=625  damping=0
+```
+
+C1 所有关节 drive 是 **`type=acceleration`（加速度驱动）**，不是 `force`。加速度驱动下 PhysX 把驱动按
+关节等效惯量缩放：等效力矩刚度 ≈ stiffness×inertia ≈ 500×0.0015 ≈ 近 0 → 扛不住重力；提 effort 也
+被惯量缩放故无效。之前"重力像放大 40 倍"是假象——是驱动力太弱。S2/天工用 force 驱动所以正常。
+来源：URDF→USD 导入时 drive 默认成 acceleration。
+
+**验证**（`probe_walker_c1_arm_tracking.py --force_drive`，spawn 前把 drive 改 force，重力开 + effort 80）：
+
+```
+             was(accel)   now(force)
+ready  elbow  err 0.68  -> err 0.028   holding torque ~10 N·m
+reach_fwd     err 0.49  -> err 0.026
+lift_up       err 1.02  -> err 0.027
+arm_down      err 0.35  -> err 0.021
+```
+
+**根因确认、修法有效。手指 droop 大概率同源（同一 acceleration 问题），改 force 后需一并复测。**
+
+### 正式修法：烤 force-drive USD（脚本已写，尚未执行）
+
+`ubt_sim/scripts/bake_walker_c1_force_drive_usd.py`：打开 `walker_c1.usd`，把每个关节 DriveAPI 的 type
+从 acceleration 改 force，**另存 `walker_c1_force_drive.usd`（原文件不动）**；只改 type，不碰
+stiffness/maxForce。之后 config 的 `WALKER_C1_USD_PATH` 指向新 USD 即可（回退就指回原文件）。
+
+```bash
+# 先 dry-run 看扫到多少关节（应 ~53 个可动关节）
+docker exec walker-c1-ubt-sim /isaac-sim/python.sh -u /ubt_sim/scripts/bake_walker_c1_force_drive_usd.py --dry_run
+# 真烤
+docker exec walker-c1-ubt-sim /isaac-sim/python.sh -u /ubt_sim/scripts/bake_walker_c1_force_drive_usd.py
+```
+
+⚠️ 改 force 后**腿/腰/头刚度会真正生效**（之前 acceleration 下它们几乎没力、全靠 fix_root_link 挂着）。
+烤完必须**重跑完整任务确认整机站姿/稳定**，再复测手指 droop（可能好了，也可能手部 stiffness 要重调）。
+
+### 本轮提交内容（checkpoint push，force-drive 修复前）
+
+以下改动在本节写入后作为一个 checkpoint 版本提交/推送（**force-drive 修复本身尚未落地**）：
+
+```
+M  config.py                       arm effort 60/25 -> 100/80（S2 对齐；对 acceleration 无用，等 force 后重估）
+M  walker_c1_parlor_env_cfg.py     加 GraspTable 碰撞桌 + 球 RigidObject（M2 用）
+M  C1_HANDOFF.md                   本文档
++  scripts/collect_walker_c1_pick_place.py     M1 采集主脚本
++  scripts/probe_walker_c1_workspace.py        右手工作空间探针
++  scripts/probe_walker_c1_grasp.py            抓取测试
++  scripts/probe_walker_c1_arm_tracking.py     ★手臂跟踪诊断（--no_gravity/--force_drive/读 drive type等）
++  scripts/bake_walker_c1_force_drive_usd.py   force-drive 烤 USD（脚本，未执行）
++  ubt_IL/scripts/convert/configs/Walker_C1_26_1RGB.json   LeRobot 转换配置（暂不用）
+```
+
+不入 git：`【CC-API】...SDK...docx`（对内文档）。更早的死胡同文件（scene_setup.py / inspect_c1_collision_prims.py）
+已在早前清理时删除，不在工作区。`C1_joint_map.md` 已在 commit 3c90d98 提交（含 SDK cross-check）。
+
+诊断脚本 `probe_walker_c1_arm_tracking.py` 是本轮最有用的资产：支持 `--no_gravity`、`--force_drive`，
+并打印 sim 生效的 刚度/阻尼/effort、关节限位、连杆质量/惯量/质心、USD 单位、USD drive type。
+
+### 下一步顺序
+
+```
+1. （等用户点头）跑 bake_walker_c1_force_drive_usd.py 烤 force-drive USD；config 指向它。
+2. 重跑完整任务确认整机站姿/稳定（force 后腿/腰/头刚度真生效）。
+3. 复测手指 droop（同源，大概率好转）。
+4. 回到 M2：手臂能 hold 了，重做抓取（IK 或波点 -> 抓球 -> 移到目标），成功才存 HDF5。
+5. 最后统一整理工作区未提交改动 + 提交。
+```
+
+

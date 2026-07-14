@@ -1,6 +1,6 @@
 import isaaclab.envs.mdp as mdp
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ViewerCfg
 from isaaclab.managers import ObservationGroupCfg, SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
@@ -34,6 +34,21 @@ PARLOR_SCENE_CFG = AssetBaseCfg(
     spawn=sim_utils.UsdFileCfg(usd_path=_SCENE_USD_PATH),
 )
 
+# Graspable object for pick-place data collection (M2). The parlor scene table
+# has NO collision (objects fall through), so we add our own static collision
+# table (_TABLE_*) in front of the robot and rest the object on it, within reach
+# of the right hand (which sits at world ~(8.04, 5.89, 0.83) at the ready pose).
+# A primitive sphere is used for bring-up (guaranteed rigid body, known radius);
+# the parlor fruit USDs are decorative meshes without RigidBodyAPI.
+_TABLE_POS = (8.20, 5.88, 0.39)          # centered in front of the robot
+_TABLE_SIZE = (0.35, 0.50, 0.78)         # top surface at z = 0.39 + 0.78/2 = 0.78
+_TABLE_TOP_Z = _TABLE_POS[2] + _TABLE_SIZE[2] / 2.0
+_GRASP_OBJECT_RADIUS = 0.033
+_GRASP_OBJECT_MASS = 0.05
+# Rest the sphere on the table top, centered in the right-hand grasp zone at the
+# ready pose (palm ~8.08/5.89/0.85, fingers curl to ~8.11/5.90/0.82).
+_GRASP_OBJECT_INIT_POS = (8.11, 5.90, _TABLE_TOP_Z + _GRASP_OBJECT_RADIUS + 0.002)
+
 
 @configclass
 class WalkerC1ParlorSceneCfg(InteractiveSceneCfg):
@@ -51,6 +66,34 @@ class WalkerC1ParlorSceneCfg(InteractiveSceneCfg):
     light = AssetBaseCfg(
         prim_path="{ENV_REGEX_NS}/Light",
         spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=1000.0),
+    )
+
+    table = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/GraspTable",
+        spawn=sim_utils.CuboidCfg(
+            size=_TABLE_SIZE,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.55, 0.4, 0.25)),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.0, dynamic_friction=1.0
+            ),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=_TABLE_POS),
+    )
+
+    object = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Object",
+        spawn=sim_utils.SphereCfg(
+            radius=_GRASP_OBJECT_RADIUS,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(mass=_GRASP_OBJECT_MASS),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.45, 0.1)),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.2, dynamic_friction=1.2
+            ),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=_GRASP_OBJECT_INIT_POS),
     )
 
     camera = TiledCameraCfg(
