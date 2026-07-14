@@ -1411,3 +1411,234 @@ git switch walker_c1
 ```bash
 git switch -c walker_c1_good_baseline 41e260371fe96206903a9805fe2bd5538c26b7a3
 ```
+
+## 2026-07-14 Update: 站姿根因修复 + 左腿碰撞（含一条死胡同）
+
+本节是最新、最重要的状态。上面很多"站姿不对/内八"的猜测在这一轮被**数据推翻并定案**了。
+
+### 一句话总览
+
+```
+站姿核心问题已修好并 push（commit f4a4c2e）：
+  1. C1 actuator 刚度过弱 -> 对齐 S2；
+  2. controller 把 reset 乱帧当保持目标 -> 改为锚定 HOME_POSE。
+剩一个纯视觉小尾巴：左腿在 parlor 里撞家具被拧 ~35°（腿是固定基座、不参与任务）。
+关腿碰撞的"运行时"做法被证明是死胡同（见下），已回退，sim 恢复正常。
+```
+
+### 关键结论 1：站姿"不对"不是代码回归，"脚尖朝前的好版本"= 关了重力
+
+用 `dump_walker_c1_joint_state.py` 在 `41e2603`（用户记忆里"好"的 baseline）和 `dc2fc83`（当时 HEAD）各跑一次 load-only：
+
+```
+两次 env.reset() 后的 53 个关节值逐字节完全相同。
+```
+
+含义：
+
+```
+- load-only 下这两个 commit 在所有影响姿态的输入上等价，必然渲染成同一姿态。
+- 用户记忆里"41e2603 脚尖朝前"其实是 41e2603 + 未提交的 disable_gravity=True
+  （那次实验后来 revert 了）。commit 哈希是障眼法，真正区别是"重力关 vs 开"。
+```
+
+### 关键结论 2：load-only 不能用来判断站姿（physics 没跑）
+
+```
+sim_runner.py 的 load-only 分支只调 simulation_app.update()（纯渲染），
+从不调 env.step()，所以 physics 不推进，机器人冻结在 reset 后那一帧。
+改 actuator 刚度对 load-only 姿态零影响（实测 0 步 dump 改刚度前后逐字节相同）。
+=> 判断站姿必须用 controller 模式（env.step 在跑），或用 dump 脚本 --steps 让物理 settle。
+```
+
+### 关键结论 3：站姿根因 = C1 刚度是没调过的占位弱值
+
+对照 `walker_s2/config.py`（重力下能站住的成熟参考）：
+
+```
+部位   S2 stiffness        C1 修复前   C1 修复后(=对齐S2)
+腿 hip_roll/yaw   1100     200        1100
+腿 hip_pitch/knee 1500     200        1500
+腿 ankle          1600     200        1600
+头 head            600      80         600
+腰 waist           600     120         600
+臂 arm         500~600      80      500~600
+手 hand      (夹爪1200)    200       200(未动，另一条线)
+```
+
+修复（`config.py`，已提交 f4a4c2e）：把臂/腰/腿/头刚度阻尼对齐 S2 量级，阻尼腿 55/65/70、头腰 60、臂 40。**手部刚度未动。**
+
+### 关键结论 4：controller "拿 reset 乱帧当目标"是第二个 bug（已修）
+
+现象：刚度提上去后，controller 模式启动时**左腿平飞到侧面、右腿甩到头顶**。
+
+根因（`action_process.py` 的 `to_controller_data`）：
+
+```
+原逻辑：_hold_joint_targets 首次从"当前关节位置"捕获（好意：启动先 hold 当前位，别猛跳）。
+但 env.reset() 后"当前位置"正是那一帧乱姿态（L_hip_roll≈2.94、R_hip_pitch≈2.5）。
+弱刚度时电机够不到乱目标，只是软塌（看不出）；强刚度时电机有劲，
+就把腿死命甩到乱目标：L_hip_roll 2.94->左腿平展、R_hip_pitch 2.5->右腿到头。
+```
+
+修复（`action_process.py`，已提交 f4a4c2e）：
+
+```python
+# 启动保持目标锚定 HOME_POSE，而不是读乱掉的当前位置
+_hold_joint_targets = {name: WALKER_C1_HOME_POSE.get(name, 0.0) for name in action_joint_names}
+```
+
+验证（走**真实 controller 动作路径** `to_controller_data + env.step` 300 步）：
+
+```
+头 head_pitch 0.065、腰≈0、双臂<0.05、右腿全部≈0。
+max|diff|=0.81 落在 L_thumb_mpp（手，未动）。
+=> 头/躯干/臂/右腿全部 hold 住 HOME_POSE。
+```
+
+### 关键结论 5：reset 会甩腿的机制（为什么左右腿路径不同）
+
+```
+机器人固定在桌边(root z=0.9, fix_root_link=True)，腿垂下来时和 parlor 家具几何重叠；
+PhysX 初始化时猛推消穿模 -> reset 出不对称乱帧（左腿甩得比右腿远）；
+电机往 HOME 拉时，两腿从不同乱起点绕回：左腿"往前绕"路径扫过桌子、被别住；
+右腿"往后绕"路径是空的、干净归位。
+```
+
+### 关键结论 6：左腿残留 = parlor 场景碰撞（已坐实，非机器人问题）
+
+剩余现象：修好后左腿仍拧 `L_hip_yaw≈0.6`（~35°），右腿完美(<0.13)。诊断：
+
+```
+- 隔离测试 probe_walker_c1_leg_isolation.py（机器人单独 spawn、无场景）：
+    两腿完美对称，max|L|-|R|=0.0000  => 排除机器人/刚度/控制，锁定"场景碰撞"。
+- 定位 probe_walker_c1_leg_collision.py（parlor 内，dump 左右腿连杆世界坐标）：
+    两脚同高 Z≈0.05（左脚没踩在桌面上），但左脚在 +Y 被撇出去(左+0.16 vs 右-0.10)
+    => 左脚/左小腿在脚踝高度被侧向顶（大概率桌腿），右腿路径干净。
+- 脚是悬空的（fix_root_link=True，上半身操作标准做法），所以不是穿地。
+- URDF 里左右 hip_yaw 限位是正常镜像对，0 在合法范围内 => 不是关节限位。
+```
+
+### 死胡同（重要，别再走）：运行时关腿碰撞
+
+目标：腿是固定不用的，关掉腿↔场景碰撞即可根治左腿被别。做了开关设计（默认关）：
+
+```
+config.py:   WALKER_C1_DISABLE_LEG_COLLISION = True
+env 覆盖:     UBT_SIM_C1_DISABLE_LEG_COLLISION=0  (打开腿碰撞)
+helper:      scene_setup.py  apply_leg_collision_setting(env) / disable_leg_collision(env)
+```
+
+尝试与失败链：
+
+```
+1. env.sim.stage 遍历 -> 找到 0 个碰撞 prim（错的 stage 句柄）。
+   正解：omni.usd.get_context().get_stage()。碰撞 prim 在
+   /World/envs/env_0/Robot/<link>/collisions/<link>/mesh（12 个腿部）。
+2. 直接改碰撞属性 -> 报错 "authoring to an instance proxy is not allowed"
+   （腿连杆子树是 USD 实例代理，不能直接改）-> 崩、机器人卡死。
+3. 先 SetInstanceable(False) 去实例化再改 -> 能关掉 12 个、不报那个错，
+   但 (a) 仿真变得极慢（120 步 9 分钟都跑不完，正常 300 步 5 分钟），
+   (b) env.reset() 崩："Simulation view object is invalidated ...
+       Failed to set DOF actuation forces"。
+   => 结论：sim play 之后再改 USD（去实例化/碰撞）会让 PhysX 视图失效。
+      运行时关碰撞在原理上走不通，不是调参能救的。
+```
+
+处置：
+
+```
+- 已从 sim_runner.py 撤回 apply_leg_collision_setting 调用，sim 恢复正常（能启动、不崩）。
+- scene_setup.py / config.py 的 WALKER_C1_DISABLE_LEG_COLLISION flag / inspect 脚本
+  仍留在工作区但【未提交】，标记为死胡同实验，勿再用运行时路径。
+```
+
+### 左腿的正确修法（尚未做）
+
+```
+在 sim 加载之前把腿碰撞关掉，而不是运行时改。方案：离线烤一个
+walker_c1_no_leg_collision.usd（打开 walker_c1.usd，把 12 个腿部
+collision mesh 的 collisionEnabled 设 False，另存），config 按
+WALKER_C1_DISABLE_LEG_COLLISION 选择加载哪个 USD。
+优点：解析时碰撞就是关的，PhysX 从头认，不崩、不慢，仍可切回原 USD 打开腿碰撞。
+（编辑源 USD 时 prim 不是实例代理，可直接改，无 instance proxy 问题。）
+```
+
+或者：左腿纯视觉、腿不干活，**先搁置**当已知小尾巴也完全可以。
+
+### 本轮 commit / 文件状态
+
+已提交并 push（remote 已是 SSH `git@github.com:UBTECH-Robot/TienKung-IL-LAB.git`，push 通）：
+
+```
+f4a4c2e Fix Walker C1 standing pose: S2-aligned gains + HOME_POSE hold targets
+  - config.py（刚度对齐 S2）
+  - action_process.py（锚定 HOME_POSE）
+  - scripts/dump_walker_c1_joint_state.py（新，只读诊断）
+  - scripts/probe_walker_c1_leg_isolation.py（新）
+  - scripts/probe_walker_c1_leg_collision.py（新）
+1db36ba Add Walker C1 teleoperation reset scaffolding and handoff notes
+  - teleoperation/control/walker_c1/{__init__,constants,reset}.py
+  - C1_HANDOFF.md
+```
+
+工作区【未提交】（多为死胡同实验，谨慎处理）：
+
+```
+M dump_walker_c1_joint_state.py         (加了 --use-controller / --disable-leg-collision 开关)
+M config.py                             (加了 WALKER_C1_DISABLE_LEG_COLLISION flag)
+?? scene_setup.py                       (运行时关碰撞 helper —— 死胡同)
+?? scripts/inspect_c1_collision_prims.py(找碰撞 prim 的探针)
+?? 【CC-API】...SDK...【对内】.docx      (对内文档，勿入 git)
+```
+
+### 诊断脚本速查（都是只读/探针）
+
+```
+dump_walker_c1_joint_state.py
+  建 parlor env、reset 后 dump 53 关节 vs HOME_POSE。
+  --steps N            reset 后驱动 HOME_POSE 目标 step N 步再 dump（=物理 settle）
+  --use-controller     走真实 controller 动作路径(to_controller_data+env.step) 而非手喂
+  --disable-leg-collision  调用 scene_setup 关腿碰撞（死胡同，会崩，勿用于正式）
+probe_walker_c1_leg_isolation.py  机器人单独 spawn（无场景），验左右腿对称
+probe_walker_c1_leg_collision.py  parlor 内 dump 左右腿连杆世界坐标，定位撞点
+inspect_c1_collision_prims.py     打印 body 名 + 碰撞 prim 路径（用 omni.usd stage + 实例代理遍历）
+```
+
+运行例（headless，注意这台机器 Isaac 启动+300步约 5 分钟）：
+
+```bash
+docker exec walker-c1-ubt-sim /isaac-sim/python.sh -u \
+  /ubt_sim/scripts/dump_walker_c1_joint_state.py \
+  --headless --device cpu --enable_cameras --steps 300 --use-controller
+```
+
+GUI 看站姿（controller 模式，物理在跑）：
+
+```bash
+docker exec -it walker-c1-ubt-sim bash -lc \
+  "cd /ubt_sim && UBT_SIM_TASK=UBTSim-WalkerC1-Parlor-v0 UBT_SIM_NO_BRIDGE=1 \
+   bash scripts/start_sim.sh --device cpu --step_hz 30"
+```
+
+### 运行时踩坑备忘
+
+```
+- 判断站姿别用 load-only（physics 不跑，冻在 reset 乱帧）；用 controller 模式。
+- env.sim.stage 看不到 spawn 出来的碰撞 prim；要用 omni.usd.get_context().get_stage()。
+- 机器人腿连杆是 USD 实例代理，不能直接改属性。
+- sim play 之后改 USD（碰撞/实例化）会让 PhysX tensor view 失效 -> env.reset() 崩。
+- 这台机器 Isaac 单次 headless（启动+300 步+相机）约 5 分钟，多实例会更慢/抢显存；
+  timeout/残留进程用 pgrep -af 精确杀 PID，别宽泛 pkill。
+```
+
+### 下一步建议
+
+```
+1.（可选）左腿：走"烤 USD"正解，或先搁置（纯视觉、腿不用）。
+2. 把未提交的死胡同实验清理或明确标注后再决定去留。
+3. 回主线：确认 C1/Astron 真实 SDK joint order（身体 RobotCommand 顺序、
+   左右手 JointCommand 顺序），这才是影响真机的关键；仿真物理调参不影响真机。
+4. 手部 droop 仍是独立未结项（拇指等在重力下 hold 不住，disable_gravity 时正常）。
+```
+
