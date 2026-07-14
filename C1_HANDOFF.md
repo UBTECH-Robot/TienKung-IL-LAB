@@ -1763,4 +1763,53 @@ M  C1_HANDOFF.md                   本文档
 5. 最后统一整理工作区未提交改动 + 提交。
 ```
 
+## 2026-07-14 Update（傍晚）：force-drive 修复已落地 + 验证 + 准备姿势已调
+
+### force-drive 修复已烤 USD 并落地（步骤 1、2 完成）
+
+- dry-run 确认：`walker_c1.usd` 里 **全部 53 个可动关节** drive 都是 `acceleration`。
+- 已烤 **`ubt_sim/assets/robots/walker_c1/walker_c1_force_drive.usd`**（15.8MB，53/53 acceleration→force，
+  只改 type，不动 stiffness/damping/maxForce；**原 walker_c1.usd 不动**，回退就把 config 指回去）。
+- `config.py` 的 `WALKER_C1_USD_PATH` 已指向 `walker_c1_force_drive.usd`。
+- **完整 parlor 任务复测通过**（`probe_walker_c1_workspace.py`，force USD + 重力开）：
+  root 稳在 [7.80, 6.08, 0.90]、不炸；R_palm 抬到 z=0.905（修复前垂在 ~0.80）；腿/腰因刚度真生效没抖没崩。
+  **手臂在重力下能 hold 住准备姿势了。** 用户 GUI 目视确认满意。
+
+### 准备姿势已"略微张开"（用户要求，已满意）
+
+`constants.py::TASK_RESET_BODY_POSE` 的肩外展从近 0 调到 ±0.30 rad（约 17°）让双臂外张：
+`L_shoulder_roll 0.068→0.30`、`R_shoulder_roll -0.003→-0.30`（方向：L 正/R 负 = 外展；range L[-0.139,1.884]/R[-1.884,0.139]）。
+`collect_walker_c1_pick_place.py` 的 READY_*ARM 已同步同值，两边一致。
+
+### 手部 droop：根因同源，已被同一修复覆盖，但【尚未复测】——下次做
+
+- **手指 droop 和手臂 droop 是同一个 bug**：手指关节 drive 也是 acceleration。手指链惯量极小（~0.00002，
+  手指 13g），acceleration 缩放后等效刚度 ≈ 200×0.00002 ≈ 0.004 N·m/rad ≈ 0 → 比手臂更彻底没劲。
+  这解释了 handoff 早前"target 对但手指不跟、提 stiffness/effort 没用、关重力就正常"的全部现象。
+- force-drive bake 已把 22 个手指关节一并改成 force，机制上应一并解决。
+- **但两点未结（下次会话优先做）**：
+  1. **手指闭合还没专门复测**（force USD 下发 `right_hand=[0.8]×6` 看手指跟不跟、稳不稳）。
+  2. **手部 stiffness=200 / effort=50 是 acceleration 坏掉时代为硬凑调的强参数**，force 语义下对 13g 手指
+     严重过强（200 N·m/rad），很可能手指会猛闭合/抖，**需要往回调到 force 下合理的一组**，再复测。
+
+### 本轮新增/改动（本次提交）
+
+```
++  ubt_sim/assets/robots/walker_c1/walker_c1_force_drive.usd   force-drive USD（15.8MB，修复核心）
+M  ubt_sim/source/ubt_sim/devices/walker_c1/config.py          USD_PATH 指向 force USD
+M  ubt_sim/teleoperation/control/walker_c1/constants.py        准备姿势肩外展 ±0.30
+M  ubt_sim/scripts/collect_walker_c1_pick_place.py             READY_*ARM 同步
+M  C1_HANDOFF.md                                               本节
+```
+
+### 更新后的下一步顺序
+
+```
+1.【下次先做】复测手指闭合（force USD）；若过猛/抖，把手部 stiffness/effort 从 200/50 回调到 force 合理值。
+2. 回 M2：手臂能 hold 了，做"够到球"的 IK/波点，抓球→移到目标→成功才存 HDF5。
+   （注意：目视 R_palm 离球还有 ~14cm，主要 Y 向 10cm，需要 reach 逻辑把手对准球。）
+3. M3：批量随机化刷数据。
+4. 收尾整理工作区。
+```
+
 

@@ -7,7 +7,12 @@ from ubt_sim.utils.constant import ASSETS_ROOT
 
 """Configuration for the Walker C1 / Astron robot asset."""
 ROBOTS_ROOT = Path(ASSETS_ROOT) / "robots"
-WALKER_C1_USD_PATH = ROBOTS_ROOT / "walker_c1" / "walker_c1.usd"
+# Use the force-drive USD: the original walker_c1.usd has all 53 joint drives as
+# type=acceleration, which makes effective torque stiffness = stiffness*inertia
+# ~= 0 (upper body droops under gravity). walker_c1_force_drive.usd is the same
+# asset with every drive converted to force (see scripts/bake_walker_c1_force_drive_usd.py).
+# Point back to "walker_c1.usd" to A/B or revert.
+WALKER_C1_USD_PATH = ROBOTS_ROOT / "walker_c1" / "walker_c1_force_drive.usd"
 WALKER_C1_URDF_PATH = ROBOTS_ROOT / "walker_c1" / "walker_astron_v2_hand_v3_no_sixforce_mesh.urdf"
 
 WALKER_C1_LEFT_ARM_JOINTS = [

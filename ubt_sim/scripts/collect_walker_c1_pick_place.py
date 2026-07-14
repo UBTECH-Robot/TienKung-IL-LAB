@@ -92,8 +92,8 @@ from ubt_sim.devices.walker_c1.config import (
 # must not cross-import (see ubt_sim/CLAUDE.md). Tune here and in that file together.
 READY_WAIST = [0.0, 0.0, 0.0]
 READY_HEAD = [0.0, 0.35]
-READY_LEFT_ARM = [-0.152, 0.068, 0.135, -1.155, 0.124, -0.361, -0.006]
-READY_RIGHT_ARM = [-0.291, -0.003, -0.136, -1.155, -0.124, -0.361, 0.194]
+READY_LEFT_ARM = [-0.152, 0.30, 0.135, -1.155, 0.124, -0.361, -0.006]
+READY_RIGHT_ARM = [-0.291, -0.30, -0.136, -1.155, -0.124, -0.361, 0.194]
 READY_LEFT_HAND = [0.0] * 6
 READY_RIGHT_HAND = [0.0] * 6
 
