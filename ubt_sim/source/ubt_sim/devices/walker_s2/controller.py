@@ -32,6 +32,8 @@ class WalkerS2Controller(DeviceBase):
         self._jpeg_frame_count = 0
         self.jpeg_unit_test = kwargs.get("jpeg_unit_test", True)
 
+        self._camera_names: list[str] = kwargs.get("camera_names", [])
+
         self.cmd_port = int(kwargs.get("cmd_port", 5655))
         self.status_port = int(kwargs.get("status_port", 5656))
         self.image_port = int(kwargs.get("image_port", 5657))
@@ -50,7 +52,7 @@ class WalkerS2Controller(DeviceBase):
             self.pub_socket.bind(f"tcp://*:{self.status_port}")
 
             self.img_socket = self.context.socket(zmq.PUB)
-            self.img_socket.setsockopt(zmq.SNDHWM, 1)
+            self.img_socket.setsockopt(zmq.SNDHWM, 4)
             self.img_socket.bind(f"tcp://*:{self.image_port}")
 
             self.jpeg_socket = self.context.socket(zmq.PUB)
@@ -112,50 +114,50 @@ class WalkerS2Controller(DeviceBase):
         self.pub_socket.send_json(status, flags=zmq.NOBLOCK)
 
     def _send_camera_data(self) -> None:
-        if "camera" not in self.env.scene.keys():
-            return
-
-        camera = self.env.scene["camera"]
-        try:
-            rgb_tensor = camera.data.output.get("rgb") if camera.data.output is not None else None
-            if rgb_tensor is None or rgb_tensor.shape[0] == 0:
-                return
-
-            rgb = rgb_tensor[0].cpu().numpy()
-            metadata = {
-                "width": int(rgb.shape[1]),
-                "height": int(rgb.shape[0]),
-                "format": "raw",
-            }
-            self.img_socket.send_json(metadata, flags=zmq.SNDMORE | zmq.NOBLOCK)
-            self.img_socket.send(rgb.tobytes(), flags=zmq.SNDMORE | zmq.NOBLOCK)
-            self.img_socket.send(b"", flags=zmq.NOBLOCK)
-        except Exception:
-            return
+        """Send raw RGB frames for all configured cameras via ZMQ multipart."""
+        for cam_name in self._camera_names:
+            if cam_name not in self.env.scene.keys():
+                continue
+            camera = self.env.scene[cam_name]
+            try:
+                rgb_tensor = camera.data.output.get("rgb") if camera.data.output is not None else None
+                if rgb_tensor is None or rgb_tensor.shape[0] == 0:
+                    continue
+                rgb = rgb_tensor[0].cpu().numpy()
+                metadata = {
+                    "width": int(rgb.shape[1]),
+                    "height": int(rgb.shape[0]),
+                    "format": "raw",
+                    "camera": cam_name,
+                }
+                self.img_socket.send_json(metadata, flags=zmq.SNDMORE | zmq.NOBLOCK)
+                self.img_socket.send(rgb.tobytes(), flags=zmq.SNDMORE | zmq.NOBLOCK)
+                self.img_socket.send(b"", flags=zmq.NOBLOCK)
+            except Exception:
+                continue
 
     def _send_jpeg_camera_data(self) -> None:
-        if "camera" not in self.env.scene.keys():
-            return
-
-        camera = self.env.scene["camera"]
-        try:
-            rgb_tensor = camera.data.output.get("rgb") if camera.data.output is not None else None
-            if rgb_tensor is None or rgb_tensor.shape[0] == 0:
-                return
-
-            rgb = rgb_tensor[0].cpu().numpy()
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            ret, buf = cv2.imencode(".jpg", bgr)
-            if not ret:
-                return
-
-            msg = buf.tobytes()
-            if self.jpeg_unit_test:
-                msg = struct.pack("dI", time.time(), self._jpeg_frame_count) + msg
-                self._jpeg_frame_count += 1
-            self.jpeg_socket.send(msg, flags=zmq.NOBLOCK)
-        except Exception:
-            return
+        """Send JPEG-encoded frames for all configured cameras via ZMQ."""
+        for cam_name in self._camera_names:
+            if cam_name not in self.env.scene.keys():
+                continue
+            camera = self.env.scene[cam_name]
+            try:
+                rgb_tensor = camera.data.output.get("rgb") if camera.data.output is not None else None
+                if rgb_tensor is None or rgb_tensor.shape[0] == 0:
+                    continue
+                rgb = rgb_tensor[0].cpu().numpy()
+                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                ret, buf = cv2.imencode(".jpg", bgr)
+                if not ret:
+                    continue
+                msg = buf.tobytes()
+                if self.jpeg_unit_test:
+                    msg = struct.pack("dI", time.time(), self._jpeg_frame_count) + msg
+                    self._jpeg_frame_count += 1
+                self.jpeg_socket.send(msg, flags=zmq.NOBLOCK)
+            except Exception:
+                continue
 
     def advance(self) -> dict[str, Any]:
         if HAS_ZMQ:

@@ -26,12 +26,32 @@ from ubt_sim.utils.config_loader import load_config, resolve_asset_path
 _TASK_CFG = load_config("walker_s2/parlor.yaml")
 _SCENE_USD_PATH = resolve_asset_path(_TASK_CFG["scene"]["usd_path"])
 _ROBOT_INIT_STATE = _TASK_CFG["robot"]["init_state"]
-_HEAD_RGB_CAMERA_CFG = _TASK_CFG["cameras"]["head_rgb"]
-_HEAD_RGB_RESOLUTION = _HEAD_RGB_CAMERA_CFG.get("resolution", [640, 480])
+_CAMERAS_CFG = _TASK_CFG["cameras"]  # dict[str, dict]
+# 依赖 Python 3.7+ dict 保序特性，camera_names 顺序 = YAML 中定义顺序
+_CAMERA_NAMES = list(_CAMERAS_CFG.keys())
 
 PARLOR_SCENE_CFG = AssetBaseCfg(
     spawn=sim_utils.UsdFileCfg(usd_path=_SCENE_USD_PATH),
 )
+
+
+def _make_tiled_camera(name: str) -> TiledCameraCfg:
+    """Construct a TiledCameraCfg from the YAML cameras.<name> entry."""
+    cfg = _CAMERAS_CFG[name]
+    res = cfg.get("resolution", [640, 480])
+    return TiledCameraCfg(
+        prim_path=cfg["prim_path"],
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.0, 0.0, 0.0),
+            rot=(1.0, 0.0, 0.0, 0.0),
+            convention="ros",
+        ),
+        update_period=0.0333,
+        height=int(res[1]),
+        width=int(res[0]),
+        data_types=cfg.get("data_types", ["rgb"]),
+        spawn=None,
+    )
 
 
 @configclass
@@ -52,19 +72,11 @@ class WalkerS2ParlorSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=1000.0),
     )
 
-    camera = TiledCameraCfg(
-        prim_path=_HEAD_RGB_CAMERA_CFG["prim_path"],
-        offset=TiledCameraCfg.OffsetCfg(
-            pos=(0.0, 0.0, 0.0),
-            rot=(1.0, 0.0, 0.0, 0.0),
-            convention="ros",
-        ),
-        update_period=0.0333,
-        height=int(_HEAD_RGB_RESOLUTION[1]),
-        width=int(_HEAD_RGB_RESOLUTION[0]),
-        data_types=["rgb"],
-        spawn=None,
-    )
+    # Multi-camera setup: 4 individual camera views
+    head_stereo_left = _make_tiled_camera("head_stereo_left")
+    head_stereo_right = _make_tiled_camera("head_stereo_right")
+    wrist_left = _make_tiled_camera("wrist_left")
+    wrist_right = _make_tiled_camera("wrist_right")
 
 
 
@@ -169,6 +181,11 @@ class WalkerS2ParlorEnvCfg(ManagerBasedRLDigitalTwinEnvCfg):
 
     def use_teleop_device(self, teleop_device: str) -> None:
         self.task_type = teleop_device
+
+    @property
+    def camera_names(self) -> list[str]:
+        """Return ordered camera names from the YAML config."""
+        return list(_CAMERA_NAMES)
 
     def preprocess_device_action(self, action, teleop_device):
         if isinstance(action, dict) and "walker_s2" in action:

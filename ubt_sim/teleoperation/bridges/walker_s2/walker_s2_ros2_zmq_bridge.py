@@ -199,6 +199,10 @@ class WalkerS2RosBridge(Node):
             "--msg-type",
             image_msg_type,
         ]
+        camera_topics = self.cfg.get("camera_topics", {})
+        if camera_topics:
+            camera_topics_json = json.dumps(camera_topics, separators=(',', ':'))
+            args.extend(["--camera-topics", camera_topics_json])
         self.get_logger().info(f"Starting C++ Bridge: {' '.join(args)}")
         try:
             self.cpp_bridge_process = subprocess.Popen(args, cwd=cpp_dir)

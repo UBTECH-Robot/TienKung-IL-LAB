@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <string>
 #include <thread>
 
@@ -31,7 +32,41 @@ inline int get_int(const std::string& json, const std::string& key) {
     }
     return found ? val * sign : -1;
 }
+inline std::string get_string(const std::string& json, const std::string& key) {
+    auto pos = json.find("\"" + key + "\"");
+    if (pos == std::string::npos) return "";
+    auto colon = json.find(':', pos + key.size() + 2);
+    if (colon == std::string::npos) return "";
+    auto val_start = json.find('"', colon + 1);
+    if (val_start == std::string::npos) return "";
+    auto val_end = json.find('"', val_start + 1);
+    if (val_end == std::string::npos) return "";
+    return json.substr(val_start + 1, val_end - val_start - 1);
+}
 } // namespace tinyjson
+
+// Parse {"k1":"v1","k2":"v2"} → map<string,string>
+static std::map<std::string, std::string> parse_camera_topics(const std::string& json) {
+    std::map<std::string, std::string> map;
+    if (json.empty()) return map;
+    size_t pos = 0;
+    while ((pos = json.find('"', pos)) != std::string::npos) {
+        size_t key_start = pos + 1;
+        size_t key_end = json.find('"', key_start);
+        if (key_end == std::string::npos) break;
+        std::string key = json.substr(key_start, key_end - key_start);
+        size_t val_start = json.find('"', key_end + 1);
+        if (val_start == std::string::npos) break;
+        size_t val_end = json.find('"', val_start + 1);
+        if (val_end == std::string::npos) break;
+        std::string val = json.substr(val_start + 1, val_end - val_start - 1);
+        if (!key.empty() && !val.empty()) {
+            map[key] = val;
+        }
+        pos = val_end + 1;
+    }
+    return map;
+}
 
 struct BridgeConfig {
     int zmq_port = 5557;
@@ -39,6 +74,8 @@ struct BridgeConfig {
     std::string depth_topic = "/ob_camera_head/depth/image_raw";
     // "Image2m" (shm_msgs/Image2m, default — walker S2) or "Image" (sensor_msgs/Image — 天工)
     std::string msg_type = "Image2m";
+    // camera_name → ros2_topic (multi-camera routing, Walker S2)
+    std::map<std::string, std::string> camera_topics;
 };
 
 static BridgeConfig parse_args(int argc, char* argv[]) {
@@ -53,6 +90,8 @@ static BridgeConfig parse_args(int argc, char* argv[]) {
             cfg.depth_topic = argv[++i];
         } else if ((arg == "--msg-type") && i + 1 < argc) {
             cfg.msg_type = argv[++i];
+        } else if ((arg == "--camera-topics") && i + 1 < argc) {
+            cfg.camera_topics = parse_camera_topics(argv[++i]);
         } else if (arg == "--help") {
             std::cout << "Usage: zmq_image_bridge [OPTIONS]\n"
                       << "Options:\n"
@@ -149,6 +188,13 @@ public:
             pub_depth_2m_ = this->create_publisher<shm_msgs::msg::Image2m>(cfg.depth_topic, qos);
         }
 
+        // Per-camera publishers (multi-camera routing)
+        for (const auto& [cam_name, topic] : cfg.camera_topics) {
+            auto pub = this->create_publisher<shm_msgs::msg::Image2m>(topic, qos);
+            publishers_[cam_name] = pub;
+            RCLCPP_INFO(this->get_logger(), "  Camera '%s' → %s", cam_name.c_str(), topic.c_str());
+        }
+
         context_ = zmq::context_t(1);
         subscriber_ = zmq::socket_t(context_, ZMQ_SUB);
 
@@ -156,11 +202,12 @@ public:
         RCLCPP_INFO(this->get_logger(), "Connecting to ZMQ Image Server at %s", zmq_addr.c_str());
         subscriber_.connect(zmq_addr);
         subscriber_.set(zmq::sockopt::subscribe, "");
-        subscriber_.set(zmq::sockopt::rcvhwm, 2);
+        subscriber_.set(zmq::sockopt::rcvhwm, 8);
 
         RCLCPP_INFO(this->get_logger(),
-                    "C++ ZMQ Image Bridge Started (msg_type=%s, rgb: %s, depth: %s)",
-                    msg_type_.c_str(), cfg.rgb_topic.c_str(), cfg.depth_topic.c_str());
+                    "C++ ZMQ Image Bridge Started (msg_type=%s, rgb: %s, depth: %s, cameras: %zu)",
+                    msg_type_.c_str(), cfg.rgb_topic.c_str(), cfg.depth_topic.c_str(),
+                    cfg.camera_topics.size());
 
         receive_thread_ = std::thread(&ZmqImageBridge::receive_loop, this);
     }
@@ -201,7 +248,8 @@ private:
         }
     }
 
-    void publish_images(zmq::message_t& meta_msg, zmq::message_t& rgb_msg, zmq::message_t& depth_msg, bool has_depth)
+    void publish_images(zmq::message_t& meta_msg, zmq::message_t& rgb_msg,
+                        zmq::message_t& depth_msg, bool has_depth)
     {
         std::string meta_str(static_cast<char*>(meta_msg.data()), meta_msg.size());
         int w = tinyjson::get_int(meta_str, "width");
@@ -211,47 +259,60 @@ private:
             return;
         }
 
+        std::string cam_name = tinyjson::get_string(meta_str, "camera");
         auto current_time = this->now();
 
-        if (msg_type_ == "Image") {
-            sensor_msgs::msg::Image img_msg;
-            if (!fill_image(img_msg, current_time, "ob_camera_head_color_optical_frame",
-                            w, h, "rgb8", static_cast<uint32_t>(w * 3),
-                            rgb_msg.data(), rgb_msg.size())) {
-                RCLCPP_WARN(this->get_logger(), "RGB frame invalid, skipping");
-                return;
-            }
-            pub_rgb_img_->publish(img_msg);
-
-            if (has_depth && depth_msg.size() > 0) {
-                sensor_msgs::msg::Image depth_ros_msg;
-                if (!fill_image(depth_ros_msg, current_time, "ob_camera_head_depth_optical_frame",
-                                w, h, "16UC1", static_cast<uint32_t>(w * 2),
-                                depth_msg.data(), depth_msg.size())) {
-                    RCLCPP_WARN(this->get_logger(), "Depth frame invalid, skipping");
-                    return;
+        // --- Path A: no "camera" field → fallback to default rgb_topic (old controller / 天工 Pro) ---
+        if (cam_name.empty()) {
+            if (msg_type_ == "Image" && pub_rgb_img_) {
+                sensor_msgs::msg::Image img_msg;
+                if (fill_image(img_msg, current_time, "camera", w, h, "rgb8",
+                               static_cast<uint32_t>(w * 3), rgb_msg.data(), rgb_msg.size())) {
+                    pub_rgb_img_->publish(img_msg);
                 }
-                pub_depth_img_->publish(depth_ros_msg);
+                if (has_depth && depth_msg.size() > 0 && pub_depth_img_) {
+                    sensor_msgs::msg::Image d_msg;
+                    if (fill_image(d_msg, current_time, "camera_depth", w, h, "16UC1",
+                                   static_cast<uint32_t>(w * 2), depth_msg.data(), depth_msg.size())) {
+                        pub_depth_img_->publish(d_msg);
+                    }
+                }
+            } else if (pub_rgb_2m_) {
+                shm_msgs::msg::Image2m img_msg;
+                if (fill_image2m(img_msg, current_time, "camera", w, h, "rgb8",
+                                 static_cast<uint32_t>(w * 3), rgb_msg.data(), rgb_msg.size())) {
+                    pub_rgb_2m_->publish(img_msg);
+                }
+                if (has_depth && depth_msg.size() > 0 && pub_depth_2m_) {
+                    shm_msgs::msg::Image2m d_msg;
+                    if (fill_image2m(d_msg, current_time, "camera_depth", w, h, "16UC1",
+                                     static_cast<uint32_t>(w * 2), depth_msg.data(), depth_msg.size())) {
+                        pub_depth_2m_->publish(d_msg);
+                    }
+                }
+            }
+            return;
+        }
+
+        // --- Path B: "camera" field present → route to per-camera publisher ---
+        auto it = publishers_.find(cam_name);
+        if (it != publishers_.end()) {
+            shm_msgs::msg::Image2m img_msg;
+            if (fill_image2m(img_msg, current_time, cam_name, w, h, "rgb8",
+                             static_cast<uint32_t>(w * 3), rgb_msg.data(), rgb_msg.size())) {
+                it->second->publish(img_msg);
             }
         } else {
-            shm_msgs::msg::Image2m img_msg;
-            if (!fill_image2m(img_msg, current_time, "ob_camera_head_color_optical_frame",
-                              w, h, "rgb8", static_cast<uint32_t>(w * 3),
-                              rgb_msg.data(), rgb_msg.size())) {
-                RCLCPP_WARN(this->get_logger(), "RGB frame does not fit Image2m buffer, skipping");
-                return;
-            }
-            pub_rgb_2m_->publish(img_msg);
+            RCLCPP_WARN(this->get_logger(), "Unknown camera '%s', dropping frame",
+                        cam_name.c_str());
+        }
 
-            if (has_depth && depth_msg.size() > 0) {
-                shm_msgs::msg::Image2m depth_ros_msg;
-                if (!fill_image2m(depth_ros_msg, current_time, "ob_camera_head_depth_optical_frame",
-                                  w, h, "16UC1", static_cast<uint32_t>(w * 2),
-                                  depth_msg.data(), depth_msg.size())) {
-                    RCLCPP_WARN(this->get_logger(), "Depth frame does not fit Image2m buffer, skipping");
-                    return;
-                }
-                pub_depth_2m_->publish(depth_ros_msg);
+        // head_stereo_left also publishes to legacy stereo rgb_topic for backward compat
+        if (cam_name == "head_stereo_left" && pub_rgb_2m_) {
+            shm_msgs::msg::Image2m stereo_msg;
+            if (fill_image2m(stereo_msg, current_time, cam_name, w, h, "rgb8",
+                             static_cast<uint32_t>(w * 3), rgb_msg.data(), rgb_msg.size())) {
+                pub_rgb_2m_->publish(stereo_msg);
             }
         }
     }
@@ -261,6 +322,8 @@ private:
     rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr pub_depth_2m_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_rgb_img_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_depth_img_;
+    // Per-camera publishers (multi-camera routing, Image2m only)
+    std::map<std::string, rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr> publishers_;
     std::string msg_type_;
 
     zmq::context_t context_;

@@ -6,6 +6,14 @@ zmq:
   image_port: 5657
   jpeg_image_port: 5658
 
+# Multi-camera topic mapping: camera_name → ROS2 topic.
+# Passed to C++ bridge via --camera-topics JSON.
+camera_topics:
+  head_stereo_left: "/sensor/camera/head_stereo_left/color/raw"
+  head_stereo_right: "/sensor/camera/head_stereo_right/color/raw"
+  wrist_left: "/sensor/camera/wrist_left/color/raw"
+  wrist_right: "/sensor/camera/wrist_right/color/raw"
+
 topics:
   sub:
     command: {topic: "/mc/sdk/robot_command", type: "RobotCommand", qos: 5}

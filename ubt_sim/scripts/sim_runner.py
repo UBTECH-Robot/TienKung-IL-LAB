@@ -129,6 +129,7 @@ def main():
             status_port=args_cli.zmq_status_port,
             image_port=args_cli.zmq_image_port,
             jpeg_image_port=args_cli.zmq_jpeg_image_port,
+            camera_names=env.cfg.camera_names,
         )
         teleop_interface.display_controls()
     else:
