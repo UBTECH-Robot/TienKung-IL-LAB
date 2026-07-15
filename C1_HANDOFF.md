@@ -1882,14 +1882,32 @@ M  ubt_sim/source/ubt_sim/devices/walker_c1/config.py    手部增益 10/1/2
    6 行 usda，subLayers 引 scene_v2.usd + over "apple" active=false，机器丢失按此重建）
 ```
 
+### 随机化收尾（31e6a5d push 之后的迭代）
+
+固定位置 SUCCESS 后，--randomize 连续 0/3 了四批，逐层修掉：
+
+```
+1. 冻腕后 IK 只剩肩3+肘pitch 4 关节，随机点（尤其 +x 远侧）出了可达域，
+   下探停在差 5cm 处 -> 解冻 elbow_yaw（subset=(0,1,2,3,4)）。
+2. 解冻后 yaw 自由漂移 -> 抓取时刻手朝向和成功局不一致，闭手落空 ->
+   ★零空间偏置：DLS 加 null-space 项把 elbow_yaw 持续拉回转腕后的参考值
+   （位置任务不受影响）。_ik_arm_step(null_ref={4: roll_arm[4]})。
+3. 下探高度敏感 ±1cm：目标=球+0.04（加早退容差 ~1cm 恰落在成功高度 球+0.05）。
+   低了指尖插桌被压住卷不动，高了笼子合在球顶上方。
+4. 随机范围对齐可达域：x∈[-0.03,+0.01]、y∈[-0.05,+0.01]（+y 侧仍吃紧故收窄）。
+```
+
+结果：随机位置首次 SUCCESS（1/3，第 3 局 HELD+落点 7cm）。写本节时 5 局试点批次在跑。
+
 ### 下一步
 
 ```
-1. --randomize 多局成功率统计（写本节时 3 局批次在跑）。
-2. 成功率可接受 -> M3 放大 episodes 批量刷数据；抽查 HDF5（obs/action 对齐、图像内容）。
-3. 已知弱点：冻腕后搬运段 IK 只剩 4 自由度，到盘上方误差 ~10cm（目前靠盘子大兜住）。
-   如随机化下放偏，考虑 carry 阶段解冻 elbow_yaw(=subset 加入 4)。
-4. 左腿碰撞小尾巴、真机 joint order 校对：老未结项不变。
+1. 5 局批次出成功率 -> 可接受就 M3 放大 episodes 批量刷（失败局不存，只费仿真时间）。
+2. 抽查已存 HDF5（obs/action 对齐、图像内容、帧率）。
+3. 已知弱点：搬运段 gc 到盘上方误差 ~9cm（靠盘子大兜住）；放偏变多时再调。
+4. 用户已确认 GUI 目视过完整成功抓放。归位→抓取语义已内嵌（每局 ramp 到
+   TASK_RESET_BODY_POSE 开始、结束回同一姿势）；姿势权威出处如需统一可抽 JSON。
+5. 左腿碰撞小尾巴、真机 joint order 校对：老未结项不变。
 ```
 
 ### 场景改造（walker_c1_parlor_env_cfg.py + scene_v2_c1.usda + parlor.yaml）

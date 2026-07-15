@@ -272,7 +272,7 @@ def _print_hand_map(env, ctx):
             print(f"[handmap]   {name:<22} rel_gc=({p[0]-gc[0]:+.3f},{p[1]-gc[1]:+.3f},{p[2]-gc[2]:+.3f})")
 
 
-def _ik_arm_step(ctx, cmd_state, target_pos, max_dq=_IK_MAX_DQ, joint_subset=None):
+def _ik_arm_step(ctx, cmd_state, target_pos, max_dq=_IK_MAX_DQ, joint_subset=None, null_ref=None):
     """One damped-least-squares position IK step.
 
     The correction is integrated on the COMMAND (cmd_state["right_arm"]), not on
@@ -296,10 +296,21 @@ def _ik_arm_step(ctx, cmd_state, target_pos, max_dq=_IK_MAX_DQ, joint_subset=Non
         mask = torch.zeros(j.shape[1])
         mask[list(joint_subset)] = 1.0
         j = j * mask.unsqueeze(0)
+    q_now = torch.as_tensor(cmd_state["right_arm"], dtype=torch.float32)
     jjt = j @ j.T + (_IK_DAMPING**2) * torch.eye(3)
     dq = j.T @ torch.linalg.solve(jjt, err)
+    if null_ref:
+        # Null-space bias: pull the listed joints toward reference values
+        # without disturbing the position task — keeps the grasp-time hand
+        # orientation repeatable while retaining the joints for reach.
+        jpinv = j.T @ torch.linalg.inv(jjt)
+        n_proj = torch.eye(j.shape[1]) - jpinv @ j
+        dq_null = torch.zeros(j.shape[1])
+        for idx, ref in null_ref.items():
+            dq_null[idx] = 0.1 * (float(ref) - float(q_now[idx]))
+        dq = dq + n_proj @ dq_null
     dq = torch.clamp(dq, -max_dq, max_dq)
-    q_cmd = torch.as_tensor(cmd_state["right_arm"], dtype=torch.float32) + dq
+    q_cmd = q_now + dq
     q_meas = robot.data.joint_pos[0, ctx["arm_ids"]].cpu()
     q_cmd = torch.clamp(q_cmd, q_meas - _IK_MAX_LEAD, q_meas + _IK_MAX_LEAD)
     limits = robot.data.soft_joint_pos_limits[0, ctx["arm_ids"]].cpu()
@@ -308,7 +319,7 @@ def _ik_arm_step(ctx, cmd_state, target_pos, max_dq=_IK_MAX_DQ, joint_subset=Non
 
 
 def _run_ik_phase(env, ctx, cmd_state, target_pos, steps, buffers, record_every, label,
-                  max_dq=_IK_MAX_DQ, joint_subset=None, servo_mouth_xy=False):
+                  max_dq=_IK_MAX_DQ, joint_subset=None, servo_mouth_xy=False, null_ref=None):
     """Servo the grasp center to a world target while recording frames.
 
     With servo_mouth_xy, the xy error is measured at the live MOUTH center
@@ -327,9 +338,9 @@ def _run_ik_phase(env, ctx, cmd_state, target_pos, steps, buffers, record_every,
                 float(target_pos[1] + gc[1] - mouth[1]),
                 float(target_pos[2]),
             ]
-            cmd_state["right_arm"], dist = _ik_arm_step(ctx, cmd_state, adj_target, max_dq, joint_subset)
+            cmd_state["right_arm"], dist = _ik_arm_step(ctx, cmd_state, adj_target, max_dq, joint_subset, null_ref)
         else:
-            cmd_state["right_arm"], dist = _ik_arm_step(ctx, cmd_state, target_pos, max_dq, joint_subset)
+            cmd_state["right_arm"], dist = _ik_arm_step(ctx, cmd_state, target_pos, max_dq, joint_subset, null_ref)
         env.step(to_controller_data(_build_command(cmd_state), env))
         _watch(env, label, step)
         if step % record_every == 0:
@@ -398,8 +409,11 @@ def _randomize_object_start(env, rng):
     """Move the apple to a random reachable spot on the tabletop before starting."""
     obj = env.scene["object"]
     origin = env.scene.env_origins[0].detach().cpu().tolist()
-    x = _GRASP_OBJECT_INIT_POS[0] + rng.uniform(-0.02, 0.04)
-    y = _GRASP_OBJECT_INIT_POS[1] + rng.uniform(-0.06, 0.06)
+    # Range centered on the reachable zone of the palm-down frozen-wrist arm:
+    # +x (away from the robot) hits its reach boundary ~2cm past the default
+    # spawn (descend stalls short), so the far side stays tight.
+    x = _GRASP_OBJECT_INIT_POS[0] + rng.uniform(-0.03, 0.01)
+    y = _GRASP_OBJECT_INIT_POS[1] + rng.uniform(-0.05, 0.01)
     pose = obj.data.default_root_state[:, :7].clone()
     pose[0, 0] = origin[0] + x
     pose[0, 1] = origin[1] + y
@@ -478,30 +492,35 @@ def _collect_one_episode(env, record_every, rng=None):
     roll_arm = list(cmd_state["right_arm"])
     roll_arm[6] = READY_RIGHT_ARM[6] - 1.57
     _run_phase(env, cmd_state, {"right_arm": roll_arm}, buffers, 60, record_every, label="roll")
-    # Wrist (pitch/roll) stays frozen so the palm-down attitude holds, but
-    # elbow_yaw stays in the IK: shoulder3+elbow_pitch alone has too small a
-    # reachable manifold (randomized apple spawns stalled ~5cm short, 0/3);
-    # elbow_yaw only turns the hand about the vertical axis, which cannot tip
-    # the downward-facing cage.
+    # Wrist (pitch/roll) stays frozen so the palm-down attitude holds.
+    # elbow_yaw stays IN the IK for reach (shoulder3+elbow_pitch alone stalled
+    # ~5cm short on randomized spawns), but is null-space-biased back to its
+    # post-roll value so the grasp-time hand orientation stays repeatable
+    # (free yaw drift rotated the cage and the close missed, also 0/3).
     hold_joints = (0, 1, 2, 3, 4)
+    yaw_ref = {4: roll_arm[4]}
 
     # Closed-loop mouth alignment: xy servos the LIVE mouth center onto the
     # apple (no hand-frame offset guessing); z tracks the grasp center.
     gx, gy = apple0[0], apple0[1]
     approach = [gx, gy, apple0[2] + 0.22]
     _run_ik_phase(env, ctx, cmd_state, approach, 200, buffers, record_every, "approach",
-                  joint_subset=hold_joints, servo_mouth_xy=True)
+                  joint_subset=hold_joints, servo_mouth_xy=True, null_ref=yaw_ref)
     hover = [gx, gy, apple0[2] + 0.12]
     _run_ik_phase(env, ctx, cmd_state, hover, 140, buffers, record_every, "hover",
-                  max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True)
+                  max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True, null_ref=yaw_ref)
     _print_hand_map(env, ctx)
 
     # Phase 2: descend beside the apple (still no contact), then print the
     # full right-hand link map for pocket-geometry diagnosis, then sweep +y
     # slowly to bring the apple into the pocket.
-    beside = [gx, gy, apple0[2] + 0.02]
+    # Target apple + 0.04 so that with the ~1cm early-exit tolerance the gc
+    # settles at apple + 0.05 — the exact height of the verified-successful
+    # grasp (cage around the equator). 1cm higher and the cage closes above
+    # the apple; deeper pins the fingertips against the tabletop.
+    beside = [gx, gy, apple0[2] + 0.04]
     _run_ik_phase(env, ctx, cmd_state, beside, 300, buffers, record_every, "descend",
-                  max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True)
+                  max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True, null_ref=yaw_ref)
     _print_hand_map(env, ctx)
     apple_d = _object_pos(env)
     print(f"[check:descend] apple=({apple_d[0]:.3f},{apple_d[1]:.3f},{apple_d[2]:.3f})")
@@ -520,7 +539,7 @@ def _collect_one_episode(env, record_every, rng=None):
     # Phase 4+: keep wrist/elbow_yaw frozen while holding the apple.
     lift = [apple0[0], apple0[1], apple0[2] + 0.15]
     _run_ik_phase(env, ctx, cmd_state, lift, 200, buffers, record_every, "lift",
-                  max_dq=0.005, joint_subset=hold_joints)
+                  max_dq=0.005, joint_subset=hold_joints, null_ref=yaw_ref)
     apple_lifted = _object_pos(env)
     lifted = apple_lifted[2] > apple0[2] + 0.06
     print(f"[check:lift] apple z {apple0[2]:.3f} -> {apple_lifted[2]:.3f} ({'HELD' if lifted else 'NOT HELD'})")
@@ -531,10 +550,10 @@ def _collect_one_episode(env, record_every, rng=None):
     release_z = plate_top_z + _GRASP_OBJECT_RADIUS + 0.01
     carry = [_PLATE_POS[0], _PLATE_POS[1], release_z + 0.09]
     _run_ik_phase(env, ctx, cmd_state, carry, 240, buffers, record_every, "carry",
-                  max_dq=0.006, joint_subset=hold_joints)
+                  max_dq=0.006, joint_subset=hold_joints, null_ref=yaw_ref)
     lower = [_PLATE_POS[0], _PLATE_POS[1], release_z]
     _run_ik_phase(env, ctx, cmd_state, lower, 120, buffers, record_every, "lower",
-                  max_dq=0.005, joint_subset=hold_joints)
+                  max_dq=0.005, joint_subset=hold_joints, null_ref=yaw_ref)
 
     # Phase 6: open the hand, releasing the apple onto the plate.
     _run_phase(env, cmd_state, {"right_hand": [0.0] * 6}, buffers, 50, record_every)
