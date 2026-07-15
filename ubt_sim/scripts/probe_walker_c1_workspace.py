@@ -46,9 +46,9 @@ from ubt_sim.devices.walker_c1.action_process import reset_hold_targets, to_cont
 # Ready pose (mirrors collect_walker_c1_pick_place.py READY_*).
 READY_CMD = {
     "waist": [0.0, 0.0, 0.0],
-    "head": [0.0, 0.35],
-    "left_arm": [-0.152, 0.068, 0.135, -1.155, 0.124, -0.361, -0.006],
-    "right_arm": [-0.291, -0.003, -0.136, -1.155, -0.124, -0.361, 0.194],
+    "head": [0.0, 0.50],
+    "left_arm": [-0.152, 0.30, 0.135, -1.155, 0.124, -0.361, -0.006],
+    "right_arm": [-0.291, -0.30, -0.136, -1.155, -0.124, -0.361, 0.194],
     "left_hand": [0.0] * 6,
     "right_hand": [0.0] * 6,
 }

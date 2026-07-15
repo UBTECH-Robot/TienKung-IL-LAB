@@ -34,20 +34,30 @@ PARLOR_SCENE_CFG = AssetBaseCfg(
     spawn=sim_utils.UsdFileCfg(usd_path=_SCENE_USD_PATH),
 )
 
-# Graspable object for pick-place data collection (M2). The parlor scene table
-# has NO collision (objects fall through), so we add our own static collision
-# table (_TABLE_*) in front of the robot and rest the object on it, within reach
-# of the right hand (which sits at world ~(8.04, 5.89, 0.83) at the ready pose).
-# A primitive sphere is used for bring-up (guaranteed rigid body, known radius);
-# the parlor fruit USDs are decorative meshes without RigidBodyAPI.
-_TABLE_POS = (8.20, 5.88, 0.39)          # centered in front of the robot
-_TABLE_SIZE = (0.35, 0.50, 0.78)         # top surface at z = 0.39 + 0.78/2 = 0.78
-_TABLE_TOP_Z = _TABLE_POS[2] + _TABLE_SIZE[2] / 2.0
-_GRASP_OBJECT_RADIUS = 0.033
-_GRASP_OBJECT_MASS = 0.05
-# Rest the sphere on the table top, centered in the right-hand grasp zone at the
-# ready pose (palm ~8.08/5.89/0.85, fingers curl to ~8.11/5.90/0.82).
-_GRASP_OBJECT_INIT_POS = (8.11, 5.90, _TABLE_TOP_Z + _GRASP_OBJECT_RADIUS + 0.002)
+# Pick-place task props (M2). The parlor scene furniture is visual-only (no
+# collision, no RigidBodyAPI), so physics comes from invisible primitive
+# colliders aligned to the visuals:
+#   - the scene table /World/table spans x [8.144, 8.744], y [5.483, 6.683]
+#     with its top at z = 0.897 -> invisible slab collider under the tabletop;
+#   - the scene plate /World/plate sits at (8.374, 6.046), rim top z = 0.931
+#     -> invisible disk collider as the place-target surface;
+#   - the graspable apple is our own rigid red sphere resting on the tabletop
+#     (the scene's decorative apple is deactivated in scene_v2_c1.usda).
+_TABLE_TOP_Z = 0.897
+_TABLE_POS = (8.444, 6.083, _TABLE_TOP_Z - 0.03)  # slab top flush with visual top
+_TABLE_SIZE = (0.60, 1.20, 0.06)
+_PLATE_POS = (8.374, 6.046, 0.90)                 # disk top at z = 0.925 (in-dish)
+_PLATE_RADIUS = 0.085
+_PLATE_HEIGHT = 0.05
+# r=0.027 (small apple): the C1 hand's tripod mouth has a ~5-6cm effective
+# aperture at its natural palm-sideways orientation — a 7cm sphere physically
+# cannot be caged (measured via hand-map: at full close no link reaches the
+# ball's surface). 5.4cm fits.
+_GRASP_OBJECT_RADIUS = 0.027
+_GRASP_OBJECT_MASS = 0.1
+# Apple start: near the table front edge, in front of the right hand
+# (ready-pose palm sits at world ~(8.04, 5.89, 0.85+)).
+_GRASP_OBJECT_INIT_POS = (8.21, 5.90, _TABLE_TOP_Z + _GRASP_OBJECT_RADIUS + 0.002)
 
 
 @configclass
@@ -69,11 +79,11 @@ class WalkerC1ParlorSceneCfg(InteractiveSceneCfg):
     )
 
     table = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/GraspTable",
+        prim_path="{ENV_REGEX_NS}/TableTopCollider",
         spawn=sim_utils.CuboidCfg(
             size=_TABLE_SIZE,
+            visible=False,
             collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.55, 0.4, 0.25)),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0, dynamic_friction=1.0
             ),
@@ -81,14 +91,34 @@ class WalkerC1ParlorSceneCfg(InteractiveSceneCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=_TABLE_POS),
     )
 
+    plate = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/PlateCollider",
+        spawn=sim_utils.CylinderCfg(
+            radius=_PLATE_RADIUS,
+            height=_PLATE_HEIGHT,
+            axis="Z",
+            visible=False,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=1.2, dynamic_friction=1.2
+            ),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=_PLATE_POS),
+    )
+
     object = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",
         spawn=sim_utils.SphereCfg(
             radius=_GRASP_OBJECT_RADIUS,
+            # NOTE: do NOT add high angular_damping to stop post-release rolling:
+            # a ball that cannot roll gets squeeze-ejected by the closing fingers
+            # (tested angular_damping=2.0 -> apple shot off the table on every
+            # descend). Rolling is instead controlled by releasing the apple
+            # ~1cm above the plate surface.
             rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False),
             collision_props=sim_utils.CollisionPropertiesCfg(),
             mass_props=sim_utils.MassPropertiesCfg(mass=_GRASP_OBJECT_MASS),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.45, 0.1)),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.75, 0.12, 0.10)),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.2, dynamic_friction=1.2
             ),

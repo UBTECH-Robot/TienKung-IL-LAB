@@ -51,7 +51,7 @@ TASK_RESET_BODY_POSE = {
     "waist_pitch_joint": 0.0,
     "waist_roll_joint": 0.0,
     "head_yaw_joint": 0.0,
-    "head_pitch_joint": 0.35,
+    "head_pitch_joint": 0.50,
     "L_shoulder_pitch_joint": -0.152,
     "L_shoulder_roll_joint": 0.30,
     "L_shoulder_yaw_joint": 0.135,

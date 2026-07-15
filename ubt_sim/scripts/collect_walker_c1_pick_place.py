@@ -3,19 +3,23 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Walker C1 scripted-motion data collection (M1: pipeline bring-up).
+"""Walker C1 scripted pick-place data collection (M2: real physics grasp).
 
-In-process Isaac Lab collector: builds the parlor task env, drives the robot
-through a deterministic scripted right-arm waypoint sequence (no external ZMQ,
-no ROS), and records per-frame observations + actions + head camera into an
-HDF5 file using the same schema the Tienkung pick-place collector writes
-(``puppet/*`` + ``action/*`` + ``camera_observations/color_images/camera_head``).
-That HDF5 is then convertible to a LeRobot dataset with
-``ubt_IL/scripts/convert/convert_to_lerobot.py`` (see configs/Walker_C1_26_1RGB.json).
+In-process Isaac Lab collector: builds the parlor task env and runs a full
+pick-place episode with real physics (no attach tricks, gravity on):
+hover over the apple -> descend -> close hand -> lift -> carry over the plate
+-> release -> return to the ready pose. The right arm is driven by per-step
+damped-least-squares IK that servos the hand grasp center (thumb/index/middle
+midpoint) to Cartesian targets; everything goes through the real controller
+action path (``to_controller_data`` -> env.step).
 
-M1 goal is to prove the driving -> recording -> conversion pipe end to end;
-it does NOT yet grasp a real object (that is M2). The scripted motion is a
-right-arm reach/close/lift/return sweep from the pre-grasp ready pose.
+Every frame is recorded (obs + action + head camera) into an HDF5 with the
+same schema the Tienkung pick-place collector writes (``puppet/*`` +
+``action/*`` + ``camera_observations/color_images/camera_head``), convertible
+to LeRobot with ``ubt_IL/scripts/convert/convert_to_lerobot.py``
+(configs/Walker_C1_26_1RGB.json). An episode is saved ONLY if it succeeds:
+the apple ends up inside the plate radius at plate height (--save_on_failure
+overrides, for debugging).
 
 Run:
   docker exec walker-c1-ubt-sim /isaac-sim/python.sh -u \
@@ -40,16 +44,25 @@ parser.add_argument(
     help="Record one frame every N env.step() calls (camera refreshes ~30Hz).",
 )
 parser.add_argument(
-    "--phase_steps",
-    type=int,
-    default=45,
-    help="env.step() count per scripted motion phase.",
-)
-parser.add_argument(
     "--out_root",
     type=str,
     default="/ubt_sim/dataset/walker_c1",
     help="Directory that receives one <timestamp>/trajectory.hdf5 per episode.",
+)
+parser.add_argument(
+    "--save_on_failure",
+    action="store_true",
+    help="Also save episodes whose success check failed (debugging).",
+)
+parser.add_argument(
+    "--randomize",
+    action="store_true",
+    help="Randomize the apple start position on the tabletop each episode.",
+)
+parser.add_argument(
+    "--debug_watch",
+    action="store_true",
+    help="Print apple + grasp-center positions every 10 steps (diagnosis).",
 )
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(device="cpu")
@@ -85,13 +98,20 @@ from ubt_sim.devices.walker_c1.config import (
     WALKER_C1_LEFT_ARM_JOINTS,
     WALKER_C1_RIGHT_ARM_JOINTS,
 )
+from ubt_sim.task.walker_c1_parlor.walker_c1_parlor_env_cfg import (
+    _GRASP_OBJECT_INIT_POS,
+    _GRASP_OBJECT_RADIUS,
+    _PLATE_HEIGHT,
+    _PLATE_POS,
+    _PLATE_RADIUS,
+)
 
 # ── Pre-grasp ready pose (sim-side copy) ──
 # Values mirror teleoperation/control/walker_c1/constants.py::TASK_RESET_BODY_POSE.
 # Kept as a local copy because the Isaac (Py3.11) and ROS/teleop (Py3.10) sides
 # must not cross-import (see ubt_sim/CLAUDE.md). Tune here and in that file together.
 READY_WAIST = [0.0, 0.0, 0.0]
-READY_HEAD = [0.0, 0.35]
+READY_HEAD = [0.0, 0.50]
 READY_LEFT_ARM = [-0.152, 0.30, 0.135, -1.155, 0.124, -0.361, -0.006]
 READY_RIGHT_ARM = [-0.291, -0.30, -0.136, -1.155, -0.124, -0.361, 0.194]
 READY_LEFT_HAND = [0.0] * 6
@@ -163,7 +183,29 @@ def _record_frame(env, cmd_state, buffers):
         buffers[k].append(v)
 
 
-def _run_phase(env, cmd_state, target_state, buffers, phase_steps, record_every):
+_WATCH = {"env": None, "ctx": None, "on": False}
+
+
+def _watch(env, label, step):
+    if not _WATCH["on"]:
+        return
+    if step % 5 != 0:
+        return
+    apple_t = env.scene["object"].data.root_pos_w[0]
+    vel = env.scene["object"].data.root_lin_vel_w[0].detach().cpu().tolist()
+    speed = sum(v * v for v in vel) ** 0.5
+    apple = apple_t.detach().cpu().tolist()
+    robot = _WATCH["ctx"]["robot"]
+    dists = (robot.data.body_pos_w[0] - apple_t.unsqueeze(0)).norm(dim=-1)
+    near_i = int(dists.argmin())
+    near_name = robot.data.body_names[near_i]
+    print(
+        f"[watch:{label}:{step:03d}] apple=({apple[0]:.3f},{apple[1]:.3f},{apple[2]:.3f}) "
+        f"speed={speed:.3f} nearest={near_name} d={float(dists[near_i]):.3f}"
+    )
+
+
+def _run_phase(env, cmd_state, target_state, buffers, phase_steps, record_every, label="lerp"):
     """Linearly interpolate the changed groups to target over phase_steps env.steps."""
     start = {k: list(v) for k, v in cmd_state.items()}
     for step in range(phase_steps):
@@ -173,8 +215,133 @@ def _run_phase(env, cmd_state, target_state, buffers, phase_steps, record_every)
                 cmd_state[group] = _lerp(start[group], target_state[group], t)
         action = to_controller_data(_build_command(cmd_state), env)
         env.step(action)
+        _watch(env, label, step)
         if step % record_every == 0:
             _record_frame(env, cmd_state, buffers)
+
+
+# ── Cartesian IK reach (right arm) ──
+# The servo point is the hand "grasp center": midpoint of the thumb/index/middle
+# links, i.e. the pocket the apple should sit in when the hand closes.
+_GRASP_CENTER_LINKS = ("R_thumb_mpp_link", "R_index_ip_link", "R_middle_ip_link")
+_IK_DAMPING = 0.1        # DLS lambda (m)
+_IK_MAX_DQ = 0.010       # rad per env.step (100 Hz -> max 1.0 rad/s per joint)
+_IK_MAX_LEAD = 0.20      # rad: max command lead over measured (anti-windup)
+_IK_DONE_TOL = 0.012     # m: early-exit tolerance for an IK phase
+
+
+def _make_ik_ctx(env):
+    robot = env.scene["robot"]
+    arm_ids, _ = robot.find_joints(list(WALKER_C1_RIGHT_ARM_JOINTS), preserve_order=True)
+    palm_ids, _ = robot.find_bodies(["R_palm_link"])
+    body_names = list(robot.data.body_names)
+    grasp_ids = [body_names.index(name) for name in _GRASP_CENTER_LINKS]
+    return {"robot": robot, "arm_ids": list(arm_ids), "palm_id": int(palm_ids[0]), "grasp_ids": grasp_ids}
+
+
+def _grasp_center(ctx):
+    return ctx["robot"].data.body_pos_w[0, ctx["grasp_ids"]].mean(dim=0)
+
+
+def _mouth_center(ctx):
+    """Live center of the palm-down mouth: midpoint between the finger-tip
+    wall and the thumb tip, computed from actual link poses each step."""
+    body_names = ctx["robot"].data.body_names
+    pos = ctx["robot"].data.body_pos_w[0]
+    fingers = [body_names.index(n) for n in
+               ("R_index_ip_link", "R_middle_ip_link", "R_ring_ip_link", "R_little_ip_link")]
+    thumb = body_names.index("R_thumb_ip_link")
+    return 0.5 * (pos[fingers].mean(dim=0) + pos[thumb])
+
+
+def _object_pos(env):
+    return env.scene["object"].data.root_pos_w[0].detach().cpu().tolist()
+
+
+def _print_hand_map(env, ctx):
+    """Dump right-hand link positions relative to the grasp center (diagnosis)."""
+    robot = ctx["robot"]
+    gc = _grasp_center(ctx).cpu()
+    apple = env.scene["object"].data.root_pos_w[0].cpu()
+    print(f"[handmap] gc=({gc[0]:.3f},{gc[1]:.3f},{gc[2]:.3f}) apple_rel_gc="
+          f"({apple[0]-gc[0]:+.3f},{apple[1]-gc[1]:+.3f},{apple[2]-gc[2]:+.3f})")
+    for i, name in enumerate(robot.data.body_names):
+        if name.startswith("R_") and ("palm" in name or "thumb" in name or "index" in name
+                                      or "middle" in name or "ring" in name or "little" in name):
+            p = robot.data.body_pos_w[0, i].cpu()
+            print(f"[handmap]   {name:<22} rel_gc=({p[0]-gc[0]:+.3f},{p[1]-gc[1]:+.3f},{p[2]-gc[2]:+.3f})")
+
+
+def _ik_arm_step(ctx, cmd_state, target_pos, max_dq=_IK_MAX_DQ, joint_subset=None):
+    """One damped-least-squares position IK step.
+
+    The correction is integrated on the COMMAND (cmd_state["right_arm"]), not on
+    the measured joint angles: with a position controller that sags under
+    gravity, command = measured + dq never builds up enough lead to close the
+    error. Anti-windup: the command may lead the measured position by at most
+    _IK_MAX_LEAD per joint, and never leaves the soft joint limits.
+    """
+    robot = ctx["robot"]
+    err = torch.as_tensor(target_pos, dtype=torch.float32) - _grasp_center(ctx).cpu()
+    jac_full = robot.root_physx_view.get_jacobians()
+    if jac_full.shape[1] == robot.num_bodies:  # floating base: root cols first
+        jac = jac_full[0, ctx["palm_id"], 0:3, 6:]
+    else:  # fixed base: jacobian rows exclude the root link
+        jac = jac_full[0, ctx["palm_id"] - 1, 0:3, :]
+    j = jac[:, ctx["arm_ids"]].cpu()  # 3 x 7
+    if joint_subset is not None:
+        # Freeze the non-subset joints (e.g. wrist during carry): zero their
+        # jacobian columns so the IK solves position with the subset only and
+        # their commands stay at the grasp-time values.
+        mask = torch.zeros(j.shape[1])
+        mask[list(joint_subset)] = 1.0
+        j = j * mask.unsqueeze(0)
+    jjt = j @ j.T + (_IK_DAMPING**2) * torch.eye(3)
+    dq = j.T @ torch.linalg.solve(jjt, err)
+    dq = torch.clamp(dq, -max_dq, max_dq)
+    q_cmd = torch.as_tensor(cmd_state["right_arm"], dtype=torch.float32) + dq
+    q_meas = robot.data.joint_pos[0, ctx["arm_ids"]].cpu()
+    q_cmd = torch.clamp(q_cmd, q_meas - _IK_MAX_LEAD, q_meas + _IK_MAX_LEAD)
+    limits = robot.data.soft_joint_pos_limits[0, ctx["arm_ids"]].cpu()
+    q_cmd = torch.clamp(q_cmd, limits[:, 0], limits[:, 1])
+    return q_cmd.tolist(), float(err.norm())
+
+
+def _run_ik_phase(env, ctx, cmd_state, target_pos, steps, buffers, record_every, label,
+                  max_dq=_IK_MAX_DQ, joint_subset=None, servo_mouth_xy=False):
+    """Servo the grasp center to a world target while recording frames.
+
+    With servo_mouth_xy, the xy error is measured at the live MOUTH center
+    (finger wall / thumb midpoint) instead of the grasp center, closing the
+    loop on the actual pocket-over-apple alignment; z still tracks the grasp
+    center (the mouth center dives as the fingers close, so its z is not a
+    stable height reference).
+    """
+    dist = float("inf")
+    for step in range(steps):
+        if servo_mouth_xy:
+            gc = _grasp_center(ctx).cpu()
+            mouth = _mouth_center(ctx).cpu()
+            adj_target = [
+                float(target_pos[0] + gc[0] - mouth[0]),
+                float(target_pos[1] + gc[1] - mouth[1]),
+                float(target_pos[2]),
+            ]
+            cmd_state["right_arm"], dist = _ik_arm_step(ctx, cmd_state, adj_target, max_dq, joint_subset)
+        else:
+            cmd_state["right_arm"], dist = _ik_arm_step(ctx, cmd_state, target_pos, max_dq, joint_subset)
+        env.step(to_controller_data(_build_command(cmd_state), env))
+        _watch(env, label, step)
+        if step % record_every == 0:
+            _record_frame(env, cmd_state, buffers)
+        if dist < _IK_DONE_TOL:
+            break
+    reached = _grasp_center(ctx).cpu().tolist()
+    print(
+        f"[phase:{label}] grasp_center=({reached[0]:.3f},{reached[1]:.3f},{reached[2]:.3f}) "
+        f"target=({target_pos[0]:.3f},{target_pos[1]:.3f},{target_pos[2]:.3f}) err={dist:.3f} m"
+    )
+    return dist
 
 
 def _save_hdf5(buffers, out_root):
@@ -227,35 +394,168 @@ def _save_hdf5(buffers, out_root):
     return filename
 
 
-def _collect_one_episode(env, phase_steps, record_every):
+def _randomize_object_start(env, rng):
+    """Move the apple to a random reachable spot on the tabletop before starting."""
+    obj = env.scene["object"]
+    origin = env.scene.env_origins[0].detach().cpu().tolist()
+    x = _GRASP_OBJECT_INIT_POS[0] + rng.uniform(-0.02, 0.04)
+    y = _GRASP_OBJECT_INIT_POS[1] + rng.uniform(-0.06, 0.06)
+    pose = obj.data.default_root_state[:, :7].clone()
+    pose[0, 0] = origin[0] + x
+    pose[0, 1] = origin[1] + y
+    pose[0, 2] = origin[2] + _GRASP_OBJECT_INIT_POS[2]
+    obj.write_root_pose_to_sim(pose)
+    obj.write_root_velocity_to_sim(torch.zeros((1, 6), device=obj.data.default_root_state.device))
+
+
+def _collect_one_episode(env, record_every, rng=None):
     env.reset()
     reset_hold_targets()
+    if rng is not None:
+        _randomize_object_start(env, rng)
 
+    ctx = _make_ik_ctx(env)
+    _WATCH["env"], _WATCH["ctx"], _WATCH["on"] = env, ctx, bool(args_cli.debug_watch)
+    plate_top_z = _PLATE_POS[2] + _PLATE_HEIGHT / 2.0
+
+    # Start commands at the (all-zero upper body) HOME pose the reset hold
+    # targets anchor to, and RAMP to ready: commanding READY in one step makes
+    # the arm snap over the table and sometimes swat the apple during settle.
     cmd_state = {
+        "waist": [0.0] * len(READY_WAIST),
+        "head": [0.0] * len(READY_HEAD),
+        "left_arm": [0.0] * len(READY_LEFT_ARM),
+        "right_arm": [0.0] * len(READY_RIGHT_ARM),
+        "left_hand": list(READY_LEFT_HAND),
+        "right_hand": list(READY_RIGHT_HAND),
+    }
+    ready_state = {
         "waist": list(READY_WAIST),
         "head": list(READY_HEAD),
         "left_arm": list(READY_LEFT_ARM),
         "right_arm": list(READY_RIGHT_ARM),
-        "left_hand": list(READY_LEFT_HAND),
-        "right_hand": list(READY_RIGHT_HAND),
     }
     buffers = {k: [] for k in _BUFFER_KEYS}
 
-    # Phase 0: settle into the pre-grasp ready pose.
-    _run_phase(env, cmd_state, {k: list(v) for k, v in cmd_state.items()}, buffers, phase_steps, record_every)
-    # Phase 1: reach down/forward with the right arm (deterministic sweep, no IK yet).
-    reach = list(READY_RIGHT_ARM)
-    reach[0] += 0.35   # shoulder_pitch forward
-    reach[3] += 0.30   # elbow_pitch extend
-    _run_phase(env, cmd_state, {"right_arm": reach}, buffers, phase_steps, record_every)
-    # Phase 2: close the right hand.
-    _run_phase(env, cmd_state, {"right_hand": [0.8] * 6}, buffers, phase_steps, record_every)
-    # Phase 3: lift back up.
-    _run_phase(env, cmd_state, {"right_arm": list(READY_RIGHT_ARM)}, buffers, phase_steps, record_every)
-    # Phase 4: open the right hand (return to ready).
-    _run_phase(env, cmd_state, {"right_hand": [0.0] * 6}, buffers, phase_steps, record_every)
+    # Phase 0: ramp into the pre-grasp ready pose, then settle.
+    _run_phase(env, cmd_state, ready_state, buffers, 100, record_every)
+    _run_phase(env, cmd_state, {}, buffers, 40, record_every)
+    apple0 = _object_pos(env)
+    print(f"[phase:settle] apple=({apple0[0]:.3f},{apple0[1]:.3f},{apple0[2]:.3f})")
 
-    return buffers
+    # Phase 1: pre-shape the fingers into a half-open cup FIRST, then hover in
+    # above the apple. The approach must not happen with an open hand: position
+    # IK leaves orientation free, the wrist pitches during the approach, and an
+    # extended fingertip sweeps through apple height and flicks it away
+    # (verified: apple launched at 0.68 m/s while R_index_ip was the nearest
+    # link at fingertip-contact distance). Curled fingers pull the tips up and
+    # out of the approach path.
+    # Palm-down pre-shape: ALL fingers slightly open — tucked fingers curl
+    # under the palm and occupy the mouth cavity (the tucked little knuckle
+    # was the lowest link, striking the apple first). Open fingers form the
+    # cage fence around the apple; soft gains + closed-loop xy make fingertip
+    # grazes harmless nudges.
+    _run_phase(env, cmd_state, {"right_hand": [0.2] * 6}, buffers, 30, record_every, label="preshape")
+    # Two-stage approach: align xy HIGH above the apple first (fingertips reach
+    # at most ~10cm below the grasp center, so 22cm clearance cannot clip the
+    # apple), then drop VERTICALLY. A single diagonal approach swings the
+    # pitched-down fingertips through the apple column and flicks it away.
+    # The hand at this (IK-free) orientation has its palm facing +y and the
+    # finger pocket opening SIDEWAYS (+y) — camera frames show fingers arcing
+    # up-left; every top-down descend first strikes the apple with the little/
+    # index links and swats it. So: come down NEXT to the apple on its -y side
+    # (7cm gap, no contact), then SWEEP +y so the apple enters the sideways
+    # pocket; the thumb (+y side) becomes the far wall.
+    # Straddle descend: the mouth is a y-slot (fingertip curtain at y ~ gc,
+    # thumb tip at y +0.073). Descending at gc.y = apple.y - 0.04 drops the
+    # curtain just past the apple's -y surface and the thumb over its +y top
+    # edge — the apple is inside the mouth the moment the hand arrives, no
+    # sweep needed (any sweep contact rolls the apple 5-10cm away).
+    # Roll the wrist -90deg so the hand mouth faces DOWN (it naturally faces
+    # sideways/+y, which cannot retain a ball through arm motion — measured
+    # over many runs). After the roll the wrist and elbow_yaw are excluded
+    # from the position IK so the palm-down attitude stays locked.
+    roll_arm = list(cmd_state["right_arm"])
+    roll_arm[6] = READY_RIGHT_ARM[6] - 1.57
+    _run_phase(env, cmd_state, {"right_arm": roll_arm}, buffers, 60, record_every, label="roll")
+    # Wrist (pitch/roll) stays frozen so the palm-down attitude holds, but
+    # elbow_yaw stays in the IK: shoulder3+elbow_pitch alone has too small a
+    # reachable manifold (randomized apple spawns stalled ~5cm short, 0/3);
+    # elbow_yaw only turns the hand about the vertical axis, which cannot tip
+    # the downward-facing cage.
+    hold_joints = (0, 1, 2, 3, 4)
+
+    # Closed-loop mouth alignment: xy servos the LIVE mouth center onto the
+    # apple (no hand-frame offset guessing); z tracks the grasp center.
+    gx, gy = apple0[0], apple0[1]
+    approach = [gx, gy, apple0[2] + 0.22]
+    _run_ik_phase(env, ctx, cmd_state, approach, 200, buffers, record_every, "approach",
+                  joint_subset=hold_joints, servo_mouth_xy=True)
+    hover = [gx, gy, apple0[2] + 0.12]
+    _run_ik_phase(env, ctx, cmd_state, hover, 140, buffers, record_every, "hover",
+                  max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True)
+    _print_hand_map(env, ctx)
+
+    # Phase 2: descend beside the apple (still no contact), then print the
+    # full right-hand link map for pocket-geometry diagnosis, then sweep +y
+    # slowly to bring the apple into the pocket.
+    beside = [gx, gy, apple0[2] + 0.02]
+    _run_ik_phase(env, ctx, cmd_state, beside, 300, buffers, record_every, "descend",
+                  max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True)
+    _print_hand_map(env, ctx)
+    apple_d = _object_pos(env)
+    print(f"[check:descend] apple=({apple_d[0]:.3f},{apple_d[1]:.3f},{apple_d[2]:.3f})")
+
+    # Phase 3: close in two stages (arm holds position). Fingers first, so they
+    # wall off the +x escape route; the thumb then pinches the apple against
+    # them (closing everything at once lets the thumb kick the apple forward).
+    # Single decisive close: thumb flexes down onto the apple's far-top side
+    # while the fingers pinch it against the curtain. No stagger — a staggered
+    # close gives the apple time to roll out of the mouth.
+    _run_phase(env, cmd_state, {"right_hand": [0.7, 0.85, 0.8, 0.8, 0.8, 0.8]}, buffers, 60, record_every, label="close")
+    # Let the squeeze settle before moving the arm.
+    _run_phase(env, cmd_state, {}, buffers, 40, record_every, label="squeeze")
+    _print_hand_map(env, ctx)
+
+    # Phase 4+: keep wrist/elbow_yaw frozen while holding the apple.
+    lift = [apple0[0], apple0[1], apple0[2] + 0.15]
+    _run_ik_phase(env, ctx, cmd_state, lift, 200, buffers, record_every, "lift",
+                  max_dq=0.005, joint_subset=hold_joints)
+    apple_lifted = _object_pos(env)
+    lifted = apple_lifted[2] > apple0[2] + 0.06
+    print(f"[check:lift] apple z {apple0[2]:.3f} -> {apple_lifted[2]:.3f} ({'HELD' if lifted else 'NOT HELD'})")
+
+    # Phase 5: carry the apple over the plate, then lower it to just above the
+    # plate surface before releasing (dropping from height bounces the apple
+    # off the plate).
+    release_z = plate_top_z + _GRASP_OBJECT_RADIUS + 0.01
+    carry = [_PLATE_POS[0], _PLATE_POS[1], release_z + 0.09]
+    _run_ik_phase(env, ctx, cmd_state, carry, 240, buffers, record_every, "carry",
+                  max_dq=0.006, joint_subset=hold_joints)
+    lower = [_PLATE_POS[0], _PLATE_POS[1], release_z]
+    _run_ik_phase(env, ctx, cmd_state, lower, 120, buffers, record_every, "lower",
+                  max_dq=0.005, joint_subset=hold_joints)
+
+    # Phase 6: open the hand, releasing the apple onto the plate.
+    _run_phase(env, cmd_state, {"right_hand": [0.0] * 6}, buffers, 50, record_every)
+
+    # Phase 7: retreat up and return the arm to the ready pose, then settle.
+    retreat = [_PLATE_POS[0] - 0.06, _PLATE_POS[1] - 0.06, release_z + 0.15]
+    _run_ik_phase(env, ctx, cmd_state, retreat, 60, buffers, record_every, "retreat")
+    _run_phase(env, cmd_state, {"right_arm": list(READY_RIGHT_ARM)}, buffers, 120, record_every)
+    _run_phase(env, cmd_state, {}, buffers, 40, record_every)
+
+    # Success: apple rests inside the plate disk at plate height.
+    apple_end = _object_pos(env)
+    horiz = ((apple_end[0] - _PLATE_POS[0]) ** 2 + (apple_end[1] - _PLATE_POS[1]) ** 2) ** 0.5
+    z_ok = plate_top_z - 0.01 <= apple_end[2] <= plate_top_z + 2.5 * _GRASP_OBJECT_RADIUS
+    success = horiz <= _PLATE_RADIUS and z_ok
+    print(
+        f"[check:place] apple=({apple_end[0]:.3f},{apple_end[1]:.3f},{apple_end[2]:.3f}) "
+        f"plate_center_dist={horiz:.3f} (limit {_PLATE_RADIUS}) z_ok={z_ok} -> "
+        f"{'SUCCESS' if success else 'FAILURE'}"
+    )
+    return buffers, success
 
 
 def main():
@@ -266,15 +566,22 @@ def main():
 
     env: ManagerBasedRLEnv = gym.make(args_cli.task, cfg=env_cfg).unwrapped
 
-    saved = []
+    import random
+
+    rng = random.Random() if args_cli.randomize else None
+    saved, failed = [], 0
     for ep in range(args_cli.episodes):
         print(f"[INFO] === Episode {ep + 1}/{args_cli.episodes} ===")
-        buffers = _collect_one_episode(env, args_cli.phase_steps, args_cli.record_every)
-        path = _save_hdf5(buffers, args_cli.out_root)
-        if path:
-            saved.append(path)
+        buffers, success = _collect_one_episode(env, args_cli.record_every, rng)
+        if success or args_cli.save_on_failure:
+            path = _save_hdf5(buffers, args_cli.out_root)
+            if path:
+                saved.append(path)
+        if not success:
+            failed += 1
+            print("[WARN] Episode failed the place check" + ("" if args_cli.save_on_failure else "; not saved."))
 
-    print(f"[INFO] Collected {len(saved)} trajectory file(s):")
+    print(f"[INFO] Collected {len(saved)} trajectory file(s) ({failed} failed episode(s)):")
     for p in saved:
         print(f"  {p}")
 

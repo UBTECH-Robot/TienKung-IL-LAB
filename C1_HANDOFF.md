@@ -1812,4 +1812,148 @@ M  C1_HANDOFF.md                                               本节
 4. 收尾整理工作区。
 ```
 
+## 2026-07-15 Update：M2 完成——真实物理抓放全流程 SUCCESS（正统抓法，非运气）
+
+本节是最新状态。当天经历了 ~17 轮抓取调试（中途曾误报"完成"两次——deterministic
+的运气 SUCCESS 在随机位置下 0/3），最终用**可解释的正统抓法**跑通：
+
+```
+下探: 苹果全程零扰动；提起: HELD (z 0.924->1.027)；放置: 离盘心 5.2cm SUCCESS。
+```
+
+### 制胜配方（collect_walker_c1_pick_place.py 当前实现）
+
+```
+1. 软手部增益 stiffness 10 / damping 1 / effort 2（近 URDF 原厂 force 语义值）。
+   调试期 200/20/50 是接触弹射的元凶：空载跟踪正常 ≠ 增益正确。
+2. 转腕 90°（wrist_roll = ready-1.57）掌心朝下，之后腕/肘yaw 冻结
+   （IK joint_subset=(0,1,2,3) 只用肩3+肘pitch 做位置）。
+3. 五指微张 [0.2]*6 当笼栅（掌下抓时收指反而把指节卷到罩腔正中央挡路——
+   小指是全天惯犯，每轮首触都是 R_little_ip）。
+4. 闭环罩口对准：servo_mouth_xy —— xy 误差用"罩口实时中心"（四指尖均值与
+   拇指尖的中点）到球心度量，z 走 grasp center；消灭一切手系偏置盲猜。
+5. 两段进场：高空(+0.22)对位 → 垂直降(+0.12) → 慢下探(ball+0.02, max_dq 0.006，
+   靠接触自然停住即可，不必到底)。
+6. 合围 [0.7,0.85,0.8,0.8,0.8,0.8] 一步完成 + 40 步稳定夹持再动臂。
+7. 提升/搬运/下放全程 joint_subset 冻腕 + 慢速；放盘前先降到贴盘 1cm 再张手。
+8. 球 r=0.027 m=0.1kg：实测这只手口袋有效孔径 5-6cm，7cm 球几何上装不下
+   （满力闭合手图显示无任何指节能触到 7cm 球面）。
+```
+
+### IK/采集框架关键实现点
+
+```
+- 逐步 DLS（lambda=0.1, dq<=0.01 rad/步），palm jacobian；固定基座 jacobian 行号
+  = body_idx-1。
+- ★IK 增量必须累积在【命令】上（cmd_state），不能是 实测+dq：位置控制器有重力
+  滞后，后者永远差 4-5cm 收敛不到。防饱和：命令超前实测 <=0.2 rad + 软限位内。
+- 误差 <1.2cm 提前退出阶段；HOME->READY 用 100 步 ramp（一步跳变会甩臂扫到桌上物体）。
+- --debug_watch：每 5 步打印 苹果位置+速度+最近机器人连杆+距离——本轮定案全靠它；
+  _print_hand_map 打印 11 个手链节相对 grasp center 的坐标（口袋几何实测）。
+- 成功判定：苹果落点距盘心 <=0.085m 且高度在盘面区间；成功才存 HDF5；
+  --save_on_failure 调试用；--randomize 苹果初始位置随机（M3 主开关）。
+```
+
+### 抓取调试账本（17 轮的教训，按发现顺序）
+
+```
+1. 相机 rot=(1,0,0,0)+ros = 朝天花板拍（M1 就存在，只验过尺寸没验内容）。
+   修正 rot=(0.40558,-0.57923,0.57923,-0.40558)=朝前+下俯20°，ready 低头 0.50。
+2. 角阻尼 2.0 防滚 → 球不能滚就变"捏西瓜子"挤压弹射，更糟。回退。真正防滚 = 贴盘轻放。
+3. 手部增益 200/20/50：接触时上百牛，球被弹飞 2-5 米。回调 10/1/2。
+4. 张开指尖在斜线进场路径上扫飞球（位置 IK 不控姿态，腕自然低头）→ 两段进场。
+5. 侧向口袋（掌心朝+y）：装 7cm 球孔径不够；口袋结构=指尖帘+高位拇指，
+   拇指闭合弧根本够不到桌上球的高度 → 死路，转腕掌下才是正解。
+6. 每轮首触都是小指(R_little_ip) → 掌下抓时五指微张，不收指。
+7. deterministic 同种子成功 ≠ 可靠：必须 --randomize 多局验证。
+```
+
+### 本轮文件改动（待提交清单见 git）
+
+```
+M  ubt_sim/source/ubt_sim/task/walker_c1_parlor/walker_c1_parlor_env_cfg.py
+   隐形桌面碰撞板/盘碰撞盘/刚体苹果(r0.027,100g)；两张桌子问题修复
+M  ubt_sim/config/walker_c1/parlor.yaml   场景指向 scene_v2_c1.usda + 相机 rot 修正
+M  ubt_sim/scripts/collect_walker_c1_pick_place.py   M2 完整抓放（上面的配方）
+M  ubt_sim/scripts/probe_walker_c1_workspace.py      ready 同步
+M  ubt_sim/teleoperation/control/walker_c1/constants.py  head_pitch 0.50
+M  ubt_sim/source/ubt_sim/devices/walker_c1/config.py    手部增益 10/1/2
++  ubt_sim/assets/local_scenes/tiangong_parlor/scene_v2_c1.usda（gitignore 内：
+   6 行 usda，subLayers 引 scene_v2.usd + over "apple" active=false，机器丢失按此重建）
+```
+
+### 下一步
+
+```
+1. --randomize 多局成功率统计（写本节时 3 局批次在跑）。
+2. 成功率可接受 -> M3 放大 episodes 批量刷数据；抽查 HDF5（obs/action 对齐、图像内容）。
+3. 已知弱点：冻腕后搬运段 IK 只剩 4 自由度，到盘上方误差 ~10cm（目前靠盘子大兜住）。
+   如随机化下放偏，考虑 carry 阶段解冻 elbow_yaw(=subset 加入 4)。
+4. 左腿碰撞小尾巴、真机 joint order 校对：老未结项不变。
+```
+
+### 场景改造（walker_c1_parlor_env_cfg.py + scene_v2_c1.usda + parlor.yaml）
+
+```
+- 场景装饰桌 /World/table：x[8.144,8.744] y[5.483,6.683] 桌面 z=0.897（视觉专用，无碰撞）。
+- TableTopCollider：隐形薄板 (0.60,1.20,0.06)，顶面与视觉桌面齐平 z=0.897。
+- 场景盘子 /World/plate：中心 (8.374,6.046)，半径~0.10，盘沿 z=0.931（视觉专用）。
+- PlateCollider：隐形圆盘 r=0.085 h=0.05，顶面 z=0.925（放置面+成功判定区）。
+- Object：红色刚体苹果 r=0.035、100g、摩擦 1.2，初始 (8.21,5.90,0.934)（桌面右手区）。
+- 场景装饰苹果 /World/apple 用覆盖层 deactivate（避免画面里两个苹果干扰 IL）：
+  ubt_sim/assets/local_scenes/tiangong_parlor/scene_v2_c1.usda
+  （6 行 usda：subLayers 引 scene_v2.usd + over "apple" active=false；
+   在 gitignore 的 local_scenes 里，机器丢了按此描述重建即可。）
+- parlor.yaml scene.usd_path 已指向 scene_v2_c1.usda。
+```
+
+### 相机朝向 bug（重要教训）
+
+```
+parlor.yaml 头部相机 offset rot 原来是 (1,0,0,0) + convention=ros
+= 沿 head_pitch_link +Z 看 = 朝天花板！（画面里的灰色大圆角块=顶灯）
+M1 当时只验证了"能解码出 480x640"，没验证内容。
+修正值 rot=(0.40558,-0.57923,0.57923,-0.40558)（朝前+额外下俯 20°），
+加上 ready 低头 0.50 rad，合计约 49° 俯视桌面。
+验证帧：桌面/粉盘/红苹果/双手都在画面内，carry 阶段能看到黄色右臂抓着苹果。
+READY_HEAD pitch 0.35->0.50 已同步 collect 脚本 / workspace probe / constants.py。
+```
+
+### IK 抓放实现（collect_walker_c1_pick_place.py）
+
+```
+- 伺服点"抓取中心"= R_thumb_mpp/R_index_ip/R_middle_ip 三链节中点。
+- 每步阻尼最小二乘（lambda=0.1，dq<=0.01 rad/步），用 R_palm 的 jacobian。
+- 关键坑：IK 增量必须累积在【命令】上（cmd_state["right_arm"]），不能加在实测角上——
+  位置控制器有重力滞后，命令=实测+dq 永远差 4~5cm 收敛不到，第一次试跑就因此
+  把苹果拨飞到地上。加防饱和：命令超前实测<=0.20 rad + 关节软限位内。
+- 误差<1.2cm 提前退出阶段；下探前手指预合拢 0.3 减少拨飞。
+- 阶段：settle60 -> hover240(苹果上方12cm) -> 预合拢25 -> descend160 -> 闭手0.85x60
+  -> lift100(+15cm) -> carry180(盘上方) -> 张手50 -> retreat60 -> 回READY120 -> settle40。
+- 成功判定：苹果落点离盘心 <=0.085m 且高度在盘面区间 -> 才存 HDF5。
+  --save_on_failure 失败也存（调试）；--randomize 苹果初始位置随机
+  （x+[-0.02,0.04], y+[-0.06,0.06]），M3 直接用。
+- 典型成功日志：hover err 0.010 / descend err 0.032（指笼罩住苹果）/
+  lift 后苹果 z 0.932->1.063 HELD / 落点离盘心 0.073 SUCCESS / 280 帧。
+```
+
+### 本轮改动文件
+
+```
+M  ubt_sim/source/ubt_sim/task/walker_c1_parlor/walker_c1_parlor_env_cfg.py  隐形碰撞体+苹果
+M  ubt_sim/config/walker_c1/parlor.yaml        场景指向 scene_v2_c1.usda + 相机 rot 修正
+M  ubt_sim/scripts/collect_walker_c1_pick_place.py  M2 IK 抓放 + 成功判定 + randomize
+M  ubt_sim/scripts/probe_walker_c1_workspace.py     ready 同步（肩外展/低头）
+M  ubt_sim/teleoperation/control/walker_c1/constants.py  head_pitch 0.50
++  ubt_sim/assets/local_scenes/tiangong_parlor/scene_v2_c1.usda（gitignore 内，见上）
+```
+
+### 下一步
+
+```
+1. M3：批量 --randomize 刷数据（验证成功率后放大 episodes 数）。
+2. 数据规模上来后抽查 HDF5（帧数/图像内容/obs-action 对齐）。
+3. （可选）左腿碰撞小尾巴仍在（纯视觉）；真机 joint order 校对仍是回真机前的第一件事。
+```
+
 

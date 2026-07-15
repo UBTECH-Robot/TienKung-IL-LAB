@@ -2,7 +2,7 @@
 # All paths are relative to the assets/ directory.
 
 scene:
-  usd_path: "local_scenes/tiangong_parlor/scene_v2.usd"
+  usd_path: "local_scenes/tiangong_parlor/scene_v2_c1.usda"
   prim_path: "{ENV_REGEX_NS}/Scene"
 
 robot:
@@ -19,7 +19,12 @@ cameras:
     resolution: [640, 480]
     offset:
       pos: [0.08, 0.0, 0.04]
-      rot: [1.0, 0.0, 0.0, 0.0]
+      # ROS optical convention: (0.5,-0.5,0.5,-0.5) = look along link +X, level.
+      # This value = level-forward composed with an extra 20 deg downward pitch;
+      # head_pitch already tilts the link ~20 deg down at the task ready pose,
+      # so the camera looks ~40 deg down at the tabletop. Identity (1,0,0,0)
+      # here means "look along link +Z" = straight at the ceiling.
+      rot: [0.40558, -0.57923, 0.57923, -0.40558]
       convention: "ros"
     intrinsics:
       focal_length: 24.0
