@@ -319,7 +319,8 @@ def _ik_arm_step(ctx, cmd_state, target_pos, max_dq=_IK_MAX_DQ, joint_subset=Non
 
 
 def _run_ik_phase(env, ctx, cmd_state, target_pos, steps, buffers, record_every, label,
-                  max_dq=_IK_MAX_DQ, joint_subset=None, servo_mouth_xy=False, null_ref=None):
+                  max_dq=_IK_MAX_DQ, joint_subset=None, servo_mouth_xy=False, null_ref=None,
+                  done_tol=_IK_DONE_TOL):
     """Servo the grasp center to a world target while recording frames.
 
     With servo_mouth_xy, the xy error is measured at the live MOUTH center
@@ -345,7 +346,7 @@ def _run_ik_phase(env, ctx, cmd_state, target_pos, steps, buffers, record_every,
         _watch(env, label, step)
         if step % record_every == 0:
             _record_frame(env, cmd_state, buffers)
-        if dist < _IK_DONE_TOL:
+        if dist < done_tol:
             break
     reached = _grasp_center(ctx).cpu().tolist()
     print(
@@ -470,25 +471,9 @@ def _collect_one_episode(env, record_every, rng=None):
     # cage fence around the apple; soft gains + closed-loop xy make fingertip
     # grazes harmless nudges.
     _run_phase(env, cmd_state, {"right_hand": [0.2] * 6}, buffers, 30, record_every, label="preshape")
-    # Two-stage approach: align xy HIGH above the apple first (fingertips reach
-    # at most ~10cm below the grasp center, so 22cm clearance cannot clip the
-    # apple), then drop VERTICALLY. A single diagonal approach swings the
-    # pitched-down fingertips through the apple column and flicks it away.
-    # The hand at this (IK-free) orientation has its palm facing +y and the
-    # finger pocket opening SIDEWAYS (+y) — camera frames show fingers arcing
-    # up-left; every top-down descend first strikes the apple with the little/
-    # index links and swats it. So: come down NEXT to the apple on its -y side
-    # (7cm gap, no contact), then SWEEP +y so the apple enters the sideways
-    # pocket; the thumb (+y side) becomes the far wall.
-    # Straddle descend: the mouth is a y-slot (fingertip curtain at y ~ gc,
-    # thumb tip at y +0.073). Descending at gc.y = apple.y - 0.04 drops the
-    # curtain just past the apple's -y surface and the thumb over its +y top
-    # edge — the apple is inside the mouth the moment the hand arrives, no
-    # sweep needed (any sweep contact rolls the apple 5-10cm away).
     # Roll the wrist -90deg so the hand mouth faces DOWN (it naturally faces
     # sideways/+y, which cannot retain a ball through arm motion — measured
-    # over many runs). After the roll the wrist and elbow_yaw are excluded
-    # from the position IK so the palm-down attitude stays locked.
+    # over many runs).
     roll_arm = list(cmd_state["right_arm"])
     roll_arm[6] = READY_RIGHT_ARM[6] - 1.57
     _run_phase(env, cmd_state, {"right_arm": roll_arm}, buffers, 60, record_every, label="roll")
@@ -500,67 +485,67 @@ def _collect_one_episode(env, record_every, rng=None):
     hold_joints = (0, 1, 2, 3, 4)
     yaw_ref = {4: roll_arm[4]}
 
-    # Closed-loop mouth alignment: xy servos the LIVE mouth center onto the
-    # apple (no hand-frame offset guessing); z tracks the grasp center.
-    gx, gy = apple0[0], apple0[1]
-    approach = [gx, gy, apple0[2] + 0.22]
-    _run_ik_phase(env, ctx, cmd_state, approach, 200, buffers, record_every, "approach",
-                  joint_subset=hold_joints, servo_mouth_xy=True, null_ref=yaw_ref)
-    hover = [gx, gy, apple0[2] + 0.12]
-    _run_ik_phase(env, ctx, cmd_state, hover, 140, buffers, record_every, "hover",
-                  max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True, null_ref=yaw_ref)
-    _print_hand_map(env, ctx)
+    # Grasp with verify-and-retry: a single blind cage attempt lands ~25%
+    # (cm-level sensitivity on a ball); verifying the lift and re-trying
+    # against the CURRENT apple position multiplies the episode success rate.
+    # Approach path per attempt: align xy HIGH (22cm, fingertips cannot clip
+    # the apple), drop vertically to hover, then descend to apple+0.04 (with
+    # the ~1cm early-exit tolerance the gc settles at the verified
+    # cage-around-equator height apple+0.05; deeper pins the fingertips
+    # against the tabletop, higher closes above the apple). xy servos the
+    # LIVE mouth center onto the apple (servo_mouth_xy), z tracks the gc.
+    held = False
+    for attempt in range(3):
+        apple_now = _object_pos(env)
+        if apple_now[2] < apple0[2] - 0.05:
+            print(f"[check:grasp] apple fell off the table, aborting attempts")
+            break
+        gx, gy = apple_now[0], apple_now[1]
+        approach = [gx, gy, apple_now[2] + 0.22]
+        _run_ik_phase(env, ctx, cmd_state, approach, 200, buffers, record_every, "approach",
+                      joint_subset=hold_joints, servo_mouth_xy=True, null_ref=yaw_ref)
+        hover = [gx, gy, apple_now[2] + 0.12]
+        _run_ik_phase(env, ctx, cmd_state, hover, 140, buffers, record_every, "hover",
+                      max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True, null_ref=yaw_ref)
+        beside = [gx, gy, apple_now[2] + 0.04]
+        _run_ik_phase(env, ctx, cmd_state, beside, 400, buffers, record_every, "descend",
+                      max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True, null_ref=yaw_ref,
+                      done_tol=0.008)
+        apple_d = _object_pos(env)
+        print(f"[check:descend] apple=({apple_d[0]:.3f},{apple_d[1]:.3f},{apple_d[2]:.3f})")
 
-    # Phase 2: descend beside the apple (still no contact), then print the
-    # full right-hand link map for pocket-geometry diagnosis, then sweep +y
-    # slowly to bring the apple into the pocket.
-    # Target apple + 0.04 so that with the ~1cm early-exit tolerance the gc
-    # settles at apple + 0.05 — the exact height of the verified-successful
-    # grasp (cage around the equator). 1cm higher and the cage closes above
-    # the apple; deeper pins the fingertips against the tabletop.
-    beside = [gx, gy, apple0[2] + 0.04]
-    _run_ik_phase(env, ctx, cmd_state, beside, 300, buffers, record_every, "descend",
-                  max_dq=0.006, joint_subset=hold_joints, servo_mouth_xy=True, null_ref=yaw_ref)
-    _print_hand_map(env, ctx)
-    apple_d = _object_pos(env)
-    print(f"[check:descend] apple=({apple_d[0]:.3f},{apple_d[1]:.3f},{apple_d[2]:.3f})")
+        # Close decisively (staggering gives the apple time to escape), let
+        # the squeeze settle, then verify with a lift.
+        _run_phase(env, cmd_state, {"right_hand": [0.7, 0.9, 0.95, 0.95, 0.95, 0.95]}, buffers, 60, record_every, label="close")
+        _run_phase(env, cmd_state, {}, buffers, 40, record_every, label="squeeze")
+        lift = [gx, gy, apple_now[2] + 0.15]
+        _run_ik_phase(env, ctx, cmd_state, lift, 200, buffers, record_every, "lift",
+                      max_dq=0.005, joint_subset=hold_joints, null_ref=yaw_ref)
+        apple_lifted = _object_pos(env)
+        held = apple_lifted[2] > apple0[2] + 0.06
+        print(f"[check:lift] attempt={attempt + 1} apple z {apple0[2]:.3f} -> "
+              f"{apple_lifted[2]:.3f} ({'HELD' if held else 'NOT HELD'})")
+        if held:
+            break
+        # Reopen to the pre-shape and try again at the apple's new position.
+        _run_phase(env, cmd_state, {"right_hand": [0.2] * 6}, buffers, 30, record_every, label="reopen")
 
-    # Phase 3: close in two stages (arm holds position). Fingers first, so they
-    # wall off the +x escape route; the thumb then pinches the apple against
-    # them (closing everything at once lets the thumb kick the apple forward).
-    # Single decisive close: thumb flexes down onto the apple's far-top side
-    # while the fingers pinch it against the curtain. No stagger — a staggered
-    # close gives the apple time to roll out of the mouth.
-    _run_phase(env, cmd_state, {"right_hand": [0.7, 0.85, 0.8, 0.8, 0.8, 0.8]}, buffers, 60, record_every, label="close")
-    # Let the squeeze settle before moving the arm.
-    _run_phase(env, cmd_state, {}, buffers, 40, record_every, label="squeeze")
-    _print_hand_map(env, ctx)
-
-    # Phase 4+: keep wrist/elbow_yaw frozen while holding the apple.
-    lift = [apple0[0], apple0[1], apple0[2] + 0.15]
-    _run_ik_phase(env, ctx, cmd_state, lift, 200, buffers, record_every, "lift",
-                  max_dq=0.005, joint_subset=hold_joints, null_ref=yaw_ref)
-    apple_lifted = _object_pos(env)
-    lifted = apple_lifted[2] > apple0[2] + 0.06
-    print(f"[check:lift] apple z {apple0[2]:.3f} -> {apple_lifted[2]:.3f} ({'HELD' if lifted else 'NOT HELD'})")
-
-    # Phase 5: carry the apple over the plate, then lower it to just above the
-    # plate surface before releasing (dropping from height bounces the apple
-    # off the plate).
     release_z = plate_top_z + _GRASP_OBJECT_RADIUS + 0.01
-    carry = [_PLATE_POS[0], _PLATE_POS[1], release_z + 0.09]
-    _run_ik_phase(env, ctx, cmd_state, carry, 240, buffers, record_every, "carry",
-                  max_dq=0.006, joint_subset=hold_joints, null_ref=yaw_ref)
-    lower = [_PLATE_POS[0], _PLATE_POS[1], release_z]
-    _run_ik_phase(env, ctx, cmd_state, lower, 120, buffers, record_every, "lower",
-                  max_dq=0.005, joint_subset=hold_joints, null_ref=yaw_ref)
+    if held:
+        # Carry the apple over the plate, lower to just above the plate
+        # surface (dropping from height bounces it off), and release.
+        carry = [_PLATE_POS[0], _PLATE_POS[1], release_z + 0.09]
+        _run_ik_phase(env, ctx, cmd_state, carry, 240, buffers, record_every, "carry",
+                      max_dq=0.006, joint_subset=hold_joints, null_ref=yaw_ref)
+        lower = [_PLATE_POS[0], _PLATE_POS[1], release_z]
+        _run_ik_phase(env, ctx, cmd_state, lower, 120, buffers, record_every, "lower",
+                      max_dq=0.005, joint_subset=hold_joints, null_ref=yaw_ref)
+        _run_phase(env, cmd_state, {"right_hand": [0.0] * 6}, buffers, 50, record_every)
 
-    # Phase 6: open the hand, releasing the apple onto the plate.
-    _run_phase(env, cmd_state, {"right_hand": [0.0] * 6}, buffers, 50, record_every)
-
-    # Phase 7: retreat up and return the arm to the ready pose, then settle.
+    # Retreat up and return the arm to the ready pose, then settle.
     retreat = [_PLATE_POS[0] - 0.06, _PLATE_POS[1] - 0.06, release_z + 0.15]
     _run_ik_phase(env, ctx, cmd_state, retreat, 60, buffers, record_every, "retreat")
+    _run_phase(env, cmd_state, {"right_hand": [0.0] * 6}, buffers, 20, record_every)
     _run_phase(env, cmd_state, {"right_arm": list(READY_RIGHT_ARM)}, buffers, 120, record_every)
     _run_phase(env, cmd_state, {}, buffers, 40, record_every)
 

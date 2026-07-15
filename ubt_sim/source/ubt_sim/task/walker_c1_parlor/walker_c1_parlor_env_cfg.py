@@ -49,12 +49,12 @@ _TABLE_SIZE = (0.60, 1.20, 0.06)
 _PLATE_POS = (8.374, 6.046, 0.90)                 # disk top at z = 0.925 (in-dish)
 _PLATE_RADIUS = 0.085
 _PLATE_HEIGHT = 0.05
-# r=0.027 (small apple): the C1 hand's tripod mouth has a ~5-6cm effective
-# aperture at its natural palm-sideways orientation — a 7cm sphere physically
-# cannot be caged (measured via hand-map: at full close no link reaches the
-# ball's surface). 5.4cm fits.
-_GRASP_OBJECT_RADIUS = 0.027
-_GRASP_OBJECT_MASS = 0.1
+# r=0.022 (plum-sized apple): the C1 hand's cage aperture is ~5-6cm, so the
+# object diameter sets the alignment margin. 5.4cm left only mm of slack —
+# grasp outcomes flipped between spawns 6mm apart; 4.4cm gives ~±0.8cm,
+# matching what the closed-loop mouth servo can reliably deliver.
+_GRASP_OBJECT_RADIUS = 0.022
+_GRASP_OBJECT_MASS = 0.08
 # Apple start: near the table front edge, in front of the right hand
 # (ready-pose palm sits at world ~(8.04, 5.89, 0.85+)).
 _GRASP_OBJECT_INIT_POS = (8.21, 5.90, _TABLE_TOP_Z + _GRASP_OBJECT_RADIUS + 0.002)
