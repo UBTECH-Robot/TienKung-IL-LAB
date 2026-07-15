@@ -2,7 +2,7 @@ import isaaclab.envs.mdp as mdp
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ViewerCfg
-from isaaclab.managers import ObservationGroupCfg, SceneEntityCfg
+from isaaclab.managers import EventTermCfg, ObservationGroupCfg, SceneEntityCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import TiledCameraCfg
 from isaaclab.utils import configclass
@@ -211,7 +211,11 @@ class ObservationsCfg:
 
 @configclass
 class EventCfg:
-    pass
+    # Without this, env.reset() does NOT restore scene entity states: the
+    # apple stays wherever the previous episode left it (and the robot keeps
+    # its joint state). Masked for a long time by --randomize (which writes
+    # the apple pose explicitly) and by episodes ending at the ready pose.
+    reset_scene = EventTermCfg(func=mdp.reset_scene_to_default, mode="reset")
 
 
 @configclass
