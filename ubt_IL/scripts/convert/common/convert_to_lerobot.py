@@ -5,7 +5,6 @@ import logging
 import shutil
 from pathlib import Path
 
-import cv2
 import h5py
 import numpy as np
 from tqdm import tqdm
@@ -13,31 +12,22 @@ from tqdm import tqdm
 from lerobot.datasets import LeRobotDataset
 from lerobot.configs.video import VideoEncoderConfig
 
-# lerobot 0.5.x validate_feature_numpy_array compares numpy .shape (tuple)
-# against feature spec shape (list) directly with !=, which always fails.
-# Patch to normalize both sides to tuple before comparison.
-try:
-    from lerobot.datasets import feature_utils as _fu
-
-    _orig_validate = _fu.validate_feature_numpy_array
-
-    def _patched_validate(name, expected_dtype, expected_shape, value):
-        if isinstance(value, np.ndarray) and isinstance(expected_shape, list):
-            expected_shape = tuple(expected_shape)
-        return _orig_validate(name, expected_dtype, expected_shape, value)
-
-    _fu.validate_feature_numpy_array = _patched_validate
-except Exception:
-    pass
-
-
 def load_config(config_path: str) -> tuple[dict, dict]:
-    """Load config JSON, extracting hdf5_mapping and returning (features, mapping)."""
+    """Load config JSON, extracting hdf5_mapping and returning (features, mapping).
+
+    Feature shapes are normalized from lists to tuples so LeRobot 0.5.x
+    list-vs-tuple comparisons work without monkey-patching.
+    """
     with open(config_path, "r") as f:
         config = json.load(f)
 
     mapping = config.pop("hdf5_mapping", None)
     features = config  # remaining keys are the LeRobot feature schema
+
+    # Normalize shape lists to tuples (avoids LeRobot 0.5.x list!=tuple bug)
+    for key, spec in features.items():
+        if isinstance(spec, dict) and isinstance(spec.get("shape"), list):
+            spec["shape"] = tuple(spec["shape"])
 
     if mapping is None:
         raise ValueError(
@@ -50,12 +40,28 @@ def load_config(config_path: str) -> tuple[dict, dict]:
     return features, mapping
 
 
+def _decode_hdf5_cell(cell) -> str:
+    """Decode a single HDF5 object/bytes cell to str."""
+    if isinstance(cell, np.ndarray):
+        if cell.shape:
+            cell = cell.reshape(-1)[0]
+        else:
+            cell = cell.item()
+    if isinstance(cell, bytes):
+        return cell.decode("utf-8")
+    return str(cell)
+
+
 def _read_hdf5_part(file, spec) -> np.ndarray:
     """Read a single part from HDF5 according to a mapping spec element.
 
     spec can be:
       - str: direct HDF5 key, read full array
-      - dict: {"hdf5_key": ..., "expand_dims": true, "repeat": N, "pad": [v1, ...], "invert": true}
+      - dict: {"hdf5_key": ..., "expand_dims": true, "repeat": N, "pad": [...], "invert": true,
+                "extract": "position_by_name" | "field", ...}
+        "extract" (optional): how to parse JSON-list data —
+          "position_by_name" + "names": [...] → extract joint positions by name
+          "field" + "field": "pos"            → extract a scalar field from each JSON object
         "expand_dims" (optional): if true and data is 1D, expand to (T, 1)
         "repeat" (optional): repeat the value N times along last axis
         "pad" (optional): append constant values along last axis
@@ -67,6 +73,35 @@ def _read_hdf5_part(file, spec) -> np.ndarray:
     hdf5_key = spec["hdf5_key"]
     data = np.array(file[hdf5_key])
 
+    # --- JSON-list extraction (for real robot data) ---
+    if "extract" in spec:
+        extract_type = spec["extract"]
+        raw_list = [
+            json.loads(_decode_hdf5_cell(cell))
+            for cell in data.reshape(-1)
+        ]
+
+        if extract_type == "position_by_name":
+            names = spec["names"]
+            frames = []
+            for msg in raw_list:
+                name_to_pos = dict(zip(msg["name"], msg["position"]))
+                frames.append([name_to_pos[n] for n in names])
+            data = np.asarray(frames, dtype=np.float32)
+
+        elif extract_type == "field":
+            field = spec["field"]
+            data = np.asarray(
+                [float(msg[field]) for msg in raw_list], dtype=np.float32
+            )
+
+        else:
+            raise ValueError(
+                f"Unknown extract type '{extract_type}'. "
+                f"Supported: position_by_name, field"
+            )
+
+    # --- transforms (applied after extraction, if any) ---
     if spec.get("expand_dims", False) and data.ndim == 1:
         data = data[:, None]
 
@@ -85,6 +120,49 @@ def _read_hdf5_part(file, spec) -> np.ndarray:
         data = np.concatenate([data, pad_arr], axis=-1)
 
     return data
+
+
+def _read_mp4_via_value_list(
+    raw_value_list: h5py.Dataset,
+    hdf5_path: Path,
+    image_size: tuple[int, int],
+) -> list[np.ndarray]:
+    """Read MP4 video frames from a sidecar file referenced by HDF5 value_list.
+
+    The value_list column contains relative paths (e.g. ``camera_data/.../xxx_aligned.mp4``).
+    All rows typically reference the same MP4; the first non-empty entry is used.
+    """
+    values = [
+        _decode_hdf5_cell(cell)
+        for cell in np.asarray(raw_value_list[()]).reshape(-1)
+    ]
+    candidates = [v for v in values if v]
+    if not candidates:
+        raise ValueError("Camera value_list is empty — no MP4 path found.")
+    rel_path = candidates[0]
+    mp4_path = (hdf5_path.parent / rel_path).resolve()
+    if not mp4_path.is_file():
+        raise FileNotFoundError(
+            f"Camera MP4 not found: {mp4_path}\n"
+            f"  value_list relative path: {rel_path}\n"
+            f"  Check the camera_data directory alongside the HDF5."
+        )
+
+    import imageio.v3 as iio
+    from PIL import Image
+
+    width, height = int(image_size[0]), int(image_size[1])
+    frames = []
+    for frame_rgb in iio.imiter(mp4_path):
+        if frame_rgb.ndim == 2:
+            frame_rgb = np.stack([frame_rgb, frame_rgb, frame_rgb], axis=-1)
+        elif frame_rgb.shape[-1] == 4:
+            frame_rgb = frame_rgb[..., :3]
+        img = Image.fromarray(frame_rgb.astype(np.uint8))
+        frames.append(
+            np.asarray(img.resize((width, height), getattr(Image, "Resampling", Image).BILINEAR))
+        )
+    return frames
 
 
 def validate_mapping(mapping: dict, features: dict) -> None:
@@ -204,28 +282,32 @@ def process_episode(
                     raw = file[hdf5_key]
 
                     if encoding == "jpeg":
+                        import cv2
                         images = []
                         for buf in raw:
                             img = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
                             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                             images.append(cv2.resize(img, image_size))
                     elif encoding == "png_depth":
-                        # uint16 millimeter depth -> 3-channel uint8 video frame
-                        # (Pick_up_the_apple_all 约定：复制到 3 通道，走 mp4 编码，is_depth_map=false)
+                        import cv2
                         depth_clip_mm = field_spec.get("depth_clip_mm", 8000)
                         images = []
                         for buf in raw:
                             d16 = cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_UNCHANGED)
                             d16 = cv2.resize(d16, image_size, interpolation=cv2.INTER_NEAREST)
-                            # 量化：[0, clip_mm] -> [0, 255]，超出 clip 的远处截断到 255
                             d8 = np.clip(d16, 0, depth_clip_mm).astype(np.float32)
                             d8 = (d8 * (255.0 / depth_clip_mm)).astype(np.uint8)
-                            images.append(np.stack([d8, d8, d8], axis=-1))  # (H, W, 3)
+                            images.append(np.stack([d8, d8, d8], axis=-1))
                     elif encoding == "raw":
                         images = [
                             cv2.resize(img, image_size)
                             for img in raw
                         ]
+                    elif encoding == "mp4_value_list":
+                        # Real robot: value_list → MP4 path → video frames
+                        images = _read_mp4_via_value_list(
+                            raw, episode_path, image_size
+                        )
                     else:
                         raise ValueError(
                             f"Unknown encoding '{encoding}' for '{lerobot_key}'"
@@ -299,9 +381,12 @@ def main():
     parser.add_argument("--hdf5_rel_path", type=str, default="trajectory.hdf5", help="Relative path to HDF5 file within each episode dir")
     parser.add_argument("--image_writer_processes", type=int, default=4, help="Number of image writer processes")
     parser.add_argument("--image_writer_threads", type=int, default=4, help="Number of image writer threads")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Overwrite existing output dataset (default: always overwrite)")
     parser.add_argument("--vcodec", type=str, default="h264",
                         help="Video codec: h264 (default, closest to Pick_up's mp4v), libsvtav1 (av1), hevc, auto. "
                              "Note: mpeg4/mp4v is rejected by lerobot's codec whitelist.")
+    parser.add_argument("--stream-video", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     # Load configuration
