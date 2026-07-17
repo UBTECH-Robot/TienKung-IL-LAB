@@ -570,6 +570,24 @@ def main():
 
     env: ManagerBasedRLEnv = gym.make(args_cli.task, cfg=env_cfg).unwrapped
 
+    # In GUI mode, open a second viewport showing the recorded head-camera
+    # view (what actually goes into the dataset). No-op when headless.
+    if not getattr(args_cli, "headless", False):
+        try:
+            from omni.kit.viewport.utility import create_viewport_window
+
+            cam_path = "/World/envs/env_0/Robot/head_pitch_link/Camera_RGB"
+            vp_window = create_viewport_window(
+                "HeadCam (dataset view)", width=480, height=360, position_x=60, position_y=60
+            )
+            if hasattr(vp_window.viewport_api, "set_active_camera"):
+                vp_window.viewport_api.set_active_camera(cam_path)
+            else:
+                vp_window.viewport_api.camera_path = cam_path
+            print(f"[INFO] Head-camera viewport opened at {cam_path}")
+        except Exception as exc:
+            print(f"[WARN] Could not open the head-camera viewport: {exc}")
+
     import random
 
     rng = random.Random() if args_cli.randomize else None
