@@ -56,8 +56,23 @@ if [ -z "${UBT_SIM_NO_BRIDGE:-}" ]; then
         export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 
         if [ "$ROBOT" = "walker_c1" ]; then
-            echo "[INFO] Walker C1 ROS2-ZMQ bridge is not implemented yet. Skipping bridge."
-            BRIDGE_PID=""
+            # Walker C1: SDK message packages are required
+            if [ -f /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash ]; then
+                set +u
+                source /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash
+                set -u
+            else
+                echo "[ERROR] Walker SDK ROS2 messages not built: /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash"
+                echo "[INFO] Run inside container: cd /ubt_sim/docker && bash run.sh init"
+                exit 1
+            fi
+            # This container only ships the default FastRTPS RMW; cyclonedds
+            # (the S2 default) is not installed and makes rclpy exit at boot.
+            export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+            BRIDGE_CFG="${UBT_SIM_WALKER_C1_BRIDGE_CONFIG:-$PROJECT_DIR/teleoperation/bridges/walker_c1/walker_c1_bridge_config.yaml}"
+            /usr/bin/python3 "$PROJECT_DIR/teleoperation/bridges/walker_c1/walker_c1_ros2_zmq_bridge.py" \
+                --config "$BRIDGE_CFG" &
+            BRIDGE_PID=$!
         elif [ "$ROBOT" = "walker_s2" ]; then
             # Walker S2: SDK message packages are required
             if [ -f /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash ]; then
