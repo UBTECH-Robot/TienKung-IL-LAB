@@ -1931,6 +1931,72 @@ M  ubt_sim/source/ubt_sim/devices/walker_c1/config.py    手部增益 10/1/2
 6. 左腿碰撞小尾巴、真机 joint order 校对：老未结项不变。
 ```
 
+## 2026-07-17 Update：优先级转向 ROS 工具链 + C1 bridge 完成并验证
+
+**用户明确新目标：不是刷数据，是工具链——同一套控制代码通过 ROS SDK 话题，仿真和
+真机行为一致（切 ROS_DOMAIN_ID 146↔0）。** in-process 采集器保留作调试用。
+
+### 已完成（commit 820faee）
+
+```
++ teleoperation/bridges/walker_c1/walker_c1_ros2_zmq_bridge.py + yaml
+  SDK 话题面：/mc/sdk/robot_command|robot_state、/mc/{left,right}_hand/command|
+  joint_states、/sensor/camera/head/color|depth/raw、/sim/cmd_reset（仿真 only）。
+  身体命令按名映射（含 elbow_roll/elbow_pitch 双别名兼容——SDK 文档 vs URDF 命名
+  歧义两头都认）；手部 6D SDK 名映射到 11 关节仿真手（复用 action_process 逻辑）。
+M scripts/start_sim.sh  C1 分支启动 bridge；RMW 默认 rmw_fastrtps_cpp。
+```
+
+### 端到端验证（全部实测通过）
+
+```
+ros2 pub RobotCommand head_pitch 0.3      -> 仿真 head_pitch 0.301 ✓
+ros2 pub RobotCommand R_elbow_roll -0.8   -> 仿真 R_elbow_pitch -0.788 ✓（别名兼容）
+ros2 pub JointCommand right_hand 0.5x6    -> 仿真 SDK 手关节 0.495 ✓（与身体并发）
+/mc/sdk/robot_state / hand joint_states   -> 数据流 ✓
+/sensor/camera/head/color/raw             -> 25.4 Hz ✓（C++ image bridge）
+```
+
+### 踩坑记录（重要）
+
+```
+1. 容器没装 colcon —— run.sh init 的"Build Walker SDK ROS2 messages"一直静默失败。
+   已 pip 装 colcon-common-extensions 并编译到 /opt/ubt_sim/walker_sdk_ros2_msgs。
+   （注意 colcon 是装在容器里的，容器重建后要重装。）
+2. S2 分支的 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp 在本容器会让 rclpy 启动即退
+   （只装了 fastrtps）。C1 分支默认 rmw_fastrtps_cpp。
+3. bridge cmd socket 不能抄 S2 的 SNDHWM=1：身体+手是两条背靠背消息，1 深队列
+   会系统性丢掉先发的一条（手部命令 100% 被丢）。C1 控制器 advance() 是
+   "排干全部+合并"语义，SNDHWM=16 正确。
+4. 杀 start_sim.sh 时 kit python 进程可能残留占住 5655/5656 端口
+   （Address already in use）——pgrep -af sim_runner 精确清理。
+```
+
+### 启动方式
+
+```bash
+# 全栈（仿真+bridge），仿真域 146：
+docker exec walker-c1-ubt-sim bash -lc "cd /ubt_sim && \
+  UBT_SIM_TASK=UBTSim-WalkerC1-Parlor-v0 ROS_DOMAIN_ID=146 \
+  bash scripts/start_sim.sh --headless --device cpu --step_hz 30"
+# ROS 侧环境：
+source /opt/ros/humble/setup.bash
+source /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash
+export ROS_DOMAIN_ID=146   # 真机=0
+```
+
+### 下一步
+
+```
+1. 抓放控制移植成 rclpy 脚本（teleoperation/control/walker_c1/，Py3.10，只用 SDK 话题）：
+   - IK 不能再用仿真雅可比 -> URDF + ikpy（参照天工 robot_controller.py）；
+   - 苹果位置作参数/配置（仿真=已知出生点；真机=将来接感知）；
+   - reset.py 已有 ROS 骨架，可从"归位"开始验证。
+2. 上真机第一件事不变：dump /mc/sdk/robot_state 的 joint_states.name，
+   核对肘部命名（bridge 已双兼容，但控制脚本侧要以真机名为准）。
+3. 左腿碰撞小尾巴等老未结项不变。
+```
+
 ### 场景改造（walker_c1_parlor_env_cfg.py + scene_v2_c1.usda + parlor.yaml）
 
 ```
