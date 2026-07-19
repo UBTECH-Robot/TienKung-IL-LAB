@@ -236,6 +236,7 @@ class WalkerC1RosBridge(Node):
                     "object_pos_w": data.get("object_pos_w"),
                     "robot_root_pose_w": data.get("robot_root_pose_w"),
                     "right_hand_links_w": data.get("right_hand_links_w"),
+                    "sim_step": data.get("sim_step"),
                 }
             )
             self.pubs["object_state"].publish(msg)

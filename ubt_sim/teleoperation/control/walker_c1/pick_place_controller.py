@@ -43,6 +43,12 @@ except ImportError:
 APPLE_SPAWN_W = (8.21, 5.90, 0.95)     # dropped slightly above the tabletop
 PLATE_CENTER_W = (8.374, 6.046, 0.925)
 APPLE_RADIUS = 0.022
+
+# Palm axis for the grasp phases: the PROVEN attitude's palm normal (from the
+# successful in-process trajectory) — tilted ~33 deg, NOT straight down. The
+# tilted cage cradles the ball against the palm corner; a straight-down cage
+# leaves the ball hanging over the open bottom gap and it ratchets out.
+GRASP_PALM_AXIS = (0.4528, 0.2907, -0.8429)
 SUCCESS_DIST = 0.12                     # Tienkung uses 0.12 m
 
 # All grasp-phase waypoints lock the FULL palm attitude to the proven cage
@@ -126,7 +132,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             if not self.move_right_arm([gx, gy, HOVER_Z], rot, duration=2.5):
                 return False
             self.get_logger().info("descend to grasp height ...")
-            if not self.move_right_arm([gx, gy, grasp_z], palm_axis=(0, 0, -1), duration=2.5):
+            if not self.move_right_arm([gx, gy, grasp_z], palm_axis=GRASP_PALM_AXIS, duration=2.5):
                 return False
             self.spin_for(0.5)
 
@@ -145,7 +151,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
                 if float(np.linalg.norm(err)) < 0.008:
                     break
                 palm_xy = palm_xy + err
-                if not self.move_right_arm([palm_xy[0], palm_xy[1], grasp_z], palm_axis=(0, 0, -1), duration=0.8):
+                if not self.move_right_arm([palm_xy[0], palm_xy[1], grasp_z], palm_axis=GRASP_PALM_AXIS, duration=0.8):
                     break
             self.spin_for(0.3)
             # The aligned palm xy is the new anchor for every hold-phase waypoint;
@@ -153,10 +159,19 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             gx, gy = float(palm_xy[0]), float(palm_xy[1])
 
             # 4. Close, verify nothing exploded, lift.
-            self.get_logger().info("closing hand ...")
-            # The proven close: thumb swing 0.7 / thumb mcp 0.85, fingers 0.8.
-            self.move_hand("right", [0.75, 0.9, 0.9, 0.9, 0.9, 0.9])
-            self.spin_for(1.5)
+            self.get_logger().info("closing hand (staged, soft-contact) ...")
+            # Staged close: with stiffness-25 fingers a single deep command
+            # slams the ball off the table (force = k * command deficit).
+            # Small increments keep the deficit — and thus the contact force —
+            # gentle all the way in, while the final depth still enjoys the
+            # stiff hold.
+            final_close = [0.7, 0.9, 0.95, 0.95, 0.95, 0.95]
+            start_close = [0.2] * 6
+            for step in range(1, 11):
+                t = step / 10.0
+                self.move_hand("right", [(1 - t) * a + t * b for a, b in zip(start_close, final_close)], repeats=2)
+                self.spin_for(0.15)
+            self.spin_for(0.8)
             hand_now = [round(float(self.hand_pos.get(n, -9)), 3) for n in
                         ("right_thumb_swing", "right_thumb_mcp", "right_index_mcp",
                          "right_middle_mcp", "right_ring_mcp", "right_little_mcp")]
@@ -176,9 +191,9 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             # the apple off the table (deep-closing on the table squeezes the
             # apple out, but once airborne the same deep close only wraps it),
             # tighten, then continue up.
-            self.move_right_arm([gx, gy, grasp_z + 0.025], palm_axis=(0, 0, -1), duration=2.0, corrections=0)
+            self.move_right_arm([gx, gy, grasp_z + 0.025], palm_axis=GRASP_PALM_AXIS, duration=2.0, corrections=0)
             self.spin_for(0.3)
-            self.move_right_arm([gx, gy, LIFT_Z], palm_axis=(0, 0, -1), duration=3.5, corrections=0)
+            self.move_right_arm([gx, gy, LIFT_Z], palm_axis=GRASP_PALM_AXIS, duration=3.5, corrections=0)
             self.spin_for(0.5)
             tracing[0] = False; th.join(timeout=1.0)
             self.get_logger().info(f"apple z trace during lift: {trace}")

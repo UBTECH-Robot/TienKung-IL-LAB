@@ -150,6 +150,24 @@ class WalkerC1RobotController(Node):
         except json.JSONDecodeError:
             pass
 
+    def sim_step(self):
+        return self.object_state.get("sim_step")
+
+    def wait_sim_steps(self, k: int, timeout: float = 10.0) -> None:
+        """Advance in SIM time: block until the simulator has stepped k more
+        physics steps (falls back to wall time if the counter is absent, e.g.
+        on the real robot where sim time == wall time)."""
+        start = self.sim_step()
+        if start is None:
+            self.spin_for(k * 0.01)
+            return
+        end = time.time() + timeout
+        while time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.02)
+            now = self.sim_step()
+            if now is not None and now - start >= k:
+                return
+
     def spin_for(self, seconds: float) -> None:
         end = time.time() + seconds
         while time.time() < end:

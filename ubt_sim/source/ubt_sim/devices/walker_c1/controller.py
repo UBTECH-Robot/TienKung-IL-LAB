@@ -137,6 +137,8 @@ class WalkerC1Controller(DeviceBase):
 
     def _send_status(self) -> None:
         status = to_ros_data(self.env, self._action if isinstance(self._action, dict) else {"walker_c1": self._action})
+        self._sim_step = getattr(self, "_sim_step", 0) + 1
+        status["sim_step"] = self._sim_step
         self.pub_socket.send_json(status, flags=zmq.NOBLOCK)
 
     def _send_camera_data(self) -> None:
