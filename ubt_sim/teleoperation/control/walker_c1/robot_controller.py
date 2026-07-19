@@ -262,26 +262,30 @@ class WalkerC1RobotController(Node):
 
     def move_right_arm_joints(self, target_arm: Sequence[float], duration: float = 2.0,
                               hz: float = 20.0) -> None:
-        """Ramp the right arm from its current angles to target over duration."""
+        """Ramp the right arm to target over `duration` SIM seconds, paced by
+        physics steps (one command per 3 steps = the cadence the proven
+        trajectories were recorded at). Falls back to wall pacing on the real
+        robot via wait_sim_steps."""
         start = self._last_cmd_arm or self.current_arm()
-        steps = max(int(duration * hz), 1)
-        for i in range(steps):
-            t = (i + 1) / steps
+        updates = max(int(duration * 100 / 3), 1)
+        for i in range(updates):
+            t = (i + 1) / updates
             arm = [(1 - t) * a + t * b for a, b in zip(start, target_arm)]
             self._publish_arm(arm)
-            self.spin_for(1.0 / hz)
+            self.wait_sim_steps(3, timeout=5.0)
         self._last_cmd_arm = list(target_arm)
 
     def move_right_arm(self, pos_base: Sequence[float], rot_mat: Optional[np.ndarray] = None,
                        palm_axis: Optional[Sequence[float]] = None, duration: float = 2.0,
-                       corrections: int = 3, tol: float = 0.008) -> bool:
+                       corrections: int = 3, tol: float = 0.008,
+                       seed_arm: Optional[Sequence[float]] = None) -> bool:
         """IK to a base-frame palm pose, ramp there, then close the loop:
         measure the FK error (gravity sag / tracking lag) and re-command a
         virtually offset target until the palm is within tol. This is the ROS
         equivalent of the in-process lesson 'integrate the correction on the
         COMMAND' — open-loop position IK alone leaves ~2cm of sag."""
         target = np.array(pos_base, dtype=float)
-        arm = self.solve_ik(target, rot_mat=rot_mat, palm_axis=palm_axis)
+        arm = self.solve_ik(target, rot_mat=rot_mat, palm_axis=palm_axis, seed_arm=seed_arm)
         if arm is None:
             return False
         self.move_right_arm_joints(arm, duration=duration)

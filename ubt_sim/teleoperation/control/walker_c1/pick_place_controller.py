@@ -49,6 +49,12 @@ APPLE_RADIUS = 0.022
 # tilted cage cradles the ball against the palm corner; a straight-down cage
 # leaves the ball hanging over the open bottom gap and it ratchets out.
 GRASP_PALM_AXIS = (0.4528, 0.2907, -0.8429)
+
+# The winner's arm configuration at the grasp moment (successful trajectory
+# 1784105817, one frame before close). Used as the IK SEED for the grasp
+# waypoints: the solver converges to a nearby solution, reproducing the same
+# cage yaw/shape instead of whatever yaw mode-Z happens to land on.
+WINNER_GRASP_ARM = (-0.4956, 0.1101, 0.9075, 0.0778, -0.0356, -0.3578, -1.3735)
 SUCCESS_DIST = 0.12                     # Tienkung uses 0.12 m
 
 # All grasp-phase waypoints lock the FULL palm attitude to the proven cage
@@ -129,12 +135,12 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             #    approaching, then palm-down approach and vertical descend.
             self.move_hand("right", [0.2] * 6)
             self.get_logger().info("approach above apple ...")
-            if not self.move_right_arm([gx, gy, HOVER_Z], rot, duration=2.5):
+            if not self.move_right_arm([gx, gy, HOVER_Z], rot, duration=2.5, seed_arm=WINNER_GRASP_ARM):
                 return False
             self.get_logger().info("descend to grasp height ...")
-            if not self.move_right_arm([gx, gy, grasp_z], palm_axis=GRASP_PALM_AXIS, duration=2.5):
+            if not self.move_right_arm([gx, gy, grasp_z], rot_mat=self.grasp_attitude, duration=2.5, seed_arm=WINNER_GRASP_ARM):
                 return False
-            self.spin_for(0.5)
+            self.wait_sim_steps(50, timeout=10.0)
 
             # Closed-loop mouth-over-apple alignment (the mechanism that made the
             # in-process grasp reliable): measure the actual cage-mouth center and
@@ -151,7 +157,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
                 if float(np.linalg.norm(err)) < 0.008:
                     break
                 palm_xy = palm_xy + err
-                if not self.move_right_arm([palm_xy[0], palm_xy[1], grasp_z], palm_axis=GRASP_PALM_AXIS, duration=0.8):
+                if not self.move_right_arm([palm_xy[0], palm_xy[1], grasp_z], rot_mat=self.grasp_attitude, duration=0.8, seed_arm=WINNER_GRASP_ARM):
                     break
             self.spin_for(0.3)
             # The aligned palm xy is the new anchor for every hold-phase waypoint;
@@ -170,8 +176,8 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             for step in range(1, 11):
                 t = step / 10.0
                 self.move_hand("right", [(1 - t) * a + t * b for a, b in zip(start_close, final_close)], repeats=2)
-                self.spin_for(0.15)
-            self.spin_for(0.8)
+                self.wait_sim_steps(15, timeout=5.0)
+            self.wait_sim_steps(80, timeout=10.0)
             hand_now = [round(float(self.hand_pos.get(n, -9)), 3) for n in
                         ("right_thumb_swing", "right_thumb_mcp", "right_index_mcp",
                          "right_middle_mcp", "right_ring_mcp", "right_little_mcp")]
@@ -192,9 +198,9 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             # apple out, but once airborne the same deep close only wraps it),
             # tighten, then continue up.
             self.move_right_arm([gx, gy, grasp_z + 0.025], palm_axis=GRASP_PALM_AXIS, duration=2.0, corrections=0)
-            self.spin_for(0.3)
+            self.wait_sim_steps(30, timeout=10.0)
             self.move_right_arm([gx, gy, LIFT_Z], palm_axis=GRASP_PALM_AXIS, duration=3.5, corrections=0)
-            self.spin_for(0.5)
+            self.wait_sim_steps(50, timeout=10.0)
             tracing[0] = False; th.join(timeout=1.0)
             self.get_logger().info(f"apple z trace during lift: {trace}")
 
