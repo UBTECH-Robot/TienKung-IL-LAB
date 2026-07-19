@@ -70,12 +70,40 @@ class WalkerC1Controller(DeviceBase):
         self.reset_requested = False
         reset_hold_targets()
 
+    def _apply_pending_object_pose(self) -> None:
+        pos = getattr(self, "_pending_object_pos", None)
+        if pos is None or "object" not in self.env.scene.keys():
+            self._pending_object_pos = None
+            return
+        try:
+            import torch
+
+            obj = self.env.scene["object"]
+            pose = obj.data.root_state_w[:, :7].clone()
+            pose[0, 0], pose[0, 1], pose[0, 2] = pos[0], pos[1], pos[2]
+            pose[0, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=pose.device)
+            obj.write_root_pose_to_sim(pose)
+            obj.write_root_velocity_to_sim(torch.zeros((1, 6), device=pose.device))
+            print(f"[INFO] Walker C1 object teleported to {pos}")
+        except Exception as exc:
+            print(f"[WARN] set_object_pose failed: {exc}")
+        finally:
+            self._pending_object_pos = None
+
     def add_callback(self, key, func):
         pass
 
     def _merge_command(self, msg: dict[str, Any]) -> None:
         if msg.get("reset"):
             self.reset_requested = True
+            return
+
+        if "set_object_pose" in msg:
+            # Sim-only helper (Tienkung-style): the task script COMMANDS the
+            # graspable object's world position instead of sensing it.
+            pose = msg["set_object_pose"]
+            if isinstance(pose, (list, tuple)) and len(pose) >= 3:
+                self._pending_object_pos = [float(v) for v in pose[:3]]
             return
 
         if "walker_c1" in msg:
@@ -167,6 +195,7 @@ class WalkerC1Controller(DeviceBase):
                     break
                 except json.JSONDecodeError:
                     break
+            self._apply_pending_object_pose()
 
             try:
                 self._send_status()

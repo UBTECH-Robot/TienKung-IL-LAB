@@ -32,8 +32,9 @@ import threading
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from geometry_msgs.msg import Point
 from sensor_msgs.msg import Image, JointState
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 import yaml
 import zmq
 
@@ -97,6 +98,8 @@ MSG_TYPES = {
     "RobotCommand": RobotCommand,
     "JointCommand": JointCommand,
     "Bool": Bool,
+    "String": String,
+    "Point": Point,
     "RobotState": RobotState,
     "JointState": JointState,
     "Image": Image,
@@ -131,6 +134,7 @@ class WalkerC1RosBridge(Node):
             "left_hand_command": lambda msg: self.hand_cb(msg, "left"),
             "right_hand_command": lambda msg: self.hand_cb(msg, "right"),
             "reset": self.reset_cb,
+            "set_object_pose": self.set_object_pose_cb,
         }
         for key, spec in self.cfg["topics"]["sub"].items():
             callback = sub_callbacks.get(key)
@@ -176,6 +180,13 @@ class WalkerC1RosBridge(Node):
         if msg.data:
             self.cmd_socket.send_json({"reset": True})
 
+    def set_object_pose_cb(self, msg: Point):
+        # Sim-only: teleport the graspable object to a world position.
+        self.cmd_socket.send_json(
+            {"set_object_pose": [float(msg.x), float(msg.y), float(msg.z)],
+             "source": "walker_c1_set_object_pose"}
+        )
+
     # ── ZMQ -> ROS ──
     def _poll_loop(self):
         poller = zmq.Poller()
@@ -215,6 +226,19 @@ class WalkerC1RosBridge(Node):
                 data.get("right_hand_sdk_pos", []),
             )
         )
+
+        if "object_state" in self.pubs and "object_pos_w" in data:
+            import json as _json
+
+            msg = String()
+            msg.data = _json.dumps(
+                {
+                    "object_pos_w": data.get("object_pos_w"),
+                    "robot_root_pose_w": data.get("robot_root_pose_w"),
+                    "right_hand_links_w": data.get("right_hand_links_w"),
+                }
+            )
+            self.pubs["object_state"].publish(msg)
 
     def _make_hand_state(self, names: list, positions: list) -> JointState:
         msg = JointState()

@@ -288,4 +288,19 @@ def to_ros_data(env, cached_command: dict[str, Any] | None = None) -> dict[str, 
         status["target_joint_pos"] = [float(_hold_joint_targets[name]) for name in _hold_joint_targets]
     if cached_command:
         status["cached_command"] = cached_command
+    # Sim-only extras for the ROS task scripts: graspable object + robot base
+    # world poses (a real robot cannot provide these; scripts must treat them
+    # as optional).
+    try:
+        if "object" in env.scene.keys():
+            status["object_pos_w"] = env.scene["object"].data.root_pos_w[0].detach().cpu().tolist()
+        status["robot_root_pose_w"] = robot.data.root_state_w[0, :7].detach().cpu().tolist()
+        body_names = list(robot.data.body_names)
+        hand_links = {}
+        for i, name in enumerate(body_names):
+            if name == "R_palm_link" or (name.startswith("R_") and name.endswith(("_ip_link", "_mpp_link", "_cmp_link"))):
+                hand_links[name] = robot.data.body_pos_w[0, i].detach().cpu().tolist()
+        status["right_hand_links_w"] = hand_links
+    except Exception:
+        pass
     return status

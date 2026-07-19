@@ -178,8 +178,8 @@ WALKER_C1_ARM_DAMPING = {name: 40 for name in WALKER_C1_ARM_JOINTS}
 # the broken acceleration drives; under force drive it makes any fingertip
 # contact eject light objects (hundreds of N on a 100 g apple) — closure
 # tracking in air looked fine, contact dynamics did not.
-WALKER_C1_HAND_STIFFNESS = {name: 10 for name in WALKER_C1_HAND_JOINTS}
-WALKER_C1_HAND_DAMPING = {name: 1 for name in WALKER_C1_HAND_JOINTS}
+WALKER_C1_HAND_STIFFNESS = {name: 25 for name in WALKER_C1_HAND_JOINTS}
+WALKER_C1_HAND_DAMPING = {name: 2 for name in WALKER_C1_HAND_JOINTS}
 WALKER_C1_HEAD_STIFFNESS = {name: 600 for name in WALKER_C1_HEAD_JOINTS}
 WALKER_C1_HEAD_DAMPING = {name: 60 for name in WALKER_C1_HEAD_JOINTS}
 WALKER_C1_WAIST_STIFFNESS = {name: 600 for name in WALKER_C1_WAIST_JOINTS}
@@ -248,14 +248,17 @@ WALKER_C1_CFG = ArticulationCfg(
         ),
         "left_hand": ImplicitActuatorCfg(
             joint_names_expr=WALKER_C1_LEFT_HAND_JOINTS,
-            effort_limit_sim=2,
+            # 4 N.m, not the URDF's 1.35: rigid sim fingertips (no soft pads)
+            # grip far less effectively than real ones; at 2 N.m the thumb
+            # saturates against an 80 g apple and it slides out during carry.
+            effort_limit_sim=4,
             velocity_limit_sim=3,
             stiffness={name: WALKER_C1_HAND_STIFFNESS[name] for name in WALKER_C1_LEFT_HAND_JOINTS},
             damping={name: WALKER_C1_HAND_DAMPING[name] for name in WALKER_C1_LEFT_HAND_JOINTS},
         ),
         "right_hand": ImplicitActuatorCfg(
             joint_names_expr=WALKER_C1_RIGHT_HAND_JOINTS,
-            effort_limit_sim=2,
+            effort_limit_sim=4,
             velocity_limit_sim=3,
             stiffness={name: WALKER_C1_HAND_STIFFNESS[name] for name in WALKER_C1_RIGHT_HAND_JOINTS},
             damping={name: WALKER_C1_HAND_DAMPING[name] for name in WALKER_C1_RIGHT_HAND_JOINTS},

@@ -108,6 +108,24 @@ def main():
 
     env: ManagerBasedRLEnv = gym.make(args_cli.task, cfg=env_cfg).unwrapped
 
+    # GUI mode: open a second viewport bound to the recorded head camera so
+    # the ego view is visible as soon as the sim starts. No-op when headless.
+    if ROBOT == "walker_c1" and not getattr(args_cli, "headless", False):
+        try:
+            from omni.kit.viewport.utility import create_viewport_window
+
+            _cam_path = "/World/envs/env_0/Robot/head_pitch_link/Camera_RGB"
+            _vp = create_viewport_window(
+                "HeadCam (dataset view)", width=480, height=360, position_x=60, position_y=60
+            )
+            if hasattr(_vp.viewport_api, "set_active_camera"):
+                _vp.viewport_api.set_active_camera(_cam_path)
+            else:
+                _vp.viewport_api.camera_path = _cam_path
+            print(f"[INFO] Head-camera viewport opened at {_cam_path}")
+        except Exception as exc:
+            print(f"[WARN] Could not open the head-camera viewport: {exc}")
+
     if ROBOT == "walker_s2":
         print(f"[INFO] Walker S2 render/app device args_cli.device={args_cli.device}")
         print(f"[INFO] Walker S2 physics device args_cli.physics_device={args_cli.physics_device}")

@@ -26,6 +26,16 @@ BODY_JOINT_NAMES = [
     "R_wrist_roll_joint",
 ]
 
+RIGHT_ARM_JOINT_NAMES = [
+    "R_shoulder_pitch_joint",
+    "R_shoulder_roll_joint",
+    "R_shoulder_yaw_joint",
+    "R_elbow_pitch_joint",
+    "R_elbow_yaw_joint",
+    "R_wrist_pitch_joint",
+    "R_wrist_roll_joint",
+]
+
 LEFT_HAND_JOINT_NAMES = [
     "left_thumb_swing",
     "left_thumb_mcp",
