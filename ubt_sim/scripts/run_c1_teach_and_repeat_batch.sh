@@ -22,7 +22,7 @@
 #     N: number of SUCCESSFUL episodes desired (default 3)
 #     max_attempts_per_episode: cap on fresh-stack retries per desired success (default 5)
 
-set -uo pipefail
+set -o pipefail
 N="${1:-3}"
 MAX_ATTEMPTS="${2:-5}"
 LOG_DIR="/tmp/c1_batch_$(date +%s)"
@@ -39,12 +39,36 @@ EPISODE_ATTEMPT_COUNTS=()
 restart_stack() {
     pkill -9 -f 'sim_runner|walker_c1_ros2|zmq_image' 2>/dev/null
     sleep 3
+    # The `ros2` CLI depends on a background discovery daemon that can wedge
+    # itself (RuntimeError: !rclpy.ok()) after many rapid node restarts —
+    # observed directly: it reported "not ready" for a stack that had, per
+    # its own boot log, fully initialized. Restart the daemon defensively
+    # before every readiness check so a stale daemon never masquerades as a
+    # boot failure.
+    ros2 daemon stop >/dev/null 2>&1
+    ros2 daemon start >/dev/null 2>&1
     cd /ubt_sim
     UBT_SIM_TASK=UBTSim-WalkerC1-Parlor-v0 ROS_DOMAIN_ID=146 \
         nohup bash scripts/start_sim.sh --headless --device cpu --step_hz 30 \
         > "$LOG_DIR/stack_${TOTAL_ATTEMPTS}.log" 2>&1 &
     for attempt in $(seq 1 45); do
-        if timeout 8 ros2 topic echo /sim/object_state --once 2>/dev/null | grep -q sim_step; then
+        # Native rclpy check (bypasses the ros2-CLI daemon entirely) —
+        # the CLI's `ros2 topic echo` failure mode above makes it an
+        # unreliable readiness probe even after restarting the daemon once.
+        if /usr/bin/python3 -c "
+import rclpy, time
+from rclpy.node import Node
+from std_msgs.msg import String
+rclpy.init()
+node = Node('boot_probe_$$')
+got = {}
+node.create_subscription(String, '/sim/object_state', lambda m: got.update(ok=True), 10)
+end = time.time() + 6
+while time.time() < end and not got:
+    rclpy.spin_once(node, timeout_sec=0.2)
+node.destroy_node(); rclpy.shutdown()
+raise SystemExit(0 if got else 1)
+" 2>/dev/null; then
             return 0
         fi
         sleep 10

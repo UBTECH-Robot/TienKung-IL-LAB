@@ -44,10 +44,41 @@ class WalkerC1PickPlaceReplay(WalkerC1Replayer):
             self.get_logger().error("no robot state; is the stack running?")
             return False
 
-        # Ready pose first (safety flow), then place the apple at the taught
-        # spot and replay the demonstration.
-        self.go_ready()
-        self.spin_for(0.5)
+        # NOTE: scene resets are DISABLED by default. Empirically on this
+        # Isaac stack (fabric + CPU pipeline) the SECOND and later env resets
+        # progressively corrupt contact behavior: with resets the replay went
+        # success, then deterministic failure ever after; without resets it
+        # succeeded back-to-back. Episodes are made repeatable by teleporting
+        # the apple + pre-posing the arm instead.
+        if getattr(self, "use_scene_reset", False):
+            self.reset_sim()
+            self.wait_sim_steps(120, timeout=15.0)
+
+        # Teach-and-repeat rule: the replay must start from the DEMO'S OWN
+        # first frame (the recording begins at the home hold and ramps to
+        # ready itself). Starting anywhere else makes frame 0 a violent snap
+        # and the whole run diverges — verified: from-HOME replay succeeds,
+        # from-READY replay fails 5/5.
+        import h5py
+        with h5py.File(h5_path, "r") as f:
+            arm_r0 = [float(v) for v in f["action/arm_right_position_align/data"][0]]
+            arm_l0 = [float(v) for v in f["action/arm_left_position_align/data"][0]]
+            hand_r0 = [float(v) for v in f["action/end_effector_right_position_align/data"][0]]
+            hand_l0 = [float(v) for v in f["action/end_effector_left_position_align/data"][0]]
+        right_names = ("R_shoulder_pitch_joint", "R_shoulder_roll_joint", "R_shoulder_yaw_joint",
+                       "R_elbow_pitch_joint", "R_elbow_yaw_joint", "R_wrist_pitch_joint",
+                       "R_wrist_roll_joint")
+        pre = dict(zip(right_names, arm_r0))
+        pre.update(dict(zip([n.replace("R_", "L_") for n in right_names], arm_l0)))
+        # Ramp there smoothly over ~2 sim-seconds, then settle.
+        cur = {n: float(self.joint_pos.get(n, 0.0)) for n in pre}
+        for i in range(1, 41):
+            t = i / 40.0
+            self.publish_body_pose({n: (1 - t) * cur[n] + t * pre[n] for n in pre})
+            self.wait_sim_steps(5, timeout=5.0)
+        self.move_hand("right", hand_r0)
+        self.move_hand("left", hand_l0)
+        self.wait_sim_steps(50, timeout=10.0)
         self.replay(h5_path, apple_w=TAUGHT_APPLE_W)
 
         ob = self.object_state.get("object_pos_w")

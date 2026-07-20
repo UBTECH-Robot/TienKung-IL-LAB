@@ -81,8 +81,16 @@ class WalkerC1Replayer(WalkerC1RobotController):
             self.move_hand("left", [float(v) for v in hand_l[i]], repeats=1)
             if i % 50 == 0:
                 ob = self.object_state.get("object_pos_w")
+                arm_now = [round(float(self.joint_pos.get(nm, 0.0)), 3) for nm in
+                           ("R_shoulder_pitch_joint", "R_shoulder_roll_joint", "R_shoulder_yaw_joint",
+                            "R_elbow_pitch_joint", "R_elbow_yaw_joint", "R_wrist_pitch_joint",
+                            "R_wrist_roll_joint")]
+                cmd_now = [round(float(v), 3) for v in arm_r[i]]
                 if ob:
-                    self.get_logger().info(f"frame {i}/{n} apple z(world) {ob[2]:.3f}")
+                    self.get_logger().info(
+                        f"frame {i}/{n} step={self.sim_step()} apple z {ob[2]:.3f} "
+                        f"arm_meas={arm_now} arm_cmd={cmd_now}"
+                    )
             # Pace by SIM steps: the recording took one frame every 3
             # physics steps; feed it back at exactly that cadence.
             self.wait_sim_steps(3, timeout=5.0)
