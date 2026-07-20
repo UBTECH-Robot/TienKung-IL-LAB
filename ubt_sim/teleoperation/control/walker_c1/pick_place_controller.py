@@ -1,29 +1,18 @@
 #!/usr/bin/env python3
-"""Walker C1 pick-place task over ROS SDK topics (Tienkung-style).
+"""Walker C1 online pick-place task over ROS SDK topics.
 
-Flow (user requirement: start from the reset.py ready pose, never touch the
-table):
-
-  reset sim -> go_ready (staged, = reset.py) -> command apple to a known spot
-  -> palm-down approach ABOVE the apple -> descend to grasp height (palm z
-  safety floor keeps fingers off the table) -> close -> lift -> carry over the
-  plate -> lower -> open -> back to ready -> success check.
-
-All arm waypoints are BASE-frame palm poses with an explicit palm-down
-attitude solved by ikpy (position + orientation), so the hand approaches at a
-controlled angle instead of drifting into the table.
-
-Run (ROS side, sim stack up):
-  source /opt/ros/humble/setup.bash
-  source /opt/ubt_sim/walker_sdk_ros2_msgs/install/setup.bash
-  export ROS_DOMAIN_ID=146
-  /usr/bin/python3 /ubt_sim/teleoperation/control/walker_c1/pick_place_controller.py
+This is the non-replay path: start from the same ready pose as reset.py, read
+the apple's current simulator-reported world position, plan palm poses with IK,
+grasp, place into the plate, then return to ready. The only sim-only shortcut is
+the optional initial apple placement for fixed-position validation; all motion
+targets are planned from the state read back from /sim/object_state.
 """
 from __future__ import annotations
 
 import argparse
 import sys
 import time
+from typing import Optional, Sequence
 
 import numpy as np
 import rclpy
@@ -39,235 +28,382 @@ except ImportError:
     from robot_controller import WalkerC1RobotController
 
 
-# ── task geometry (world frame, from the parlor scene) ──
-APPLE_SPAWN_W = (8.21, 5.90, 0.95)     # dropped slightly above the tabletop
-PLATE_CENTER_W = (8.374, 6.046, 0.925)
-APPLE_RADIUS = 0.022
+APPLE_SPAWN_W = (8.17, 5.90, 0.95)
+PLATE_CENTER_W = (8.19, 5.71, 0.925)
+PLATE_RADIUS = 0.12
 
-# Palm axis for the grasp phases: the PROVEN attitude's palm normal (from the
-# successful in-process trajectory) — tilted ~33 deg, NOT straight down. The
-# tilted cage cradles the ball against the palm corner; a straight-down cage
-# leaves the ball hanging over the open bottom gap and it ratchets out.
-GRASP_PALM_AXIS = (0.4528, 0.2907, -0.8429)
+PRESHAPE_HAND = [0.2] * 6
+CLOSED_HAND = [0.7, 0.85, 0.8, 0.8, 0.8, 0.8]
+HOLD_HAND = CLOSED_HAND
+GRASP_MOUTH_OFFSET_XY_B = np.array([-0.010, 0.013], dtype=float)
+GRASP_CENTER_DZ = 0.059
+PREGRASP_IK_SEED = [-0.5419, 0.1211, 0.9164, 0.0530, -0.0293, -0.3610, -1.3760]
 
-# The winner's arm configuration at the grasp moment (successful trajectory
-# 1784105817, one frame before close). Used as the IK SEED for the grasp
-# waypoints: the solver converges to a nearby solution, reproducing the same
-# cage yaw/shape instead of whatever yaw mode-Z happens to land on.
-WINNER_GRASP_ARM = (-0.4956, 0.1101, 0.9075, 0.0778, -0.0356, -0.3578, -1.3735)
-SUCCESS_DIST = 0.12                     # Tienkung uses 0.12 m
+# Palm-origin offset from the live apple center for the calibrated palm-down
+# cage. This is a hand geometry/task calibration, not a replayed joint
+# trajectory; every episode still plans from the apple position read online.
+PALM_GRASP_OFFSET_B = np.array([-0.058, -0.018, 0.044], dtype=float)
+APPROACH_PALM_Z = 0.20
+HOVER_PALM_Z = 0.14
+LIFT_PALM_Z = 0.18
+CARRY_PALM_Z = 0.20
+RELEASE_PALM_Z = 0.12
 
-# All grasp-phase waypoints lock the FULL palm attitude to the proven cage
-# orientation (ready pose + wrist rolled -90deg, computed via FK at startup):
-# a Z-axis-only constraint leaves the hand yaw free, so the finger cage lands
-# at a different rotation every run and the close misses.
 
-# Palm-origin offset relative to the APPLE CENTER at the proven grasp
-# (measured from successful trajectory 1784105817): the palm sits BEHIND and
-# BESIDE the apple — the fingers reach past it — not above it.
-PALM_GRASP_OFFSET = (-0.075, -0.069, 0.042)
-
-# Base-frame heights (base sits ~3mm above the tabletop):
-HOVER_Z = 0.20          # approach altitude above the table
-LIFT_Z = 0.18
-CARRY_Z = 0.20
-RELEASE_Z = 0.12
+def _format_vec(values: Sequence[float]) -> str:
+    return "[" + ", ".join(f"{float(v):+.3f}" for v in values) + "]"
 
 
 class WalkerC1PickPlace(WalkerC1RobotController):
     def __init__(self):
         super().__init__(node_name="walker_c1_pick_place")
 
-    def world_to_base(self, pos_w) -> np.ndarray:
+    def _root_rotation_wb(self) -> np.ndarray:
         root = self.object_state.get("robot_root_pose_w")
         if not root:
             raise RuntimeError("no robot_root_pose_w yet (is the sim bridge up?)")
         w, x, y, z = root[3:7]
-        rot = np.array([
+        return np.array([
             [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
             [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
             [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
         ])
-        return rot.T @ (np.array(pos_w, dtype=float) - np.array(root[:3]))
 
-    def run_task(self, randomize: bool = False) -> bool:
-        rng = np.random.default_rng()
+    def world_to_base(self, pos_w: Sequence[float]) -> np.ndarray:
+        root = self.object_state.get("robot_root_pose_w")
+        if not root:
+            raise RuntimeError("no robot_root_pose_w yet (is the sim bridge up?)")
+        return self._root_rotation_wb().T @ (np.array(pos_w, dtype=float) - np.array(root[:3]))
 
-        self.get_logger().info("waiting for robot state ...")
-        if not self.wait_for_state():
-            self.get_logger().error("no /mc/sdk/robot_state; is the stack running?")
+    def world_delta_to_base(self, delta_w: Sequence[float]) -> np.ndarray:
+        return self._root_rotation_wb().T @ np.array(delta_w, dtype=float)
+
+    def wait_for_object_state(self, timeout: float = 8.0) -> bool:
+        end = time.time() + timeout
+        while time.time() < end:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if self.object_state.get("object_pos_w") and self.object_state.get("robot_root_pose_w"):
+                return True
+        return False
+
+    def mouth_pos_in_base(self) -> Optional[np.ndarray]:
+        mouth_w = self.mouth_center_w()
+        if mouth_w is None:
+            return None
+        return self.world_to_base(mouth_w)
+
+    def grasp_center_w(self) -> Optional[np.ndarray]:
+        links = self.object_state.get("right_hand_links_w") or {}
+        positions = [
+            links.get("R_thumb_mpp_link"),
+            links.get("R_index_ip_link"),
+            links.get("R_middle_ip_link"),
+        ]
+        if any(pos is None for pos in positions):
+            return None
+        return np.mean(np.array(positions, dtype=float), axis=0)
+
+    def align_grasp(
+        self,
+        palm_target_b: np.ndarray,
+        rot_mat: np.ndarray,
+        max_iters: int = 5,
+        tol: float = 0.004,
+    ) -> np.ndarray:
+        target = np.array(palm_target_b, dtype=float)
+        for _ in range(max_iters):
+            mouth_w = self.mouth_center_w()
+            grasp_center_w = self.grasp_center_w()
+            apple_w = self.object_state.get("object_pos_w")
+            if mouth_w is None or grasp_center_w is None or apple_w is None:
+                self.get_logger().warn("no hand-link/object state; skipping grasp alignment")
+                return target
+            mouth_rel_b = self.world_delta_to_base(np.array(mouth_w) - np.array(apple_w))
+            grasp_rel_b = self.world_delta_to_base(np.array(grasp_center_w) - np.array(apple_w))
+            xy_err_b = GRASP_MOUTH_OFFSET_XY_B - mouth_rel_b[:2]
+            z_err_b = GRASP_CENTER_DZ - float(grasp_rel_b[2])
+            self.get_logger().info(
+                f"grasp align: mouth offset={_format_vec(mouth_rel_b[:2] * 1000.0)} mm, "
+                f"center dz={grasp_rel_b[2] * 1000.0:.0f} mm "
+                f"(target {GRASP_CENTER_DZ * 1000.0:.0f} mm)"
+            )
+            if float(np.linalg.norm(xy_err_b)) < tol and abs(z_err_b) < tol:
+                return target
+            correction_b = np.array([xy_err_b[0], xy_err_b[1], z_err_b])
+            correction_norm = float(np.linalg.norm(correction_b))
+            if correction_norm > 0.025:
+                correction_b *= 0.025 / correction_norm
+            target = self.fk_palm()[:3, 3] + correction_b
+            if not self.move_right_arm(
+                target,
+                rot_mat=rot_mat,
+                duration=0.8,
+                corrections=0,
+                seed_arm=PREGRASP_IK_SEED,
+            ):
+                return target
+        return target
+
+    def log_hand_geometry(self, label: str) -> None:
+        apple_w = self.object_state.get("object_pos_w")
+        links = self.object_state.get("right_hand_links_w") or {}
+        if not apple_w or not links:
+            self.get_logger().warn(f"{label}: no hand geometry state")
+            return
+        apple = np.array(apple_w, dtype=float)
+        names = (
+            "R_thumb_ip_link",
+            "R_index_ip_link",
+            "R_middle_ip_link",
+            "R_ring_ip_link",
+            "R_little_ip_link",
+            "R_palm_link",
+        )
+        parts = []
+        for name in names:
+            pos = links.get(name)
+            if pos is None:
+                continue
+            rel_b = self.world_delta_to_base(np.array(pos, dtype=float) - apple)
+            parts.append(f"{name.replace('_link', '')}:{_format_vec(rel_b)}")
+        mouth_w = self.mouth_center_w()
+        if mouth_w is not None:
+            mouth_rel_b = self.world_delta_to_base(mouth_w - apple)
+            parts.append(f"mouth:{_format_vec(mouth_rel_b)}")
+        grasp_links = [
+            links.get("R_thumb_mpp_link"),
+            links.get("R_index_ip_link"),
+            links.get("R_middle_ip_link"),
+        ]
+        if all(pos is not None for pos in grasp_links):
+            grasp_center_w = np.mean(np.array(grasp_links, dtype=float), axis=0)
+            grasp_rel_b = self.world_delta_to_base(grasp_center_w - apple)
+            parts.append(f"grasp_center:{_format_vec(grasp_rel_b)}")
+        arm = _format_vec(self.current_arm())
+        self.get_logger().info(
+            f"{label} hand rel apple base xyz: " + " | ".join(parts) + f" | arm:{arm}"
+        )
+
+    def close_hand_decisive(self) -> None:
+        # The 5.4 cm object recipe closes all six commands together over 60
+        # physics steps, then lets the grasp stabilize before arm motion.
+        start = PRESHAPE_HAND
+        updates = 60
+        for step in range(1, updates + 1):
+            t = step / updates
+            cmd = [(1.0 - t) * a + t * b for a, b in zip(start, CLOSED_HAND)]
+            self.move_hand("right", cmd, repeats=1, wait_steps=1)
+        self.wait_sim_steps(40, timeout=10.0)
+
+    def verify_static_hold(self, apple0_b: np.ndarray) -> bool:
+        # Preserve the proven grasp shape after clearing the table. The static
+        # hold depends on fingertip friction, not additional finger curl.
+        updates = 20
+        for step in range(1, updates + 1):
+            t = step / updates
+            cmd = [(1.0 - t) * a + t * b for a, b in zip(CLOSED_HAND, HOLD_HAND)]
+            self.move_hand("right", cmd, repeats=1, wait_steps=1)
+
+        # Hold still long enough to expose the slow-slip failure mode. Refresh
+        # the target for real-robot compatibility; the simulator also retains
+        # the most recent hand command internally.
+        for _ in range(12):
+            self.move_hand("right", HOLD_HAND, repeats=1, wait_steps=10)
+
+        held = self.object_pos_in_base()
+        mouth_b = self.mouth_pos_in_base()
+        if held is None or mouth_b is None:
+            self.get_logger().warn("missing state for static hold check")
             return False
+        lift_delta = float(held[2] - apple0_b[2])
+        mouth_dist = float(np.linalg.norm(held - mouth_b))
+        stable = lift_delta >= 0.05 and mouth_dist <= 0.10
+        self.get_logger().info(
+            f"static hold check: dz={lift_delta:.3f} m, apple-mouth={mouth_dist:.3f} m -> "
+            f"{'STABLE' if stable else 'SLIPPING'}"
+        )
+        return stable
 
-        # 1. Ready pose first (user safety requirement — same as reset.py).
-        self.get_logger().info("going to ready pose (staged) ...")
-        self.go_ready()
-        self.spin_for(1.0)
+    def prepare_palm_down_cage(self) -> np.ndarray:
+        self.move_hand("right", PRESHAPE_HAND, repeats=4)
+        self.wait_sim_steps(30, timeout=6.0)
+        return self.grasp_attitude
 
-        # 2. Place the apple at a known spot (sim-only; on the real robot the
-        #    apple is put at the agreed position by hand / perception).
-        apple_w = list(APPLE_SPAWN_W)
-        if randomize:
-            apple_w[0] += float(rng.uniform(-0.03, 0.01))
-            apple_w[1] += float(rng.uniform(-0.05, 0.01))
-        self.get_logger().info(f"placing apple at world {np.round(apple_w,3).tolist()}")
-        self.set_object_world_pos(*apple_w)
-        self.spin_for(1.5)  # let it settle on the table
-
+    def try_grasp_once(
+        self,
+        apple0_b: np.ndarray,
+        grasp_rot: np.ndarray,
+    ) -> bool:
         apple_b = self.object_pos_in_base()
         if apple_b is None:
-            self.get_logger().warn("no /sim/object_state; falling back to commanded position")
-            apple_b = self.world_to_base(apple_w)
-        self.get_logger().info(f"apple in base frame: {np.round(apple_b,3).tolist()}")
+            self.get_logger().error("no apple position for grasp attempt")
+            return False
+        self.get_logger().info(f"planning grasp from live apple base pos {_format_vec(apple_b)}")
 
-        # Palm waypoints = apple/plate position + the proven palm offset.
-        gx = float(apple_b[0]) + PALM_GRASP_OFFSET[0]
-        gy = float(apple_b[1]) + PALM_GRASP_OFFSET[1]
-        grasp_z = float(apple_b[2]) + 0.030
-        rot = self.grasp_attitude
+        anchor = np.array(apple_b[:3], dtype=float) + PALM_GRASP_OFFSET_B
+        approach = np.array([anchor[0], anchor[1], max(APPROACH_PALM_Z, anchor[2] + 0.12)])
+        hover = np.array([anchor[0], anchor[1], max(HOVER_PALM_Z, anchor[2] + 0.05)])
+        grasp = np.array([anchor[0], anchor[1], max(0.075, anchor[2])])
+        self.get_logger().info(
+            f"palm plan approach={_format_vec(approach)} hover={_format_vec(hover)} "
+            f"grasp={_format_vec(grasp)}"
+        )
 
-        # 3+4. Grasp with verify-and-retry: a single attempt lands ~50-60%
-        # (contact chaos); re-trying against the apple's current position
-        # multiplies the episode success rate.
-        held = False
-        trace = []
-        for attempt in range(3):
-            # Pre-shape the fingers into the proven open cage ([0.2]x6) BEFORE
-            #    approaching, then palm-down approach and vertical descend.
-            self.move_hand("right", [0.2] * 6)
-            self.get_logger().info("approach above apple ...")
-            if not self.move_right_arm([gx, gy, HOVER_Z], rot, duration=2.5, seed_arm=WINNER_GRASP_ARM):
-                return False
-            self.get_logger().info("descend to grasp height ...")
-            if not self.move_right_arm([gx, gy, grasp_z], rot_mat=self.grasp_attitude, duration=2.5, seed_arm=WINNER_GRASP_ARM):
-                return False
-            self.wait_sim_steps(50, timeout=10.0)
+        self.get_logger().info("approach above apple ...")
+        if not self.move_right_arm(
+            approach, rot_mat=grasp_rot, duration=3.0, corrections=0, seed_arm=PREGRASP_IK_SEED
+        ):
+            return False
+        self.get_logger().info("hover over apple ...")
+        if not self.move_right_arm(
+            hover, rot_mat=grasp_rot, duration=2.0, corrections=0, seed_arm=PREGRASP_IK_SEED
+        ):
+            return False
+        self.get_logger().info("descend around apple ...")
+        if not self.move_right_arm(
+            grasp, rot_mat=grasp_rot, duration=4.0, corrections=0, seed_arm=PREGRASP_IK_SEED
+        ):
+            return False
+        palm_target = self.align_grasp(grasp, grasp_rot)
+        self.wait_sim_steps(40, timeout=8.0)
+        self.log_hand_geometry("preclose")
 
-            # Closed-loop mouth-over-apple alignment (the mechanism that made the
-            # in-process grasp reliable): measure the actual cage-mouth center and
-            # nudge the palm until the apple sits in it.
-            palm_xy = np.array([gx, gy], dtype=float)
-            for _ in range(4):
-                mouth = self.mouth_center_w()
-                ob = self.object_state.get("object_pos_w")
-                if mouth is None or ob is None:
-                    self.get_logger().warn("no hand-link state; skipping mouth alignment")
-                    break
-                err = np.array(ob[:2]) - mouth[:2]
-                self.get_logger().info(f"mouth->apple xy err: {np.round(err*1000,0).tolist()} mm")
-                if float(np.linalg.norm(err)) < 0.008:
-                    break
-                palm_xy = palm_xy + err
-                if not self.move_right_arm([palm_xy[0], palm_xy[1], grasp_z], rot_mat=self.grasp_attitude, duration=0.8, seed_arm=WINNER_GRASP_ARM):
-                    break
-            self.spin_for(0.3)
-            # The aligned palm xy is the new anchor for every hold-phase waypoint;
-            # lifting back to the PRE-alignment xy yanks the ball out of the cage.
-            gx, gy = float(palm_xy[0]), float(palm_xy[1])
+        self.get_logger().info("closing hand ...")
+        self.close_hand_decisive()
+        self.log_hand_geometry("postclose")
 
-            # 4. Close, verify nothing exploded, lift.
-            self.get_logger().info("closing hand (staged, soft-contact) ...")
-            # Staged close: with stiffness-25 fingers a single deep command
-            # slams the ball off the table (force = k * command deficit).
-            # Small increments keep the deficit — and thus the contact force —
-            # gentle all the way in, while the final depth still enjoys the
-            # stiff hold.
-            final_close = [0.7, 0.9, 0.95, 0.95, 0.95, 0.95]
-            start_close = [0.2] * 6
-            for step in range(1, 11):
-                t = step / 10.0
-                self.move_hand("right", [(1 - t) * a + t * b for a, b in zip(start_close, final_close)], repeats=2)
-                self.wait_sim_steps(15, timeout=5.0)
-            self.wait_sim_steps(80, timeout=10.0)
-            hand_now = [round(float(self.hand_pos.get(n, -9)), 3) for n in
-                        ("right_thumb_swing", "right_thumb_mcp", "right_index_mcp",
-                         "right_middle_mcp", "right_ring_mcp", "right_little_mcp")]
-            self.get_logger().info(f"hand achieved vs cmd [0.7,0.85,0.8,0.8,0.8,0.8]: {hand_now}")
-            self.get_logger().info("lift ...")
-            import threading
-            trace.clear()
-            tracing = [True]
-            def _tracer():
-                while tracing[0]:
-                    ob = self.object_pos_in_base()
-                    if ob is not None:
-                        trace.append(round(float(ob[2]), 3))
-                    time.sleep(0.2)
-            th = threading.Thread(target=_tracer, daemon=True); th.start()
-            # Two-stage lift with an IN-FLIGHT regrip: raise just enough to get
-            # the apple off the table (deep-closing on the table squeezes the
-            # apple out, but once airborne the same deep close only wraps it),
-            # tighten, then continue up.
-            self.move_right_arm([gx, gy, grasp_z + 0.025], palm_axis=GRASP_PALM_AXIS, duration=2.0, corrections=0)
-            self.wait_sim_steps(30, timeout=10.0)
-            self.move_right_arm([gx, gy, LIFT_Z], palm_axis=GRASP_PALM_AXIS, duration=3.5, corrections=0)
-            self.wait_sim_steps(50, timeout=10.0)
-            tracing[0] = False; th.join(timeout=1.0)
-            self.get_logger().info(f"apple z trace during lift: {trace}")
+        self.get_logger().info("lifting for grasp check ...")
+        lift_palm = np.array([palm_target[0], palm_target[1], max(LIFT_PALM_Z, palm_target[2] + 0.08)])
+        if not self.move_right_arm(lift_palm, rot_mat=grasp_rot, duration=3.0, corrections=0):
+            return False
+        self.wait_sim_steps(20, timeout=6.0)
 
-            lifted = self.object_pos_in_base()
-            if lifted is not None:
-                held = float(lifted[2]) > float(apple_b[2]) + 0.05
-                self.get_logger().info(
-                    f"lift check: attempt={attempt + 1} apple z {apple_b[2]:.3f} -> "
-                    f"{lifted[2]:.3f} ({'HELD' if held else 'NOT HELD'})"
-                )
-            if held:
-                break
-            ob_w = self.object_state.get("object_pos_w")
-            if ob_w is None or ob_w[2] < 0.5:  # world z: fell off the table
-                self.get_logger().warn("apple fell off the table; aborting attempts")
-                break
-            self.get_logger().info("grasp missed; reopening and retrying ...")
-            self.move_hand("right", [0.2] * 6)
-            self.spin_for(0.5)
-            fresh = self.object_pos_in_base()
-            if fresh is not None:
-                apple_b = fresh
-            gx = float(apple_b[0]) + PALM_GRASP_OFFSET[0]
-            gy = float(apple_b[1]) + PALM_GRASP_OFFSET[1]
-            grasp_z = float(apple_b[2]) + 0.030
+        lifted = self.object_pos_in_base()
+        mouth_b = self.mouth_pos_in_base()
+        if lifted is None or mouth_b is None:
+            self.get_logger().warn("missing state for lift check")
+            return False
+        lift_delta = float(lifted[2] - apple0_b[2])
+        mouth_dist = float(np.linalg.norm(lifted - mouth_b))
+        held = lift_delta >= 0.05 and mouth_dist <= 0.18
+        self.get_logger().info(
+            f"lift check: dz={lift_delta:.3f} m, apple-mouth={mouth_dist:.3f} m -> "
+            f"{'HELD' if held else 'NOT HELD'}"
+        )
+        if not held:
+            return False
 
-        # Lock the cage attitude for the carry: capture the palm rotation the
-        # arm naturally settled into after the lift (mode-Z free yaw rotates
-        # the cage during long lateral moves and rolls the apple out).
-        carry_rot = self.fk_palm()[:3, :3]
+        self.get_logger().info("verifying static hold ...")
+        return self.verify_static_hold(apple0_b)
 
-        # 5. Carry over the plate, lower, release.
+    def place_and_return(self, grasp_rot: np.ndarray) -> bool:
         plate_b = self.world_to_base(PLATE_CENTER_W)
-        px = float(plate_b[0]) + PALM_GRASP_OFFSET[0]
-        py = float(plate_b[1]) + PALM_GRASP_OFFSET[1]
-        self.get_logger().info("carry over plate ...")
-        self.move_right_arm([px, py, CARRY_Z], rot_mat=carry_rot, duration=6.0, corrections=0)
-        self.get_logger().info("lower ...")
-        self.move_right_arm([px, py, RELEASE_Z], rot_mat=carry_rot, duration=3.0, corrections=0)
-        self.get_logger().info("release ...")
-        self.open_hand("right")
-        self.spin_for(1.0)
-        self.move_right_arm([px - 0.05, py - 0.05, CARRY_Z], rot, duration=1.5)
+        plate_x, plate_y, plate_z = [float(v) for v in plate_b[:3]]
 
-        # 6. Back to ready.
+        carry_rot = self.fk_palm()[:3, :3]
+        plate_anchor = np.array([plate_x, plate_y, plate_z], dtype=float) + PALM_GRASP_OFFSET_B
+        carry_palm = np.array([plate_anchor[0], plate_anchor[1], max(CARRY_PALM_Z, plate_anchor[2] + 0.10)])
+        lower_palm = np.array([plate_anchor[0], plate_anchor[1], max(RELEASE_PALM_Z, plate_anchor[2] + 0.025)])
+        retreat_palm = np.array([plate_anchor[0] - 0.06, plate_anchor[1] - 0.06, max(CARRY_PALM_Z, plate_anchor[2] + 0.15)])
+
+        self.get_logger().info("carry over plate ...")
+        if not self.move_right_arm(carry_palm, rot_mat=carry_rot, duration=5.0, corrections=0):
+            return False
+        self.get_logger().info("lower into plate ...")
+        if not self.move_right_arm(lower_palm, rot_mat=carry_rot, duration=2.5, corrections=0):
+            return False
+        self.get_logger().info("release apple ...")
+        self.open_hand("right")
+        self.wait_sim_steps(80, timeout=10.0)
+
+        self.get_logger().info("retreat from plate ...")
+        self.move_right_arm(retreat_palm, rot_mat=grasp_rot, duration=1.8, corrections=0)
+
         self.get_logger().info("back to ready ...")
         self.go_ready()
-        self.spin_for(1.0)
+        self.wait_sim_steps(80, timeout=10.0)
 
-        # 7. Success check (sim: apple within SUCCESS_DIST of the plate center).
-        final_b = self.object_pos_in_base()
-        if final_b is None:
-            self.get_logger().warn("no object state for the success check")
-            return True
-        dist = float(np.linalg.norm(np.array(final_b[:2]) - np.array(plate_b[:2])))
-        ok = dist <= SUCCESS_DIST and final_b[2] > 0.0
+        final_w = self.object_state.get("object_pos_w")
+        if not final_w:
+            self.get_logger().warn("no object state for final success check")
+            return False
+        dist = float(np.hypot(final_w[0] - PLATE_CENTER_W[0], final_w[1] - PLATE_CENTER_W[1]))
+        ok = dist <= PLATE_RADIUS and final_w[2] > 0.9
         self.get_logger().info(
-            f"final: apple-plate horizontal dist {dist:.3f} m (limit {SUCCESS_DIST}) -> "
-            f"{'SUCCESS' if ok else 'FAILURE'}"
+            f"final: apple=({_format_vec(final_w)}) plate_dist={dist:.3f} "
+            f"(limit {PLATE_RADIUS}) -> {'SUCCESS' if ok else 'FAILURE'}"
         )
         return ok
 
+    def run_task(
+        self,
+        randomize: bool = False,
+        set_apple: bool = True,
+        max_grasp_attempts: int = 2,
+    ) -> bool:
+        rng = np.random.default_rng()
+
+        self.get_logger().info("waiting for robot/object state ...")
+        if not self.wait_for_state():
+            self.get_logger().error("no /mc/sdk/robot_state; is the stack running?")
+            return False
+        if not self.wait_for_object_state():
+            self.get_logger().error("no /sim/object_state; is the bridge running?")
+            return False
+
+        self.get_logger().info("going to reset.py ready pose ...")
+        self.go_ready()
+        self.wait_sim_steps(80, timeout=12.0)
+
+        if set_apple:
+            apple_w = list(APPLE_SPAWN_W)
+            if randomize:
+                apple_w[0] += float(rng.uniform(-0.03, 0.01))
+                apple_w[1] += float(rng.uniform(-0.05, 0.01))
+            self.get_logger().info(f"setting apple near fixed spot {np.round(apple_w, 3).tolist()}")
+            self.set_object_world_pos(*apple_w)
+            self.wait_sim_steps(120, timeout=15.0)
+
+        apple0_b = self.object_pos_in_base()
+        if apple0_b is None:
+            self.get_logger().error("no apple position after ready")
+            return False
+        self.get_logger().info(
+            f"observed apple world pos: {_format_vec(self.object_state['object_pos_w'])}; "
+            f"base pos: {_format_vec(apple0_b)}"
+        )
+
+        grasp_rot = self.prepare_palm_down_cage()
+
+        held = False
+        for attempt in range(max(1, int(max_grasp_attempts))):
+            self.get_logger().info(f"grasp attempt {attempt + 1}/{max_grasp_attempts}")
+            held = self.try_grasp_once(apple0_b, grasp_rot)
+            if held:
+                break
+            apple_w = self.object_state.get("object_pos_w")
+            if not apple_w or apple_w[2] < 0.5:
+                self.get_logger().warn("apple fell off the table; aborting")
+                break
+            self.get_logger().info("grasp missed; reopen and replan from live apple state ...")
+            self.move_hand("right", PRESHAPE_HAND, repeats=4)
+            self.wait_sim_steps(60, timeout=10.0)
+
+        if not held:
+            self.get_logger().warn("failed to grasp; returning to ready")
+            self.open_hand("right")
+            self.go_ready()
+            return False
+
+        return self.place_and_return(grasp_rot)
+
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Walker C1 ROS pick-place task")
-    parser.add_argument("--randomize", action="store_true", help="Randomize the apple spot")
+    parser = argparse.ArgumentParser(description="Walker C1 online IK pick-place task")
+    parser.add_argument("--randomize", action="store_true", help="Randomize the apple spot around the fixed validation pose")
+    parser.add_argument("--use-existing-apple", action="store_true", help="Do not command the sim-only apple placement topic")
     parser.add_argument("--episodes", type=int, default=1)
+    parser.add_argument("--max-grasp-attempts", type=int, default=2)
     args = parser.parse_args()
 
     rclpy.init()
@@ -276,9 +412,13 @@ def main() -> int:
     try:
         for ep in range(args.episodes):
             node.get_logger().info(f"=== episode {ep + 1}/{args.episodes} ===")
-            if node.run_task(randomize=args.randomize):
-                ok_count += 1
-            time.sleep(1.0)
+            ok = node.run_task(
+                randomize=args.randomize,
+                set_apple=not args.use_existing_apple,
+                max_grasp_attempts=args.max_grasp_attempts,
+            )
+            ok_count += int(ok)
+            node.wait_sim_steps(60, timeout=10.0)
     except KeyboardInterrupt:
         pass
     finally:
@@ -286,7 +426,7 @@ def main() -> int:
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-    return 0
+    return 0 if ok_count == args.episodes else 1
 
 
 if __name__ == "__main__":

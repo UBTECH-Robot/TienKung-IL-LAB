@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    subLayers = [
+        @./scene_v2.usd@
+    ]
+)
+
+over "World"
+{
+    # Match the task's tabletop collider, shifted 4 cm toward the robot. The
+    # apple, plate, and robot remain at their existing world coordinates.
+    over "table"
+    {
+        double3 xformOp:translate = (8.403749370110103, 6.082573090080646, 0)
+    }
+
+    # The decorative apple (visual-only mesh, no rigid body) is deactivated:
+    # the Walker C1 pick-place task spawns its own graspable rigid apple, and a
+    # second identical-looking apple in camera frames would confuse IL policies.
+    over "apple" (
+        active = false
+    )
+    {
+    }
+
+    # Keep the original pink plate mesh, aligned with the task's hidden
+    # collision disk and online-IK placement target.
+    over "plate"
+    {
+        double3 xformOp:translate = (8.19, 5.71, 0.9)
+    }
+}

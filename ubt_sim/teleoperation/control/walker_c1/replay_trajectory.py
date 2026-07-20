@@ -77,8 +77,8 @@ class WalkerC1Replayer(WalkerC1RobotController):
                  "R_wrist_roll_joint"), [float(v) for v in arm_r[i]]))
             body.update(dict(zip(left_names, [float(v) for v in arm_l[i]])))
             self.publish_body_pose(body)
-            self.move_hand("right", [float(v) for v in hand_r[i]], repeats=1)
-            self.move_hand("left", [float(v) for v in hand_l[i]], repeats=1)
+            self.move_hand("right", [float(v) for v in hand_r[i]], repeats=1, wait_steps=0)
+            self.move_hand("left", [float(v) for v in hand_l[i]], repeats=1, wait_steps=0)
             if i % 50 == 0:
                 ob = self.object_state.get("object_pos_w")
                 arm_now = [round(float(self.joint_pos.get(nm, 0.0)), 3) for nm in

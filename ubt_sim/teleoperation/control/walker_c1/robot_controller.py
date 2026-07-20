@@ -128,16 +128,13 @@ class WalkerC1RobotController(Node):
         self._arm_bounds = [self.chain.links[i].bounds for i in self.arm_link_idx]
         self._last_cmd_arm: Optional[list[float]] = None
 
-        # The proven grasp attitude, extracted from a SUCCESSFUL in-process
-        # trajectory (dataset 1784105817, FK of the arm angles one frame
-        # before the hand closed). Palm normal ~(0.45, 0.29, -0.84): down
-        # with a slight forward tilt. Do not re-derive this analytically —
-        # "ready + wrist roll" gives a different (wrong) attitude because the
-        # arm keeps reorienting after the roll.
+        # Proven pre-close attitude from successful dataset 1784105817,
+        # frame 240. This is the last settled [0.2] hand pre-shape before the
+        # closing ramp begins; its palm normal is down with a forward tilt.
         self.grasp_attitude = np.array([
-            [0.8080, -0.3770, 0.4528],
-            [-0.5335, -0.7943, 0.2907],
-            [0.2501, -0.4764, -0.8429],
+            [0.8111, -0.3169, 0.4915],
+            [-0.5089, -0.7966, 0.3262],
+            [0.2882, -0.5147, -0.8075],
         ])
 
     # ── state ──
@@ -292,7 +289,7 @@ class WalkerC1RobotController(Node):
 
         virtual = target.copy()
         for _ in range(max(corrections, 0)):
-            self.spin_for(0.3)
+            self.wait_sim_steps(30, timeout=5.0)
             reached = self.fk_palm()[:3, 3]
             err = target - reached
             if float(np.linalg.norm(err)) < tol:
@@ -311,7 +308,13 @@ class WalkerC1RobotController(Node):
         )
         return True
 
-    def move_hand(self, side: str, sdk_positions: Sequence[float], repeats: int = 5) -> None:
+    def move_hand(
+        self,
+        side: str,
+        sdk_positions: Sequence[float],
+        repeats: int = 5,
+        wait_steps: int = 5,
+    ) -> None:
         names = RIGHT_HAND_SDK_NAMES if side == "right" else LEFT_HAND_SDK_NAMES
         pub = self.right_hand_pub if side == "right" else self.left_hand_pub
         msg = JointCommand()
@@ -321,7 +324,8 @@ class WalkerC1RobotController(Node):
         msg.mode = [2] * len(names)
         for _ in range(repeats):
             pub.publish(msg)
-            self.spin_for(0.05)
+            if wait_steps > 0:
+                self.wait_sim_steps(wait_steps, timeout=3.0)
 
     def open_hand(self, side: str) -> None:
         self.move_hand(side, [0.0] * 6)
@@ -334,13 +338,16 @@ class WalkerC1RobotController(Node):
         """Staged move to the grasp-ready pose (same semantics as reset.py)."""
         self.open_hand("left")
         self.open_hand("right")
-        for pose in (TASK_RESET_ELBOW_CLEAR_POSE, TASK_RESET_ARM_CLEAR_POSE, TASK_RESET_BODY_POSE):
+        # Match reset.py: move both arms out to the sides before folding the
+        # elbows, so the hands cannot sweep forward through the tabletop.
+        for pose in (TASK_RESET_ARM_CLEAR_POSE, TASK_RESET_ELBOW_CLEAR_POSE, TASK_RESET_BODY_POSE):
             merged = dict(TASK_RESET_BODY_POSE)
             merged.update(pose)
-            end = time.time() + stage_duration
-            while time.time() < end:
+            updates = max(int(stage_duration * hz), 1)
+            step_wait = max(int(round(100.0 / hz)), 1)
+            for _ in range(updates):
                 self.publish_body_pose(merged)
-                self.spin_for(1.0 / hz)
+                self.wait_sim_steps(step_wait, timeout=5.0)
         self.move_hand("left", TASK_RESET_LEFT_HAND_POSE)
         self.move_hand("right", TASK_RESET_RIGHT_HAND_POSE)
         self._last_cmd_arm = [TASK_RESET_BODY_POSE[n] for n in RIGHT_ARM_JOINT_NAMES]

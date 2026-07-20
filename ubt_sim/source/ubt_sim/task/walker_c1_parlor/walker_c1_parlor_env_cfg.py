@@ -39,25 +39,28 @@ PARLOR_SCENE_CFG = AssetBaseCfg(
 # colliders aligned to the visuals:
 #   - the scene table /World/table spans x [8.144, 8.744], y [5.483, 6.683]
 #     with its top at z = 0.897 -> invisible slab collider under the tabletop;
-#   - the scene plate /World/plate sits at (8.374, 6.046), rim top z = 0.931
-#     -> invisible disk collider as the place-target surface;
+#   - the scene's pink plate is moved to the task target; an invisible cylinder
+#     at the same pose supplies its place-target collision surface;
 #   - the graspable apple is our own rigid red sphere resting on the tabletop
 #     (the scene's decorative apple is deactivated in scene_v2_c1.usda).
 _TABLE_TOP_Z = 0.897
-_TABLE_POS = (8.444, 6.083, _TABLE_TOP_Z - 0.03)  # slab top flush with visual top
+_TASK_X_SHIFT = -0.04  # bring the tabletop manipulation area closer to C1
+_TABLE_POS = (8.444 + _TASK_X_SHIFT, 6.083, _TABLE_TOP_Z - 0.03)
 _TABLE_SIZE = (0.60, 1.20, 0.06)
-_PLATE_POS = (8.374, 6.046, 0.90)                 # disk top at z = 0.925 (in-dish)
+_PLATE_POS = (8.19, 5.71, 0.90)  # reachable and clear of the open grasping hand
 _PLATE_RADIUS = 0.085
 _PLATE_HEIGHT = 0.05
-# r=0.022 (plum-sized apple): the C1 hand's cage aperture is ~5-6cm, so the
-# object diameter sets the alignment margin. 5.4cm left only mm of slack —
-# grasp outcomes flipped between spawns 6mm apart; 4.4cm gives ~±0.8cm,
-# matching what the closed-loop mouth servo can reliably deliver.
-_GRASP_OBJECT_RADIUS = 0.022
-_GRASP_OBJECT_MASS = 0.08
+# The successful physical grasp recipe uses a 5.4 cm object: large enough for
+# opposing fingers to establish contact, while still fitting the 5-6 cm cage.
+_GRASP_OBJECT_RADIUS = 0.027
+_GRASP_OBJECT_MASS = 0.10
 # Apple start: near the table front edge, in front of the right hand
 # (ready-pose palm sits at world ~(8.04, 5.89, 0.85+)).
-_GRASP_OBJECT_INIT_POS = (8.21, 5.90, _TABLE_TOP_Z + _GRASP_OBJECT_RADIUS + 0.002)
+_GRASP_OBJECT_INIT_POS = (
+    8.21 + _TASK_X_SHIFT,
+    5.90,
+    _TABLE_TOP_Z + _GRASP_OBJECT_RADIUS + 0.002,
+)
 
 
 @configclass
