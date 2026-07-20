@@ -295,6 +295,11 @@ def to_ros_data(env, cached_command: dict[str, Any] | None = None) -> dict[str, 
         if "object" in env.scene.keys():
             status["object_pos_w"] = env.scene["object"].data.root_pos_w[0].detach().cpu().tolist()
         status["robot_root_pose_w"] = robot.data.root_state_w[0, :7].detach().cpu().tolist()
+        # Diagnostic-only probe (not used for control): real joint velocities,
+        # to check whether residual dynamic state (e.g. hand jitter after a
+        # forceful grasp) carries over between episodes. Separate from
+        # joint_vel above (kept zeroed; some consumers may assume that).
+        status["joint_vel_probe"] = robot.data.joint_vel[0].detach().cpu().tolist()
         body_names = list(robot.data.body_names)
         hand_links = {}
         for i, name in enumerate(body_names):
