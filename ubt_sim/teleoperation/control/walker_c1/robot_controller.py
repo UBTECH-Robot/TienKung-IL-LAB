@@ -257,6 +257,22 @@ class WalkerC1RobotController(Node):
             msg.joint_cmd.append(cmd)
         self.body_pub.publish(msg)
 
+    def move_body_pose(self, target: dict[str, float], duration: float = 1.0,
+                       hz: float = 20.0) -> None:
+        """Interpolate selected body joints from live feedback to a target."""
+        start = {name: float(self.joint_pos.get(name, value)) for name, value in target.items()}
+        updates = max(int(duration * hz), 1)
+        step_wait = max(int(round(100.0 / hz)), 1)
+        for i in range(updates):
+            t = (i + 1) / updates
+            blend = t * t * (3.0 - 2.0 * t)
+            pose = {
+                name: (1.0 - blend) * start[name] + blend * float(value)
+                for name, value in target.items()
+            }
+            self.publish_body_pose(pose)
+            self.wait_sim_steps(step_wait, timeout=5.0)
+
     def move_right_arm_joints(self, target_arm: Sequence[float], duration: float = 2.0,
                               hz: float = 20.0) -> None:
         """Ramp the right arm to target over `duration` SIM seconds, paced by
@@ -334,20 +350,19 @@ class WalkerC1RobotController(Node):
         self.move_hand(side, [grip] * 6)
 
     # ── task-level helpers ──
-    def go_ready(self, stage_duration: float = 2.0, hz: float = 20.0) -> None:
+    def go_ready(self, clear_duration: float = 0.6, final_duration: float = 1.0,
+                 hz: float = 20.0) -> None:
         """Staged move to the grasp-ready pose (same semantics as reset.py)."""
         self.open_hand("left")
         self.open_hand("right")
-        # Match reset.py: move both arms out to the sides before folding the
-        # elbows, so the hands cannot sweep forward through the tabletop.
-        for pose in (TASK_RESET_ARM_CLEAR_POSE, TASK_RESET_ELBOW_CLEAR_POSE, TASK_RESET_BODY_POSE):
-            merged = dict(TASK_RESET_BODY_POSE)
-            merged.update(pose)
-            updates = max(int(stage_duration * hz), 1)
-            step_wait = max(int(round(100.0 / hz)), 1)
-            for _ in range(updates):
-                self.publish_body_pose(merged)
-                self.wait_sim_steps(step_wait, timeout=5.0)
+        stages = (
+            ("raising arms sideways", TASK_RESET_ARM_CLEAR_POSE, clear_duration),
+            ("folding elbows clear", TASK_RESET_ELBOW_CLEAR_POSE, clear_duration),
+            ("moving to ready pose", TASK_RESET_BODY_POSE, final_duration),
+        )
+        for label, pose, duration in stages:
+            self.get_logger().info(f"reset: {label} ({duration:.1f} simulated seconds) ...")
+            self.move_body_pose(pose, duration=duration, hz=hz)
         self.move_hand("left", TASK_RESET_LEFT_HAND_POSE)
         self.move_hand("right", TASK_RESET_RIGHT_HAND_POSE)
         self._last_cmd_arm = [TASK_RESET_BODY_POSE[n] for n in RIGHT_ARM_JOINT_NAMES]

@@ -107,7 +107,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         self,
         palm_target_b: np.ndarray,
         rot_mat: np.ndarray,
-        max_iters: int = 5,
+        max_iters: int = 3,
         tol: float = 0.004,
     ) -> np.ndarray:
         target = np.array(palm_target_b, dtype=float)
@@ -137,7 +137,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             if not self.move_right_arm(
                 target,
                 rot_mat=rot_mat,
-                duration=0.8,
+                duration=0.6,
                 corrections=0,
                 seed_arm=PREGRASP_IK_SEED,
             ):
@@ -226,7 +226,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
 
     def prepare_palm_down_cage(self) -> np.ndarray:
         self.move_hand("right", PRESHAPE_HAND, repeats=4)
-        self.wait_sim_steps(30, timeout=6.0)
+        self.wait_sim_steps(15, timeout=6.0)
         return self.grasp_attitude
 
     def try_grasp_once(
@@ -251,21 +251,22 @@ class WalkerC1PickPlace(WalkerC1RobotController):
 
         self.get_logger().info("approach above apple ...")
         if not self.move_right_arm(
-            approach, rot_mat=grasp_rot, duration=3.0, corrections=0, seed_arm=PREGRASP_IK_SEED
+            approach, rot_mat=grasp_rot, duration=2.0, corrections=0, seed_arm=PREGRASP_IK_SEED
         ):
             return False
         self.get_logger().info("hover over apple ...")
         if not self.move_right_arm(
-            hover, rot_mat=grasp_rot, duration=2.0, corrections=0, seed_arm=PREGRASP_IK_SEED
+            hover, rot_mat=grasp_rot, duration=1.2, corrections=0, seed_arm=PREGRASP_IK_SEED
         ):
             return False
         self.get_logger().info("descend around apple ...")
         if not self.move_right_arm(
-            grasp, rot_mat=grasp_rot, duration=4.0, corrections=0, seed_arm=PREGRASP_IK_SEED
+            grasp, rot_mat=grasp_rot, duration=3.0, corrections=0, seed_arm=PREGRASP_IK_SEED
         ):
             return False
         palm_target = self.align_grasp(grasp, grasp_rot)
-        self.wait_sim_steps(40, timeout=8.0)
+        self.get_logger().info("settling at the grasp pose for 0.2 simulated seconds ...")
+        self.wait_sim_steps(20, timeout=8.0)
         self.log_hand_geometry("preclose")
 
         self.get_logger().info("closing hand ...")
@@ -293,7 +294,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         if not held:
             return False
 
-        self.get_logger().info("verifying static hold ...")
+        self.get_logger().info("verifying static hold for 1.4 simulated seconds ...")
         return self.verify_static_hold(apple0_b)
 
     def place_and_return(self, grasp_rot: np.ndarray) -> bool:
@@ -307,21 +308,22 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         retreat_palm = np.array([plate_anchor[0] - 0.06, plate_anchor[1] - 0.06, max(CARRY_PALM_Z, plate_anchor[2] + 0.15)])
 
         self.get_logger().info("carry over plate ...")
-        if not self.move_right_arm(carry_palm, rot_mat=carry_rot, duration=5.0, corrections=0):
+        if not self.move_right_arm(carry_palm, rot_mat=carry_rot, duration=3.0, corrections=0):
             return False
         self.get_logger().info("lower into plate ...")
-        if not self.move_right_arm(lower_palm, rot_mat=carry_rot, duration=2.5, corrections=0):
+        if not self.move_right_arm(lower_palm, rot_mat=carry_rot, duration=2.0, corrections=0):
             return False
         self.get_logger().info("release apple ...")
         self.open_hand("right")
-        self.wait_sim_steps(80, timeout=10.0)
+        self.get_logger().info("waiting 0.5 simulated seconds for the apple to settle ...")
+        self.wait_sim_steps(50, timeout=10.0)
 
         self.get_logger().info("retreat from plate ...")
-        self.move_right_arm(retreat_palm, rot_mat=grasp_rot, duration=1.8, corrections=0)
+        self.move_right_arm(retreat_palm, rot_mat=grasp_rot, duration=1.2, corrections=0)
 
         self.get_logger().info("back to ready ...")
         self.go_ready()
-        self.wait_sim_steps(80, timeout=10.0)
+        self.wait_sim_steps(40, timeout=10.0)
 
         final_w = self.object_state.get("object_pos_w")
         if not final_w:
@@ -353,7 +355,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
 
         self.get_logger().info("going to reset.py ready pose ...")
         self.go_ready()
-        self.wait_sim_steps(80, timeout=12.0)
+        self.wait_sim_steps(40, timeout=12.0)
 
         if set_apple:
             apple_w = list(APPLE_SPAWN_W)
@@ -362,7 +364,8 @@ class WalkerC1PickPlace(WalkerC1RobotController):
                 apple_w[1] += float(rng.uniform(-0.05, 0.01))
             self.get_logger().info(f"setting apple near fixed spot {np.round(apple_w, 3).tolist()}")
             self.set_object_world_pos(*apple_w)
-            self.wait_sim_steps(120, timeout=15.0)
+            self.get_logger().info("waiting 0.8 simulated seconds for the apple to settle ...")
+            self.wait_sim_steps(80, timeout=15.0)
 
         apple0_b = self.object_pos_in_base()
         if apple0_b is None:

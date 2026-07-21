@@ -14,6 +14,7 @@ manual safety/home checks; it is not the default task reset.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -173,7 +174,9 @@ def _run_task_reset_ros(duration: float, hz: float, clear_duration: float, stage
     try:
         import rclpy
         from rclpy.node import Node
+        from mc_state_msgs.msg import RobotState
         from mc_task_msgs.msg import JointCommand, RobotCommand
+        from std_msgs.msg import String
     except ImportError as exc:
         print(f"[ERROR] ROS2 Python environment is not ready: {exc}", file=sys.stderr)
         return False
@@ -185,27 +188,55 @@ def _run_task_reset_ros(duration: float, hz: float, clear_duration: float, stage
         body_pub = node.create_publisher(RobotCommand, "/mc/sdk/robot_command", 10)
         left_hand_pub = node.create_publisher(JointCommand, "/mc/left_hand/command", 10)
         right_hand_pub = node.create_publisher(JointCommand, "/mc/right_hand/command", 10)
-        time.sleep(0.5)
+        joint_pos: dict[str, float] = {}
+        sim_step: list[int | None] = [None]
+
+        def state_cb(msg: RobotState) -> None:
+            joint_pos.update(zip(msg.joint_states.name, msg.joint_states.position))
+
+        def object_cb(msg: String) -> None:
+            try:
+                sim_step[0] = json.loads(msg.data).get("sim_step")
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        node.create_subscription(RobotState, "/mc/sdk/robot_state", state_cb, 10)
+        node.create_subscription(String, "/sim/object_state", object_cb, 10)
+        state_deadline = time.monotonic() + 1.5
+        while time.monotonic() < state_deadline and not joint_pos:
+            rclpy.spin_once(node, timeout_sec=0.05)
 
         stages: list[tuple[str, dict[str, float], float]] = []
         if staged:
-            arm_clear = dict(TASK_RESET_BODY_POSE)
-            arm_clear.update(TASK_RESET_ARM_CLEAR_POSE)
-            stages.append(("arm-clear", arm_clear, clear_duration))
-
-            elbow_clear = dict(TASK_RESET_BODY_POSE)
-            elbow_clear.update(TASK_RESET_ELBOW_CLEAR_POSE)
-            stages.append(("elbow-clear", elbow_clear, clear_duration))
+            stages.append(("arm-clear", TASK_RESET_ARM_CLEAR_POSE, clear_duration))
+            stages.append(("elbow-clear", TASK_RESET_ELBOW_CLEAR_POSE, clear_duration))
         stages.append(("task-reset", TASK_RESET_BODY_POSE, duration))
 
         interval = 1.0 / hz
         for label, pose, stage_duration in stages:
-            print(f"[INFO] Publishing Walker C1 {label} pose for {stage_duration:.2f}s")
-            end_time = time.monotonic() + stage_duration
-            while time.monotonic() < end_time:
-                _publish_ros_pose(node, body_pub, left_hand_pub, right_hand_pub, pose)
-                rclpy.spin_once(node, timeout_sec=0.0)
-                time.sleep(interval)
+            print(f"[INFO] Moving Walker C1 through {label} for {stage_duration:.2f} simulated seconds")
+            start = {name: float(joint_pos.get(name, value)) for name, value in pose.items()}
+            updates = max(int(stage_duration * hz), 1)
+            step_count = max(int(round(100.0 / hz)), 1)
+            for index in range(updates):
+                t = (index + 1) / updates
+                blend = t * t * (3.0 - 2.0 * t)
+                command = {
+                    name: (1.0 - blend) * start[name] + blend * float(value)
+                    for name, value in pose.items()
+                }
+                _publish_ros_pose(node, body_pub, left_hand_pub, right_hand_pub, command)
+
+                first_step = sim_step[0]
+                if first_step is None:
+                    rclpy.spin_once(node, timeout_sec=0.0)
+                    time.sleep(interval)
+                    continue
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    rclpy.spin_once(node, timeout_sec=0.02)
+                    if sim_step[0] is not None and sim_step[0] - first_step >= step_count:
+                        break
     finally:
         if node is not None:
             node.destroy_node()
