@@ -108,21 +108,67 @@ def main():
 
     env: ManagerBasedRLEnv = gym.make(args_cli.task, cfg=env_cfg).unwrapped
 
-    # GUI mode: open a second viewport bound to the recorded head camera so
-    # the ego view is visible as soon as the sim starts. No-op when headless.
+    # GUI mode: open viewports bound to the configured C1 camera set. The
+    # mentor-sensor preview is opt-in because five RTX viewports are expensive.
     if ROBOT == "walker_c1" and not getattr(args_cli, "headless", False):
         try:
             from omni.kit.viewport.utility import create_viewport_window
 
-            _cam_path = "/World/envs/env_0/Robot/head_pitch_link/Camera_RGB"
-            _vp = create_viewport_window(
-                "HeadCam (dataset view)", width=480, height=360, position_x=60, position_y=60
-            )
-            if hasattr(_vp.viewport_api, "set_active_camera"):
-                _vp.viewport_api.set_active_camera(_cam_path)
+            if os.environ.get("UBT_SIM_C1_SENSOR_VIEWPORTS"):
+                _sensor_cameras = [
+                    (
+                        "Stereo Left",
+                        "/World/envs/env_0/Robot/head_pitch_link/head_stereo_left/"
+                        "head_stereo_left_Camera",
+                    ),
+                    (
+                        "Stereo Right",
+                        "/World/envs/env_0/Robot/head_pitch_link/head_stereo_right/"
+                        "head_stereo_right_Camera",
+                    ),
+                    (
+                        "Fisheye Left",
+                        "/World/envs/env_0/Robot/head_pitch_link/head_fisheye_left/"
+                        "head_fisheye_left_Camera",
+                    ),
+                    (
+                        "Fisheye Right",
+                        "/World/envs/env_0/Robot/head_pitch_link/head_fisheye_right/"
+                        "head_fisheye_right_Camera",
+                    ),
+                    (
+                        "Jaw Camera",
+                        "/World/envs/env_0/Robot/head_pitch_link/head_jaw/head_jaw_Camera",
+                    ),
+                ]
+                _sensor_viewports = []
+                for index, (_title, _cam_path) in enumerate(_sensor_cameras):
+                    if not env.sim.stage.GetPrimAtPath(_cam_path):
+                        print(f"[WARN] Sensor camera prim is missing: {_cam_path}")
+                        continue
+                    _vp = create_viewport_window(
+                        _title,
+                        width=384,
+                        height=300,
+                        position_x=30 + (index % 3) * 400,
+                        position_y=40 + (index // 3) * 330,
+                    )
+                    if hasattr(_vp.viewport_api, "set_active_camera"):
+                        _vp.viewport_api.set_active_camera(_cam_path)
+                    else:
+                        _vp.viewport_api.camera_path = _cam_path
+                    _sensor_viewports.append(_vp)
+                    print(f"[INFO] Sensor viewport '{_title}' opened at {_cam_path}")
             else:
-                _vp.viewport_api.camera_path = _cam_path
-            print(f"[INFO] Head-camera viewport opened at {_cam_path}")
+                _cam_path = "/World/envs/env_0/Robot/head_pitch_link/Camera_RGB"
+                _vp = create_viewport_window(
+                    "HeadCam (dataset view)", width=480, height=360, position_x=60, position_y=60
+                )
+                if hasattr(_vp.viewport_api, "set_active_camera"):
+                    _vp.viewport_api.set_active_camera(_cam_path)
+                else:
+                    _vp.viewport_api.camera_path = _cam_path
+                print(f"[INFO] Head-camera viewport opened at {_cam_path}")
         except Exception as exc:
             print(f"[WARN] Could not open the head-camera viewport: {exc}")
 

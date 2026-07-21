@@ -72,13 +72,15 @@ TASK_RESET_BODY_POSE = {
     "waist_roll_joint": 0.0,
     "head_yaw_joint": 0.0,
     "head_pitch_joint": 0.50,
-    "L_shoulder_pitch_joint": -0.152,
+    # Left and right arms are mirrored about the sagittal plane. Pitch joints
+    # keep their sign; roll/yaw joints reverse sign across the body.
+    "L_shoulder_pitch_joint": -0.291,
     "L_shoulder_roll_joint": 0.30,
-    "L_shoulder_yaw_joint": 0.135,
+    "L_shoulder_yaw_joint": 0.136,
     "L_elbow_pitch_joint": -1.155,
     "L_elbow_yaw_joint": 0.124,
     "L_wrist_pitch_joint": -0.361,
-    "L_wrist_roll_joint": -0.006,
+    "L_wrist_roll_joint": -0.194,
     "R_shoulder_pitch_joint": -0.291,
     "R_shoulder_roll_joint": -0.30,
     "R_shoulder_yaw_joint": -0.136,

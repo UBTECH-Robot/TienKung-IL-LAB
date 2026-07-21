@@ -24,6 +24,7 @@ from ubt_sim.utils.config_loader import load_config, resolve_asset_path
 
 _TASK_CFG = load_config("walker_c1/parlor.yaml")
 _SCENE_USD_PATH = resolve_asset_path(_TASK_CFG["scene"]["usd_path"])
+_APPLE_USD_PATH = resolve_asset_path("robots/walker_c1/c1_task_apple.usda")
 _ROBOT_INIT_STATE = _TASK_CFG["robot"]["init_state"]
 _HEAD_RGB_CAMERA_CFG = _TASK_CFG["cameras"]["head_rgb"]
 _HEAD_RGB_RESOLUTION = _HEAD_RGB_CAMERA_CFG.get("resolution", [640, 480])
@@ -41,8 +42,8 @@ PARLOR_SCENE_CFG = AssetBaseCfg(
 #     its top to z = 0.902 -> invisible slab collider under the tabletop;
 #   - the scene's pink plate is moved to the task target; an invisible cylinder
 #     at the same pose supplies its place-target collision surface;
-#   - the graspable apple is our own rigid red sphere resting on the tabletop
-#     (the scene's decorative apple is deactivated in scene_v2_c1.usda).
+#   - the graspable apple reuses the original apple visual but keeps the proven
+#     hidden sphere collider (the scene's decorative apple remains deactivated).
 _TABLE_TOP_Z = 0.902
 _TABLE_X_SHIFT = -0.16
 _TASK_X_SHIFT = -0.04  # preserve the proven apple x position independently
@@ -112,8 +113,8 @@ class WalkerC1ParlorSceneCfg(InteractiveSceneCfg):
 
     object = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Object",
-        spawn=sim_utils.SphereCfg(
-            radius=_GRASP_OBJECT_RADIUS,
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=_APPLE_USD_PATH,
             # NOTE: do NOT add high angular_damping to stop post-release rolling:
             # a ball that cannot roll gets squeeze-ejected by the closing fingers
             # (tested angular_damping=2.0 -> apple shot off the table on every
@@ -122,10 +123,6 @@ class WalkerC1ParlorSceneCfg(InteractiveSceneCfg):
             rigid_props=sim_utils.RigidBodyPropertiesCfg(disable_gravity=False),
             collision_props=sim_utils.CollisionPropertiesCfg(),
             mass_props=sim_utils.MassPropertiesCfg(mass=_GRASP_OBJECT_MASS),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.75, 0.12, 0.10)),
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                static_friction=1.2, dynamic_friction=1.2
-            ),
         ),
         init_state=RigidObjectCfg.InitialStateCfg(pos=_GRASP_OBJECT_INIT_POS),
     )

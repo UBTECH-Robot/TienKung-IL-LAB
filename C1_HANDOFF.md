@@ -109,6 +109,46 @@
 `/ubt_sim/dataset/walker_c1_ros/1784620483823/trajectory.hdf5` 和
 `/ubt_sim/dataset/walker_c1_ros/1784620622695/trajectory.hdf5`（均为 856 帧）。
 
+### 2026-07-21 Mentor C1 身体/传感器与当前灵巧手合并预览
+
+Mentor 提供的 `Collected_walker_c1_v1_sensorKpkd` 可正常用 pxr 打开，包含 31 个身体可动
+关节、40 个身体刚体、左右双目、左右鱼眼、下巴相机和两个 IMU，但完全没有当前抓放依赖的
+22 个手指关节与 30 个手部刚体。它和当前 USD 的 31 个共同关节在轴、限位、local pose、
+质量和惯量上逐项一致，因此可以安全挂接现有灵巧手，但不能直接替换机器人 USD。
+
+新增 `merge_walker_c1_mentor_usd.py`：复制当前 `walker_c1_force_drive_grip.usd` 中缺失的
+30 个手部刚体、22 个手指转动关节和 8 个手部固定关节，输出独立的
+`walker_astron_v1_sensorKpkd_hands.usd`。原成功 USD 保持默认，不被覆盖。Mentor 主层错误地给
+左鱼眼 Camera 额外写入 0.646 m 局部位移，组合后离头部约 0.718 m；合并脚本将该 Camera
+局部位移恢复为子 USD 中的零值，使左右安装点回到对称的约 +/-71.4 mm。
+
+重要合并坑：Mentor 和当前 USD 分别有 177/128 个隐藏 `Flattened_Prototype_N`，相同自动
+编号代表不同视觉/碰撞网格。第一版错误地原位复制当前 128 个模板，覆盖 Mentor 同名模板，
+导致身体 link 引用错误网格，GUI 中机器人四分五裂。最终实现只读取 30 个手部刚体实际引用
+的 56 个模板，将它们复制到独立 `/C1HandPrototypes` 并重写手部 instance reference；Mentor
+身体的 80 条 visuals/collisions 引用在合并前后逐项一致（0 diff），根级 177 个模板不改动。
+抓取材质也不能放在 default prim 外的 `/PhysicsMaterials`（作为 Robot reference 时目标会被
+USD 丢弃），现复制到 `/walker_astron_v1/PhysicsMaterials/HandGripMaterial`，并绑定到 30 个
+实际手部 collision instance，Isaac Lab spawn 时不再有越过 reference scope 的警告。
+
+`UBT_SIM_WALKER_C1_USD_PATH` 可临时选择机器人 USD；`start_c1_mentor_sensor_sim.sh` 会选择
+合并资产、关闭 ROS bridge、启用 load-only，并打开 Stereo Left/Right、Fisheye Left/Right、
+Jaw Camera 五个 GUI viewport。命令：
+`docker exec -it walker-c1-ubt-sim bash /ubt_sim/scripts/start_c1_mentor_sensor_sim.sh`。
+加 `--control` 则启用物理和 ROS bridge，保留五相机窗口，可在另一终端运行原 pick-place：
+`docker exec -it walker-c1-ubt-sim bash /ubt_sim/scripts/start_c1_mentor_sensor_sim.sh --control`。
+
+合并后 pxr 校验为 53 个转动关节、17 个固定关节、70 个刚体、5 个相机、2 个 IMU，左右
+掌心的 instance 均可解析视觉 Mesh 和 CollisionAPI；Isaac Lab spawn smoke test 通过，53 个
+home pose 关节无缺失/无多余，Action Manager 总维度 53（双手各 11）。五个相机 prim 均在
+GUI 启动时找到并成功创建 viewport。当前 Isaac Lab `ImplicitActuatorCfg` 仍会覆盖 USD 中的
+Kp/Kd，因此合并预览没有启用 Mentor 的高跨度 PD 数值；后续若测试该增益应另做可切换配置。
+
+修复 prototype 冲突和材质 reference scope 后，合并 USD 完成一次独立冷启动在线 IK 抓放并
+首轮成功：抬升 8.4 cm、苹果距掌口 2.4 cm，1.4 仿真秒静置后判定 `STABLE`，最终距盘心
+1.9 cm，正常归位并保存 856 帧同步轨迹。日志：`/tmp/c1_online_ik_batch_1784623309`；轨迹：
+`/ubt_sim/dataset/walker_c1_ros/1784623456143/trajectory.hdf5`。
+
 ### 2026-07-20 动作节奏优化与实测
 
 用户反馈 reset 第一段突跳、第二段慢且阶段间像卡住，同时整套 pick-and-place 墙钟耗时过长。
@@ -2459,4 +2499,51 @@ M  ubt_sim/teleoperation/control/walker_c1/constants.py  head_pitch 0.50
 1. M3：批量 --randomize 刷数据（验证成功率后放大 episodes 数）。
 2. 数据规模上来后抽查 HDF5（帧数/图像内容/obs-action 对齐）。
 3. （可选）左腿碰撞小尾巴仍在（纯视觉）；真机 joint order 校对仍是回真机前的第一件事。
+```
+
+## 2026-07-21 Update：mentor 机身、灵巧手材质与苹果外观
+
+### 当前机器人资产
+
+```
+- mentor 提供的 Collected_walker_c1_v1_sensorKpkd 用作 C1 机身和传感器主体。
+- merge_walker_c1_mentor_usd.py 只拼入原来已验证的双灵巧手、手部关节、碰撞体和材料，
+  输出 walker_astron_v1_sensorKpkd_hands.usd。
+- 不再复制整套 prototype；只重映射 56 个手部 prototype，避免机器人链接四分五裂。
+- 手部 4 种视觉材料按原 USD 的子网格分配同时生效，并非运行时四选一：白、银灰、
+  淡蓝灰等分别用于手掌外壳和各手指零件；手部物理摩擦材料独立保留。
+- mentor 原有 80 个机身视觉/碰撞引用保持不变；合并后 53 revolute + 17 fixed、
+  70 rigid body。完整 pick-and-place 已验证成功。
+```
+
+启动带 ROS 控制和五个传感器视窗的版本：
+
+```bash
+docker exec -it walker-c1-ubt-sim bash /ubt_sim/scripts/start_c1_mentor_sensor_sim.sh --control
+```
+
+### 苹果外观恢复，碰撞不变
+
+```
+- build_c1_apple_usd.py 生成 assets/robots/walker_c1/c1_task_apple.usda。
+- Visual 引用原 Tiankung 客厅 /World/apple 的网格和 Yellow_Red_Nectarine 材质，
+  Albedo/Normal/Roughness 纹理均能解析；可见尺寸 52.6 x 54.0 x 53.3 mm。
+- 原视觉网格上的 RigidBody/Mass/Collision API 全部删除，防止双重碰撞。
+- Physics 仍只有一个不可见 Sphere：radius=27 mm、mass=100 g、friction=1.2，
+  因此控制器的目标点、桌面接触高度和抓取参数均无需调整。
+- walker_c1_parlor_env_cfg.py 的 Object 从 SphereCfg 改为该 UsdFileCfg。
+```
+
+2026-07-21 完整 ROS 验证（`--no-record`）：抓起 8.4 cm，静置检查 `STABLE`，
+最终落点距盘心 1.9 cm，`1/1 SUCCESS`。这证明视觉替换未改变既有抓放行为。
+
+### 2026-07-21 最终姿势微调
+
+```
+- 盘上释放净空 PLATE_RELEASE_CLEARANCE_B：4 cm -> 6 cm，手掌目标 z 实测由
+  0.141 m -> 0.161 m，盘子和运输路点不变。
+- TASK_RESET_BODY_POSE 左臂改为右臂的严格镜像：pitch 同号，roll/yaw 反号；
+  左右手本来就使用相同的 6 个主动关节全开命令，从动关节由镜像机构联动。
+- 完整 ROS 回归：HELD、STABLE，最终苹果距盘心 2.2 cm，1/1 SUCCESS。
+- 两项都是 ROS 控制侧常量修改，已有仿真无需重启，重新运行抓放脚本即生效。
 ```

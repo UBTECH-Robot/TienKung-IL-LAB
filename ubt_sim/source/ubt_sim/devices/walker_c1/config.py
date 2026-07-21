@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import isaaclab.sim as sim_utils
@@ -13,7 +14,10 @@ ROBOTS_ROOT = Path(ASSETS_ROOT) / "robots"
 # asset with every drive converted to force. The grip variant additionally
 # gives the rigid finger collision meshes pad-like friction, preventing a
 # correctly enclosed apple from slowly slipping during a static hold.
-WALKER_C1_USD_PATH = ROBOTS_ROOT / "walker_c1" / "walker_c1_force_drive_grip.usd"
+_WALKER_C1_DEFAULT_USD_PATH = ROBOTS_ROOT / "walker_c1" / "walker_c1_force_drive_grip.usd"
+WALKER_C1_USD_PATH = Path(
+    os.environ.get("UBT_SIM_WALKER_C1_USD_PATH", str(_WALKER_C1_DEFAULT_USD_PATH))
+).expanduser()
 WALKER_C1_URDF_PATH = ROBOTS_ROOT / "walker_c1" / "walker_astron_v2_hand_v3_no_sixforce_mesh.urdf"
 
 WALKER_C1_LEFT_ARM_JOINTS = [
