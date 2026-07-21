@@ -75,7 +75,7 @@ LEFT_HAND_SDK_NAMES = [
     "left_middle_mcp", "left_ring_mcp", "left_little_mcp",
 ]
 
-# Table top is at world z=0.897 and the robot base sits at world z=0.90, so
+# Table top is at world z=0.902 and the robot base sits at world z=0.90, so
 # the tabletop is roughly z~0 in base frame. Fingers extend up to ~10cm below
 # the palm at palm-down attitude; keep the palm above table + clearance.
 MIN_PALM_Z_BASE = 0.050
@@ -222,7 +222,7 @@ class WalkerC1RobotController(Node):
                 f"IK target z={target[2]:.3f} below safety floor {MIN_PALM_Z_BASE}; clamping."
             )
             target[2] = MIN_PALM_Z_BASE
-        base_seed = seed_arm or self._last_cmd_arm or self.current_arm()
+        base_seed = seed_arm if seed_arm is not None else (self._last_cmd_arm or self.current_arm())
         seed = self._q_vector(self._clamp_to_bounds(base_seed))
         kwargs = {}
         if rot_mat is not None:
@@ -239,6 +239,83 @@ class WalkerC1RobotController(Node):
         err = float(np.linalg.norm(reached - target))
         if err > 0.02:
             self.get_logger().warn(f"IK position residual {err:.3f} m for target {np.round(target,3)}")
+        return arm
+
+    def solve_ik_candidates(
+        self,
+        pos_base: Sequence[float],
+        rot_mat: np.ndarray,
+        seed_arms: Sequence[Sequence[float]],
+        reference_arm: Optional[Sequence[float]] = None,
+    ) -> Optional[list[float]]:
+        """Choose a full-pose IK solution from several local solver branches.
+
+        Position and orientation remain hard constraints. The score only breaks
+        ties between valid branches by preferring joint-limit margin, a bent
+        elbow, and continuity with the ready/current posture.
+        """
+        target = np.asarray(pos_base, dtype=float)
+        target_rot = np.asarray(rot_mat, dtype=float)
+        reference_values = reference_arm if reference_arm is not None else self.current_arm()
+        reference = np.asarray(reference_values, dtype=float)
+        current = np.asarray(self.current_arm(), dtype=float)
+        spans = np.asarray(
+            [max(float(hi) - float(lo), 1e-3) for lo, hi in self._arm_bounds],
+            dtype=float,
+        )
+        best: Optional[tuple[float, int, list[float], float, float, float]] = None
+
+        for index, seed_arm in enumerate(seed_arms):
+            arm = self.solve_ik(target, rot_mat=target_rot, seed_arm=seed_arm)
+            if arm is None:
+                continue
+            arm_array = np.asarray(arm, dtype=float)
+            reached = self.fk_palm(arm)
+            pos_error = float(np.linalg.norm(reached[:3, 3] - target))
+            rotation_delta = target_rot.T @ reached[:3, :3]
+            orientation_error = float(
+                np.arccos(np.clip((np.trace(rotation_delta) - 1.0) * 0.5, -1.0, 1.0))
+            )
+            margins = np.asarray(
+                [
+                    min(float(value) - float(lo), float(hi) - float(value)) / span
+                    for value, (lo, hi), span in zip(arm_array, self._arm_bounds, spans)
+                ],
+                dtype=float,
+            )
+            min_margin = float(np.min(margins))
+
+            if pos_error > 0.015 or orientation_error > np.deg2rad(2.0) or min_margin < 0.0:
+                continue
+
+            limit_penalty = float(np.mean(np.square(np.maximum(0.08 - margins, 0.0) / 0.08)))
+            reference_penalty = float(np.mean(np.square((arm_array - reference) / spans)))
+            motion_penalty = float(np.mean(np.square((arm_array - current) / spans)))
+            # C1 right elbow is straight near zero and naturally bent negative.
+            elbow_straight_penalty = max(float(arm_array[3]) + 0.45, 0.0) ** 2
+            cost = (
+                4.0 * limit_penalty
+                + 0.25 * reference_penalty
+                + 0.10 * motion_penalty
+                + 2.0 * elbow_straight_penalty
+            )
+            candidate = (cost, index, arm, pos_error, orientation_error, min_margin)
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+
+        if best is None:
+            self.get_logger().warn("no admissible multi-seed IK candidate; using proven first seed")
+            fallback = seed_arms[0] if seed_arms else None
+            return self.solve_ik(target, rot_mat=target_rot, seed_arm=fallback)
+
+        cost, index, arm, pos_error, orientation_error, min_margin = best
+        self.get_logger().info(
+            f"IK candidate {index + 1}/{len(seed_arms)} selected: "
+            f"pos_err={pos_error * 1000.0:.1f} mm, "
+            f"rot_err={np.rad2deg(orientation_error):.2f} deg, "
+            f"min_limit_margin={min_margin * 100.0:.1f}%, "
+            f"elbow={arm[3]:+.3f}, score={cost:.3f}"
+        )
         return arm
 
     # ── command primitives ──
@@ -282,8 +359,13 @@ class WalkerC1RobotController(Node):
             self.publish_body_pose(pose)
             self.wait_sim_steps(step_wait, timeout=5.0)
 
-    def move_right_arm_joints(self, target_arm: Sequence[float], duration: float = 2.0,
-                              hz: float = 20.0) -> None:
+    def move_right_arm_joints(
+        self,
+        target_arm: Sequence[float],
+        duration: float = 2.0,
+        hz: float = 20.0,
+        smooth: bool = False,
+    ) -> None:
         """Ramp the right arm to target over `duration` SIM seconds, paced by
         physics steps (one command per 3 steps = the cadence the proven
         trajectories were recorded at). Falls back to wall pacing on the real
@@ -292,7 +374,8 @@ class WalkerC1RobotController(Node):
         updates = max(int(duration * 100 / 3), 1)
         for i in range(updates):
             t = (i + 1) / updates
-            arm = [(1 - t) * a + t * b for a, b in zip(start, target_arm)]
+            blend = t * t * (3.0 - 2.0 * t) if smooth else t
+            arm = [(1 - blend) * a + blend * b for a, b in zip(start, target_arm)]
             self._publish_arm(arm)
             self.wait_sim_steps(3, timeout=5.0)
         self._last_cmd_arm = list(target_arm)
@@ -300,17 +383,28 @@ class WalkerC1RobotController(Node):
     def move_right_arm(self, pos_base: Sequence[float], rot_mat: Optional[np.ndarray] = None,
                        palm_axis: Optional[Sequence[float]] = None, duration: float = 2.0,
                        corrections: int = 3, tol: float = 0.008,
-                       seed_arm: Optional[Sequence[float]] = None) -> bool:
+                       seed_arm: Optional[Sequence[float]] = None,
+                       seed_arms: Optional[Sequence[Sequence[float]]] = None,
+                       reference_arm: Optional[Sequence[float]] = None,
+                       smooth: bool = False) -> bool:
         """IK to a base-frame palm pose, ramp there, then close the loop:
         measure the FK error (gravity sag / tracking lag) and re-command a
         virtually offset target until the palm is within tol. This is the ROS
         equivalent of the in-process lesson 'integrate the correction on the
         COMMAND' — open-loop position IK alone leaves ~2cm of sag."""
         target = np.array(pos_base, dtype=float)
-        arm = self.solve_ik(target, rot_mat=rot_mat, palm_axis=palm_axis, seed_arm=seed_arm)
+        if seed_arms is not None and rot_mat is not None:
+            arm = self.solve_ik_candidates(
+                target,
+                rot_mat=rot_mat,
+                seed_arms=seed_arms,
+                reference_arm=reference_arm,
+            )
+        else:
+            arm = self.solve_ik(target, rot_mat=rot_mat, palm_axis=palm_axis, seed_arm=seed_arm)
         if arm is None:
             return False
-        self.move_right_arm_joints(arm, duration=duration)
+        self.move_right_arm_joints(arm, duration=duration, smooth=smooth)
 
         virtual = target.copy()
         for _ in range(max(corrections, 0)):
@@ -323,7 +417,7 @@ class WalkerC1RobotController(Node):
             arm = self.solve_ik(virtual, rot_mat=rot_mat, palm_axis=palm_axis)
             if arm is None:
                 break
-            self.move_right_arm_joints(arm, duration=0.6)
+            self.move_right_arm_joints(arm, duration=0.6, smooth=smooth)
 
         reached = self.fk_palm()[:3, 3]
         self.get_logger().info(

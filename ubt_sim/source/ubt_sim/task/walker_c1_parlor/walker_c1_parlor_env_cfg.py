@@ -37,17 +37,18 @@ PARLOR_SCENE_CFG = AssetBaseCfg(
 # Pick-place task props (M2). The parlor scene furniture is visual-only (no
 # collision, no RigidBodyAPI), so physics comes from invisible primitive
 # colliders aligned to the visuals:
-#   - the scene table /World/table spans x [8.144, 8.744], y [5.483, 6.683]
-#     with its top at z = 0.897 -> invisible slab collider under the tabletop;
+#   - the C1 scene overlay moves /World/table 16 cm toward the robot and raises
+#     its top to z = 0.902 -> invisible slab collider under the tabletop;
 #   - the scene's pink plate is moved to the task target; an invisible cylinder
 #     at the same pose supplies its place-target collision surface;
 #   - the graspable apple is our own rigid red sphere resting on the tabletop
 #     (the scene's decorative apple is deactivated in scene_v2_c1.usda).
-_TABLE_TOP_Z = 0.897
-_TASK_X_SHIFT = -0.04  # bring the tabletop manipulation area closer to C1
-_TABLE_POS = (8.444 + _TASK_X_SHIFT, 6.083, _TABLE_TOP_Z - 0.03)
+_TABLE_TOP_Z = 0.902
+_TABLE_X_SHIFT = -0.16
+_TASK_X_SHIFT = -0.04  # preserve the proven apple x position independently
+_TABLE_POS = (8.444 + _TABLE_X_SHIFT, 6.083, _TABLE_TOP_Z - 0.03)
 _TABLE_SIZE = (0.60, 1.20, 0.06)
-_PLATE_POS = (8.19, 5.71, 0.90)  # reachable and clear of the open grasping hand
+_PLATE_POS = (8.19, 5.71, 0.905)  # raised with the tabletop
 _PLATE_RADIUS = 0.085
 _PLATE_HEIGHT = 0.05
 # The successful physical grasp recipe uses a 5.4 cm object: large enough for

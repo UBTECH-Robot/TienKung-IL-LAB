@@ -8,11 +8,11 @@
 
 over "World"
 {
-    # Match the task's tabletop collider, shifted 4 cm toward the robot. The
-    # apple, plate, and robot remain at their existing world coordinates.
+    # Match the task's tabletop collider, shifted 16 cm toward the robot and
+    # raised 5 mm. The apple and plate keep their proven horizontal positions.
     over "table"
     {
-        double3 xformOp:translate = (8.403749370110103, 6.082573090080646, 0)
+        double3 xformOp:translate = (8.283749370110103, 6.082573090080646, 0.005)
     }
 
     # The decorative apple (visual-only mesh, no rigid body) is deactivated:
@@ -28,6 +28,6 @@ over "World"
     # collision disk and online-IK placement target.
     over "plate"
     {
-        double3 xformOp:translate = (8.19, 5.71, 0.9)
+        double3 xformOp:translate = (8.19, 5.71, 0.905)
     }
 }

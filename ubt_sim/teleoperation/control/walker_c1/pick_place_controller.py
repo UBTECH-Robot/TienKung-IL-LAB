@@ -21,7 +21,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 try:
-    from .constants import LEFT_ARM_JOINT_NAMES, RIGHT_ARM_JOINT_NAMES
+    from .constants import LEFT_ARM_JOINT_NAMES, RIGHT_ARM_JOINT_NAMES, TASK_RESET_BODY_POSE
     from .robot_controller import (
         LEFT_HAND_SDK_NAMES,
         RIGHT_HAND_SDK_NAMES,
@@ -31,12 +31,12 @@ except ImportError:
     _dir = os.path.dirname(os.path.abspath(__file__))
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
-    from constants import LEFT_ARM_JOINT_NAMES, RIGHT_ARM_JOINT_NAMES
+    from constants import LEFT_ARM_JOINT_NAMES, RIGHT_ARM_JOINT_NAMES, TASK_RESET_BODY_POSE
     from robot_controller import LEFT_HAND_SDK_NAMES, RIGHT_HAND_SDK_NAMES, WalkerC1RobotController
 
 
-APPLE_SPAWN_W = (8.17, 5.90, 0.95)
-PLATE_CENTER_W = (8.19, 5.71, 0.925)
+APPLE_SPAWN_W = (8.17, 5.90, 0.955)
+PLATE_CENTER_W = (8.19, 5.71, 0.930)
 PLATE_RADIUS = 0.12
 
 PRESHAPE_HAND = [0.2] * 6
@@ -45,6 +45,10 @@ HOLD_HAND = CLOSED_HAND
 GRASP_MOUTH_OFFSET_XY_B = np.array([-0.010, 0.013], dtype=float)
 GRASP_CENTER_DZ = 0.059
 PREGRASP_IK_SEED = [-0.5419, 0.1211, 0.9164, 0.0530, -0.0293, -0.3610, -1.3760]
+READY_RIGHT_ARM_IK_SEED = [TASK_RESET_BODY_POSE[name] for name in RIGHT_ARM_JOINT_NAMES]
+GRASP_PITCH_RELIEF_DEG = 5.0
+CARRY_YAW_RELIEF_DEG = 5.0
+TRANSFER_PALM_B = np.array([0.290, -0.285, 0.220], dtype=float)
 
 # Palm-origin offset from the live apple center for the calibrated palm-down
 # cage. This is a hand geometry/task calibration, not a replayed joint
@@ -55,6 +59,7 @@ HOVER_PALM_Z = 0.14
 LIFT_PALM_Z = 0.18
 CARRY_PALM_Z = 0.20
 RELEASE_PALM_Z = 0.12
+PLATE_RELEASE_CLEARANCE_B = 0.040
 
 DEFAULT_CAMERA_TOPIC = "/sensor/camera/head/color/raw"
 DEFAULT_RECORD_ROOT = "/ubt_sim/dataset/walker_c1_ros"
@@ -69,6 +74,18 @@ _RECORD_BUFFER_KEYS = (
 
 def _format_vec(values: Sequence[float]) -> str:
     return "[" + ", ".join(f"{float(v):+.3f}" for v in values) + "]"
+
+
+def _base_y_rotation(degrees: float) -> np.ndarray:
+    angle = np.deg2rad(degrees)
+    cosine, sine = float(np.cos(angle)), float(np.sin(angle))
+    return np.array([[cosine, 0.0, sine], [0.0, 1.0, 0.0], [-sine, 0.0, cosine]])
+
+
+def _base_z_rotation(degrees: float) -> np.ndarray:
+    angle = np.deg2rad(degrees)
+    cosine, sine = float(np.cos(angle)), float(np.sin(angle))
+    return np.array([[cosine, -sine, 0.0], [sine, cosine, 0.0], [0.0, 0.0, 1.0]])
 
 
 class WalkerC1PickPlace(WalkerC1RobotController):
@@ -342,7 +359,6 @@ class WalkerC1PickPlace(WalkerC1RobotController):
                 rot_mat=rot_mat,
                 duration=0.6,
                 corrections=0,
-                seed_arm=PREGRASP_IK_SEED,
             ):
                 return target
         return target
@@ -430,7 +446,11 @@ class WalkerC1PickPlace(WalkerC1RobotController):
     def prepare_palm_down_cage(self) -> np.ndarray:
         self.move_hand("right", PRESHAPE_HAND, repeats=4)
         self.wait_sim_steps(15, timeout=6.0)
-        return self.grasp_attitude
+        self.get_logger().info(
+            f"using calibrated palm-down cage with {GRASP_PITCH_RELIEF_DEG:.1f} deg "
+            "base-Y posture relief"
+        )
+        return _base_y_rotation(GRASP_PITCH_RELIEF_DEG) @ self.grasp_attitude
 
     def try_grasp_once(
         self,
@@ -454,17 +474,22 @@ class WalkerC1PickPlace(WalkerC1RobotController):
 
         self.get_logger().info("approach above apple ...")
         if not self.move_right_arm(
-            approach, rot_mat=grasp_rot, duration=2.0, corrections=0, seed_arm=PREGRASP_IK_SEED
+            approach,
+            rot_mat=grasp_rot,
+            duration=2.0,
+            corrections=0,
+            seed_arms=(PREGRASP_IK_SEED, self.current_arm(), READY_RIGHT_ARM_IK_SEED),
+            reference_arm=READY_RIGHT_ARM_IK_SEED,
         ):
             return False
         self.get_logger().info("hover over apple ...")
         if not self.move_right_arm(
-            hover, rot_mat=grasp_rot, duration=1.2, corrections=0, seed_arm=PREGRASP_IK_SEED
+            hover, rot_mat=grasp_rot, duration=1.2, corrections=0
         ):
             return False
         self.get_logger().info("descend around apple ...")
         if not self.move_right_arm(
-            grasp, rot_mat=grasp_rot, duration=3.0, corrections=0, seed_arm=PREGRASP_IK_SEED
+            grasp, rot_mat=grasp_rot, duration=3.0, corrections=0
         ):
             return False
         palm_target = self.align_grasp(grasp, grasp_rot)
@@ -478,7 +503,13 @@ class WalkerC1PickPlace(WalkerC1RobotController):
 
         self.get_logger().info("lifting for grasp check ...")
         lift_palm = np.array([palm_target[0], palm_target[1], max(LIFT_PALM_Z, palm_target[2] + 0.08)])
-        if not self.move_right_arm(lift_palm, rot_mat=grasp_rot, duration=3.0, corrections=0):
+        if not self.move_right_arm(
+            lift_palm,
+            rot_mat=grasp_rot,
+            duration=3.0,
+            corrections=0,
+            smooth=True,
+        ):
             return False
         self.wait_sim_steps(20, timeout=6.0)
 
@@ -504,25 +535,66 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         plate_b = self.world_to_base(PLATE_CENTER_W)
         plate_x, plate_y, plate_z = [float(v) for v in plate_b[:3]]
 
-        carry_rot = self.fk_palm()[:3, :3]
+        release_rot = self.fk_palm()[:3, :3]
+        carry_rot = _base_z_rotation(CARRY_YAW_RELIEF_DEG) @ release_rot
         plate_anchor = np.array([plate_x, plate_y, plate_z], dtype=float) + PALM_GRASP_OFFSET_B
         carry_palm = np.array([plate_anchor[0], plate_anchor[1], max(CARRY_PALM_Z, plate_anchor[2] + 0.10)])
-        lower_palm = np.array([plate_anchor[0], plate_anchor[1], max(RELEASE_PALM_Z, plate_anchor[2] + 0.025)])
+        lower_palm = np.array(
+            [
+                plate_anchor[0],
+                plate_anchor[1],
+                max(RELEASE_PALM_Z, plate_anchor[2] + PLATE_RELEASE_CLEARANCE_B),
+            ]
+        )
         retreat_palm = np.array([plate_anchor[0] - 0.06, plate_anchor[1] - 0.06, max(CARRY_PALM_Z, plate_anchor[2] + 0.15)])
 
+        self.get_logger().info(
+            f"transfer through body-front waypoint {_format_vec(TRANSFER_PALM_B)} with "
+            f"{CARRY_YAW_RELIEF_DEG:.1f} deg carry-yaw relief ..."
+        )
+        if not self.move_right_arm(
+            TRANSFER_PALM_B,
+            rot_mat=carry_rot,
+            duration=2.0,
+            corrections=0,
+            seed_arms=(self.current_arm(), READY_RIGHT_ARM_IK_SEED, PREGRASP_IK_SEED),
+            reference_arm=READY_RIGHT_ARM_IK_SEED,
+            smooth=True,
+        ):
+            return False
+        self.log_hand_geometry("body-front transfer")
         self.get_logger().info("carry over plate ...")
-        if not self.move_right_arm(carry_palm, rot_mat=carry_rot, duration=3.0, corrections=0):
+        if not self.move_right_arm(
+            carry_palm,
+            rot_mat=carry_rot,
+            duration=2.2,
+            corrections=0,
+            smooth=True,
+        ):
             return False
         self.get_logger().info("lower into plate ...")
-        if not self.move_right_arm(lower_palm, rot_mat=carry_rot, duration=2.0, corrections=0):
+        if not self.move_right_arm(
+            lower_palm,
+            rot_mat=release_rot,
+            duration=2.0,
+            corrections=0,
+            smooth=True,
+        ):
             return False
+        self.log_hand_geometry("pre-release")
         self.get_logger().info("release apple ...")
         self.open_hand("right")
         self.get_logger().info("waiting 0.5 simulated seconds for the apple to settle ...")
         self.wait_sim_steps(50, timeout=10.0)
 
         self.get_logger().info("retreat from plate ...")
-        self.move_right_arm(retreat_palm, rot_mat=grasp_rot, duration=1.2, corrections=0)
+        self.move_right_arm(
+            retreat_palm,
+            rot_mat=release_rot,
+            duration=1.2,
+            corrections=0,
+            smooth=True,
+        )
 
         self.get_logger().info("back to ready ...")
         self.go_ready()
