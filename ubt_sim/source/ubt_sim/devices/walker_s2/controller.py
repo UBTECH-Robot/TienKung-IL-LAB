@@ -96,7 +96,12 @@ class WalkerS2Controller(DeviceBase):
         if "body" in msg:
             body = msg.get("body") or {}
             if isinstance(body, dict):
-                self._action.setdefault("body", {}).update(body)
+                # Replace rather than update to avoid stale joints from
+                # previous messages accumulating when the controller uses
+                # publish_changed_only.  HoldTargetManager (action_process)
+                # already persists the full set of joint targets; _action
+                # only needs to represent the current frame's command.
+                self._action["body"] = dict(body)
             else:
                 self._action["body"] = body
 

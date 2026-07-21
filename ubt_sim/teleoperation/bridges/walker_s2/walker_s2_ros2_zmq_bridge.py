@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -122,6 +123,15 @@ class WalkerS2RosBridge(Node):
         self.latest_left_grip = None
         self.latest_right_grip = None
 
+        # Body command rate limiter: prevent 500 Hz hold/idle traffic from
+        # flooding the ZMQ pipe.  The sim physics runs at ~100 Hz (dt=0.01);
+        # forwarding more often than that wastes CPU on serialisation /
+        # deserialisation of messages that will be overwritten before the next
+        # physics step anyway.
+        self._last_body_pub_time = 0.0
+        self._body_pub_interval = 1.0 / 100.0  # 100 Hz
+        self._pvt_warned = False
+
         sub_callbacks = {
             "command": self.command_cb,
             "left_hand_command": lambda msg: self.hand_cb(msg, "left"),
@@ -213,13 +223,24 @@ class WalkerS2RosBridge(Node):
     def command_cb(self, msg: RobotCommand):
         body = {}
         for cmd in msg.joint_cmd:
-            if int(cmd.control_mode) != int(JointCmd.MODE_POSITION):
+            control_mode = int(cmd.control_mode)
+            if control_mode != int(JointCmd.MODE_POSITION):
+                if not self._pvt_warned:
+                    self.get_logger().warning(
+                        f"Non-MODE_POSITION command (mode={control_mode}) discarded "
+                        f"in simulation. Only MODE_POSITION={int(JointCmd.MODE_POSITION)} "
+                        f"is supported. PVT / force-control modes are ignored."
+                    )
+                    self._pvt_warned = True
                 continue
             joint_name = _normalize_body_name(cmd.name)
             if joint_name is not None:
                 body[joint_name] = float(cmd.position)
         if body:
-            self.cmd_socket.send_json({"body": body, "source": "walker_sdk_robot_command"})
+            now = time.time()
+            if now - self._last_body_pub_time >= self._body_pub_interval:
+                self.cmd_socket.send_json({"body": body, "source": "walker_sdk_robot_command"})
+                self._last_body_pub_time = now
 
     def hand_cb(self, msg: JointCommand, side: str):
         names = list(msg.names)

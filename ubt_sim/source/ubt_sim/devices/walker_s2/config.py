@@ -106,7 +106,9 @@ WALKER_S2_ARM_STIFFNESS = {
     "R_wrist_pitch_joint": 600,
     "R_wrist_roll_joint": 600,
 }
-WALKER_S2_ARM_DAMPING = {name: 50 for name in WALKER_S2_ARM_STIFFNESS}
+WALKER_S2_ARM_DAMPING = {
+    name: (70 if "roll" in name else 80) for name in WALKER_S2_ARM_STIFFNESS
+}
 
 WALKER_S2_WAIST_STIFFNESS = {
     "waist_yaw_joint": 600,

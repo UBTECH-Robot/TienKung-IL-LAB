@@ -53,6 +53,7 @@ from rclpy.executors import MultiThreadedExecutor
 _dir = os.path.dirname(os.path.abspath(__file__))
 if _dir not in sys.path:
     sys.path.insert(0, _dir)
+from utils.constants import CARRY_READY_POSE
 from utils.controller import WalkerS2Controller
 
 
@@ -69,10 +70,10 @@ DEFAULT_WRIST_YAW_OFFSET = -0.2    # level_ee: yaw 偏置(作用于 elbow_yaw)
 DEFAULT_WRIST_ROLL_OFFSET = 0.0    # level_ee: roll 偏置
 # 抱起箱子
 DEFAULT_PREGRASP_DURATION = 2.0    # descend_to_pregrasp 时长(s)
-DEFAULT_PREGRASP_DZ = -0.005       # descend_to_pregrasp: 预抓取高度下降
-DEFAULT_DESCEND_DZ = -0.005        # approach_and_descend: 下降到夹取高度
+DEFAULT_PREGRASP_DZ = -0.13       # descend_to_pregrasp: 预抓取高度下降
+DEFAULT_DESCEND_DZ = -0.0        # approach_and_descend: 下降到夹取高度
 DEFAULT_APPROACH_DURATION = 2.0    # approach_and_descend 时长(s)
-DEFAULT_APPROACH_DY = 0.10         # approach_and_descend: 双臂 y 内收
+DEFAULT_APPROACH_DY = 0.038         # approach_and_descend: 双臂 y 内收
 DEFAULT_LIFT_DURATION = 2.0        # lift 时长(s)
 DEFAULT_LIFT_DZ = 0.10             # lift: 抱起抬升
 DEFAULT_PULL_BACK_DURATION = 2.0   # pull_back 时长(s)
@@ -115,6 +116,7 @@ class CarryBoxController(WalkerS2Controller):
         wrist_yaw_offset: float = DEFAULT_WRIST_YAW_OFFSET,
         wrist_roll_offset: float = DEFAULT_WRIST_ROLL_OFFSET,
         pull_back_dx: float = DEFAULT_PULL_BACK_DX,
+        use_hierarchical: bool = False,
         **kwargs,
     ):
         # 搬箱需要 IK 求解末端 delta -> 关节目标
@@ -141,6 +143,7 @@ class CarryBoxController(WalkerS2Controller):
         self.wrist_yaw_offset = wrist_yaw_offset
         self.wrist_roll_offset = wrist_roll_offset
         self.pull_back_dx = pull_back_dx
+        self.use_hierarchical = use_hierarchical
 
     # ============================================================
     # 双臂同时封装(核心:move_dual_ee_delta)
@@ -154,6 +157,7 @@ class CarryBoxController(WalkerS2Controller):
         right_rpy=(0.0, 0.0, 0.0),
         duration_sec=None,
         wait=True,
+        use_hierarchical=None,
     ):
         """双臂末端相对位移(同时移动)。
 
@@ -171,9 +175,13 @@ class CarryBoxController(WalkerS2Controller):
             left_rpy / right_rpy: 末端姿态 delta (droll, dpitch, dyaw),单位 rad
             duration_sec: 运动时长
             wait: 是否阻塞
+            use_hierarchical: 是否启用层级 IK(torso→shoulder→full arm);
+                              None 时使用实例默认值 self.use_hierarchical
         Returns:
             bool: True=双臂 IK 收敛并下发成功
         """
+        if use_hierarchical is None:
+            use_hierarchical = self.use_hierarchical
         duration_sec = duration_sec or self.duration_sec
         return self.move_dual_ee_delta(
             left_delta_xyz=left_xyz,
@@ -183,6 +191,7 @@ class CarryBoxController(WalkerS2Controller):
             duration_sec=duration_sec,
             wait=wait,
             require_success=True,
+            use_hierarchical=use_hierarchical,
         )
 
     # ============================================================
@@ -329,10 +338,10 @@ class CarryBoxController(WalkerS2Controller):
         return True
 
     def _return_home(self):
-        """回预备姿态(直接,不分段)。"""
-        self.get_logger().info("Returning to ready pose (direct, no staged)")
-        if not self.move_to_ready_pose(duration_sec=DEFAULT_INIT_DURATION, wait=True, staged=False):
-            self.get_logger().warning("Failed to return to ready pose")
+        """回搬箱预备姿态(elbow_yaw=±1.5,前臂指向前方)。"""
+        self.get_logger().info("Returning to carry ready pose")
+        if not self.move_to_pose(CARRY_READY_POSE, duration_sec=DEFAULT_INIT_DURATION, wait=True, unlock_required_joints=True):
+            self.get_logger().warning("Failed to return to carry ready pose")
 
     def pick_up_box(self, init_pose=True, level=True):
         """抱箱部分:init -> level -> descend_to_pregrasp -> approach_and_descend -> lift -> [pull_back]。
@@ -341,9 +350,9 @@ class CarryBoxController(WalkerS2Controller):
         放下,或 run_carry_task 串联。place 前移抵消 pull_back + 下降回夹取位。
         """
         if init_pose:
-            self.get_logger().info("Stage 0: moving to ready pose")
-            if not self.move_to_ready_pose(duration_sec=DEFAULT_INIT_DURATION, wait=True, staged=False):
-                self.get_logger().error("Failed to reach ready pose, abort")
+            self.get_logger().info("Stage 0: moving to carry ready pose")
+            if not self.move_to_pose(CARRY_READY_POSE, duration_sec=DEFAULT_INIT_DURATION, wait=True, unlock_required_joints=True):
+                self.get_logger().error("Failed to reach carry ready pose, abort")
                 return False
         stages = []
         if level:
@@ -446,6 +455,7 @@ def parse_args():
     parser.add_argument("--release-duration", type=float, default=DEFAULT_RELEASE_DURATION, help="release 外展时长(s)")
     parser.add_argument("--retreat-duration", type=float, default=DEFAULT_RETREAT_DURATION, help="retreat 撤回时长(s)")
     parser.add_argument("--no-lock", action="store_true", help="不锁定 head/waist")
+    parser.add_argument("--hierarchical", action="store_true", help="启用层级 IK(torso→shoulder→full arm 三级求解),末端接近工作空间边缘时更易收敛")
     return parser.parse_known_args()
 
 
@@ -472,6 +482,7 @@ def main():
         wrist_roll_offset=cli_args.wrist_roll_offset,
         pull_back_dx=cli_args.pull_back_dx,
         lock_joints=[] if cli_args.no_lock else None,
+        use_hierarchical=cli_args.hierarchical,
     )
 
     executor = MultiThreadedExecutor(num_threads=2)

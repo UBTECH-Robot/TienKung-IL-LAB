@@ -21,7 +21,7 @@ setup(
         'console_scripts': [
             'robot_control = robot_control.robot_control:main',
             'camera = robot_control.camera:main',
-            'joint_test = robot_control.joint_test:main',
+            'joint_test = robot_control.robot_control:main',  # 已合并到 robot_control
         ],
     },
 )

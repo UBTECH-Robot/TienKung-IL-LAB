@@ -58,10 +58,51 @@ _ALIAS_TO_SIM_JOINT = {
 }
 _ALIAS_TO_SIM_JOINT.update({name: name for name in WALKER_S2_HOME_POSE})
 
-action_joint_names = None
-_mapping_logged = False
-_gripper_mapping_logged = set()
-_hold_joint_targets = None
+class HoldTargetManager:
+    """Manages joint hold targets with proper session lifecycle.
+
+    Encapsulates the previously-module-level state so that hold targets are
+    re-initialised from the current simulation joint positions whenever
+    ``reset()`` is called (e.g. on environment reset or when a new control
+    session starts).  This prevents stale targets from a previous script
+    invocation from leaking into a new session and fighting the fresh commands.
+    """
+
+    def __init__(self):
+        self.action_joint_names: list[str] | None = None
+        self.mapping_logged: bool = False
+        self.gripper_mapping_logged: set[tuple] = set()
+        self.joint_targets: dict[str, float] | None = None
+
+    def reset(self) -> None:
+        """Clear hold targets so the next update re-seeds from current sim state."""
+        self.joint_targets = None
+
+    def ensure_initialized(self, env) -> None:
+        """Lazy-init: seed hold targets from the current simulation joint positions."""
+        if self.joint_targets is not None:
+            return
+        current_pos = _current_joint_map(env)
+        if self.action_joint_names is None:
+            self.action_joint_names = get_action_joint_names(env)
+        self.joint_targets = {
+            name: float(current_pos.get(name, WALKER_S2_HOME_POSE.get(name, 0.0)))
+            for name in self.action_joint_names
+        }
+        print("[INFO] Walker S2 hold targets captured from current joint positions.")
+
+    def update(self, body_cmd: dict[str, float], left_grip: dict | None,
+               right_grip: dict | None, env) -> None:
+        """Apply an incremental command update, initialising on first call."""
+        self.ensure_initialized(env)
+        self.joint_targets.update(body_cmd)
+        self.joint_targets.update(
+            _grip_cmd_to_joint_targets("left", left_grip, env))
+        self.joint_targets.update(
+            _grip_cmd_to_joint_targets("right", right_grip, env))
+
+
+_hold_manager = HoldTargetManager()
 
 # 重力补偿开关：可通过环境变量 WALKER_S2_GRAVITY_COMP=0 禁用，方便 A/B 对比测试
 _enable_gravity_comp = os.environ.get("WALKER_S2_GRAVITY_COMP", "1") == "1"
@@ -78,8 +119,7 @@ WALKER_S2_GRIPPER_SIM_CLOSE_JOINT_M = WALKER_S2_GRIPPER_JOINT_CLOSING_M
 
 
 def reset_hold_targets() -> None:
-    global _hold_joint_targets
-    _hold_joint_targets = None
+    _hold_manager.reset()
 
 
 def normalize_joint_name(name: str) -> str | None:
@@ -150,8 +190,6 @@ def _configured_gripper_joints(side: str, joint_names: list[str]) -> list[str]:
 
 
 def _discover_gripper_joints(env, side: str) -> list[str]:
-    global _gripper_mapping_logged
-
     robot_joint_names = list(env.scene["robot"].data.joint_names)
     joints = _configured_gripper_joints(side, robot_joint_names)
     if not joints:
@@ -164,9 +202,11 @@ def _discover_gripper_joints(env, side: str) -> list[str]:
         )
 
     log_key = (side, tuple(joints))
-    if log_key not in _gripper_mapping_logged:
+    if log_key not in _hold_manager.gripper_mapping_logged:
         if joints:
-            missing = [name for name in joints if action_joint_names is not None and name not in action_joint_names]
+            missing = [name for name in joints
+                       if _hold_manager.action_joint_names is not None
+                       and name not in _hold_manager.action_joint_names]
             print(f"[INFO] Walker S2 {side} gripper joints: {joints}")
             if missing:
                 print(
@@ -176,7 +216,7 @@ def _discover_gripper_joints(env, side: str) -> list[str]:
         else:
             candidates = [name for name in robot_joint_names if any(token in name.lower() for token in ("finger", "grip", "pgc"))]
             print(f"[WARN] Walker S2 {side} gripper joints not found. Gripper candidates: {candidates}")
-        _gripper_mapping_logged.add(log_key)
+        _hold_manager.gripper_mapping_logged.add(log_key)
 
     return joints
 
@@ -193,7 +233,9 @@ def _grip_cmd_to_joint_targets(side: str, grip_cmd: Any, env) -> dict[str, float
     opening = _clamp_grip_opening(target_opening)
 
     joints = _discover_gripper_joints(env, side)
-    active_joints = [name for name in joints if action_joint_names is None or name in action_joint_names]
+    active_joints = [name for name in joints
+                     if _hold_manager.action_joint_names is None
+                     or name in _hold_manager.action_joint_names]
     if not active_joints:
         return {}
 
@@ -268,41 +310,34 @@ def _get_finger_link_states(env) -> dict[str, Any]:
 
 
 def to_controller_data(command: dict[str, Any], env) -> torch.Tensor:
-    global action_joint_names, _mapping_logged, _hold_joint_targets
+    if _hold_manager.action_joint_names is None:
+        _hold_manager.action_joint_names = get_action_joint_names(env)
 
-    if action_joint_names is None:
-        action_joint_names = get_action_joint_names(env)
-
-    if not _mapping_logged:
+    if not _hold_manager.mapping_logged:
         print("[INFO] Walker S2 action joint order:")
-        for idx, name in enumerate(action_joint_names):
+        for idx, name in enumerate(_hold_manager.action_joint_names):
             print(f"  [{idx:02d}] {name}")
-        _mapping_logged = True
+        _hold_manager.mapping_logged = True
 
     body_cmd = _extract_body_command(command)
-    if _hold_joint_targets is None:
-        current_joint_pos = _current_joint_map(env)
-        _hold_joint_targets = {
-            name: float(current_joint_pos.get(name, WALKER_S2_HOME_POSE.get(name, 0.0)))
-            for name in action_joint_names
-        }
-        print("[INFO] Walker S2 startup hold targets captured from current joint positions.")
-
-    _hold_joint_targets.update(body_cmd)
-    _hold_joint_targets.update(_grip_cmd_to_joint_targets("left", command.get("left_grip"), env))
-    _hold_joint_targets.update(_grip_cmd_to_joint_targets("right", command.get("right_grip"), env))
+    _hold_manager.update(
+        body_cmd,
+        command.get("left_grip"),
+        command.get("right_grip"),
+        env,
+    )
 
     # 重力补偿：从当前关节位置计算重力矩，转换为位置偏移叠加到目标上。
-    # 偏移不存储到 _hold_joint_targets（否则逐帧累加），每帧从实际位姿重新计算。
+    # 偏移不存储到 _hold_manager.joint_targets（否则逐帧累加），每帧从实际位姿重新计算。
     gravity_offsets: dict[str, float] = {}
     if _enable_gravity_comp and compute_gravity_offsets is not None:
         current_pos = _current_joint_map(env)
         gravity_offsets = compute_gravity_offsets(current_pos)
 
     values = [
-        float(_hold_joint_targets.get(name, WALKER_S2_HOME_POSE.get(name, 0.0)))
+        float(_hold_manager.joint_targets.get(name, WALKER_S2_HOME_POSE.get(name, 0.0)))
         + gravity_offsets.get(name, 0.0)
-        for name in action_joint_names
+        for name in _hold_manager.action_joint_names
     ]
 
     return torch.tensor(values, device=env.device, dtype=torch.float32).unsqueeze(0).repeat(env.num_envs, 1)

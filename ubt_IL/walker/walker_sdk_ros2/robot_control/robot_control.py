@@ -70,233 +70,31 @@ from mc_state_msgs.msg import RobotState
 from mc_task_msgs.msg import JointCmd, JointCommand, RobotCommand
 from sensor_msgs.msg import JointState
 
-# ============================================================================
-# 常量
-# ============================================================================
-
-DEFAULT_COMMAND_TOPIC = "/mc/sdk/robot_command"
-DEFAULT_STATE_TOPIC = "/mc/sdk/robot_state"
-DEFAULT_CONTROL_HZ = 500  # 对齐 pub_arm_command / SDK demo 基线（500Hz，2ms/点）
-DEFAULT_MAX_JOINT_SPEED = 6.28  # rad/s，安全速度上限
-DEFAULT_LOCK_JOINTS = ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"]
+try:
+    from .constants import *
+except ImportError:
+    from constants import *
 
 # ============================================================================
-# PVT 力位混合模式（JointCmd.CUSTOM_MODE_1 = 7）参数
-# 控制律：tau = Kp·(q_des − q) + Kd·(dq_des − dq) + effort_ff
-#   position = q_des（目标位置）
-#   velocity = dq_des（速度前馈，规划速度）
-#   effort   = effort_ff（力矩前馈，如重力补偿，默认 0）
-#   v1 = Kp, v2 = Kd
-# ⚠️ 以下 Kp/Kd 是 deliberately soft 的未验证占位值，必须真机调！
-#    Kp 太小 → 手臂下垂（重力补偿不足）；Kp 太大 → 振荡。
-#    理想基线：容器内 config_mc_walker_s2_v1_sps 的 mode=2 内部增益。
+# 辅助函数
 # ============================================================================
 
-# 对齐 pub_arm_command.py 的 PVT 基线增益（kp=50/kd=2，velocity=0 纯阻尼）：
-# 原 30/1 过软 → 跟踪误差与振荡（抖动）。真机仍可经 pvt_kp/pvt_kd 覆盖。
-_PVT_DEFAULT_KP = 50.0   # 位置增益（对齐 pub_arm_command 基线）
-_PVT_DEFAULT_KD = 2.0    # 速度增益（阻尼，对齐 pub_arm_command 基线）
-
-# 轨迹插值 profile
-PROFILE_LINEAR = "linear"
-PROFILE_QUINTIC = "quintic"   # s(τ)=10τ³−15τ⁴+6τ⁵，起止速度/加速度均为 0 → 无 jerk 阶跃
-
-# ============================================================================
-# 关节定义（原 utars_clamp_and_place_large_bio_box_in_test_field.yaml 中的
-# actions.joints 段，硬编码以消除对配置文件的依赖）
-# ============================================================================
-
-BODY_JOINT_NAMES = [
-    "L_elbow_roll_joint",
-    "L_elbow_yaw_joint",
-    "L_shoulder_pitch_joint",
-    "L_shoulder_roll_joint",
-    "L_shoulder_yaw_joint",
-    "L_wrist_pitch_joint",
-    "L_wrist_roll_joint",
-    "R_elbow_roll_joint",
-    "R_elbow_yaw_joint",
-    "R_shoulder_pitch_joint",
-    "R_shoulder_roll_joint",
-    "R_shoulder_yaw_joint",
-    "R_wrist_pitch_joint",
-    "R_wrist_roll_joint",
-    "head_pitch_joint",
-    "head_yaw_joint",
-    "waist_yaw_joint",
-]
-
-# 关节限位（rad），来源：Walker S2 硬件规格书
-# 键 = 关节名（与 BODY_JOINT_NAMES 一致），值 = (lower, upper)
-BODY_JOINT_LIMITS = {
-    "L_elbow_roll_joint":       (-2.6180, 0.0),
-    "L_elbow_yaw_joint":        (-2.9147, 2.9147),
-    "L_shoulder_pitch_joint":   (-2.8274, 2.8274),
-    "L_shoulder_roll_joint":    (-1.85,   0.0873),
-    "L_shoulder_yaw_joint":     (-2.8972, 2.8972),
-    "L_wrist_pitch_joint":      (-1.5882, 1.5882),
-    "L_wrist_roll_joint":       (-1.9897, 1.9897),
-    "R_elbow_roll_joint":       (-2.6180, 0.0),
-    "R_elbow_yaw_joint":        (-2.9147, 2.9147),
-    "R_shoulder_pitch_joint":   (-2.8274, 2.8274),
-    "R_shoulder_roll_joint":    (-1.85,   0.0873),
-    "R_shoulder_yaw_joint":     (-2.8972, 2.8972),
-    "R_wrist_pitch_joint":      (-1.5882, 1.5882),
-    "R_wrist_roll_joint":       (-1.9897, 1.9897),
-    "head_pitch_joint":         (-0.6807, 0.5061),
-    "head_yaw_joint":           (-1.6406, 1.6406),
-    "waist_yaw_joint":          (-2.7925, 2.7925),
-}
-
-# V4 手部关节限位（rad），左右手相同
-# 键 = 短名（去掉 left_/right_ 前缀），查找时 removeprefix 即可
-V4_HAND_JOINT_LIMITS = {
-    "thumb_swing":  (0.0, 2.11),
-    "thumb_mcp":    (0.0, 1.85),
-    "thumb_pip":    (0.0, 1.09),
-    "index_mcp":    (0.0, 1.71),
-    "middle_mcp":   (0.0, 1.71),
-    "ring_mcp":     (0.0, 1.71),
-    "little_mcp":   (0.0, 1.71),
-}
+_ALL_HAND_JOINT_NAMES = set(V4_HAND_LEFT_JOINTS + V4_HAND_RIGHT_JOINTS)
 
 
-# ============================================================================
-# 头部周期运动测试参数
-# 参考：walker_sdk_ros2-ubt_ros2_demo_walkerS2_v0.1.8/example/src/walker_s2/
-#       low_level/pub_head_command.cpp
-#
-# 原 SDK demo：500Hz 发布，position = sin(time_cnt) * 0.5，time_cnt += 0.002
-# 对应连续函数：position = sin(2π * t / T) * amplitude
-# 其中：振幅 0.5 rad，时间步 0.002s（500Hz），周期 T = 2π ≈ 6.28s
-# ============================================================================
+def _is_hand_joint(name):
+    """判断关节名是否为手指关节（全名）。"""
+    return name in _ALL_HAND_JOINT_NAMES
 
-HEAD_TEST_AMPLITUDE = 0.5    # 振幅（弧度），约 28.6°
-HEAD_TEST_PERIOD = 2 * np.pi  # 周期（秒），约 6.28s
-HEAD_TEST_DEFAULT_CYCLES = 2  # 默认运动周期数
 
-# ============================================================================
-# V4 手部周期运动测试参数
-# 参考：walker_sdk_ros2-ubt_ros2_demo_walkerS2_v0.1.8/example/src/walker_s2/
-#       low_level/pub_hand_v4_command.cpp
-#
-# V4 手 = 单手 7 关节（含 thumb_pip，区别于 V3 手的 6 关节）
-# 原 SDK demo：500Hz 发布，position = sin(time_cnt + i * 0.2) * 0.6
-#               每个关节相位差 0.2 rad，mode=5（手部控制器自定义模式）
-#
-# 注意：
-#   - 手部走独立通路：JointCommand 消息 + /mc/{left,right}_hand/command 话题
-#   - 不需要 switch_controller config_mc_walker_s2_v1_sps（手部控制器始终监听）
-#   - 与身体关节完全独立，不在 YAML config 中
-# ============================================================================
+def _infer_hand_side(name):
+    """从手指关节全名推断手别，返回 "left" / "right" / None。"""
+    if name.startswith("left_"):
+        return "left"
+    if name.startswith("right_"):
+        return "right"
+    return None
 
-V4_HAND_LEFT_JOINTS = [
-    "left_thumb_swing",
-    "left_thumb_mcp",
-    "left_thumb_pip",      # V4 独有，V3 没有此关节
-    "left_index_mcp",
-    "left_middle_mcp",
-    "left_ring_mcp",
-    "left_little_mcp",
-]
-
-V4_HAND_RIGHT_JOINTS = [
-    "right_thumb_swing",
-    "right_thumb_mcp",
-    "right_thumb_pip",     # V4 独有
-    "right_index_mcp",
-    "right_middle_mcp",
-    "right_ring_mcp",
-    "right_little_mcp",
-]
-
-V4_HAND_TEST_AMPLITUDE = 0.6        # 振幅（rad），与 SDK demo 一致
-V4_HAND_TEST_PERIOD = 2 * np.pi     # 周期（s），与 SDK demo 一致（time_cnt += 0.002 @500Hz）
-V4_HAND_TEST_PHASE_DIFF = 0.2       # 关节间相位差（rad），与 SDK demo 一致
-V4_HAND_TEST_DEFAULT_CYCLES = 2     # 默认循环数
-V4_HAND_TEST_HZ = 200               # 手部测试发布频率
-V4_HAND_LEFT_TOPIC = "/mc/left_hand/command"
-V4_HAND_RIGHT_TOPIC = "/mc/right_hand/command"
-V4_HAND_LEFT_STATE_TOPIC = "/mc/left_hand/joint_states"
-V4_HAND_RIGHT_STATE_TOPIC = "/mc/right_hand/joint_states"
-
-GRIP_LEFT_CMD_TOPIC = "/ecat/left_grip/cmd"
-GRIP_RIGHT_CMD_TOPIC = "/ecat/right_grip/cmd"
-GRIP_LEFT_STATE_TOPIC = "/ecat/left_grip/state"
-GRIP_RIGHT_STATE_TOPIC = "/ecat/right_grip/state"
-GRIP_POSITION_LIMIT = (0.0, 0.05)     # m
-GRIP_FORCE_LIMIT = (41.0, 100.0)      # N
-GRIP_VELOCITY_LIMIT = (0.0, 0.01)     # m/s
-GRIP_ACCELERATION_LIMIT = (0.0, 3.0)  # m/s^2，复用 GripCmd.cur 字段
-
-LEFT_ARM_JOINTS = [
-    "L_shoulder_pitch_joint", "L_shoulder_roll_joint", "L_shoulder_yaw_joint",
-    "L_elbow_roll_joint", "L_elbow_yaw_joint", "L_wrist_pitch_joint", "L_wrist_roll_joint",
-]
-RIGHT_ARM_JOINTS = [
-    "R_shoulder_pitch_joint", "R_shoulder_roll_joint", "R_shoulder_yaw_joint",
-    "R_elbow_roll_joint", "R_elbow_yaw_joint", "R_wrist_pitch_joint", "R_wrist_roll_joint",
-]
-
-# 手部关节查找表：side → (joint_names_list, publisher_topic)
-V4_HAND_JOINT_MAP = {
-    "left": V4_HAND_LEFT_JOINTS,
-    "right": V4_HAND_RIGHT_JOINTS,
-}
-
-# 手部预设姿态（用于 --hand-open / --hand-close）
-V4_HAND_OPEN_POSE = {name: 0.0 for name in V4_HAND_JOINT_LIMITS}
-V4_HAND_CLOSE_POSE = {name: hi for name, (_, hi) in V4_HAND_JOINT_LIMITS.items()}
-
-# ============================================================================
-# 预备姿态（双臂抬起预备抓取的站立位姿）
-# ============================================================================
-
-READY_POSE = {
-    "L_elbow_roll_joint":       -1.700,
-    # "L_elbow_yaw_joint":        2.8800,
-    "L_elbow_yaw_joint":        1.5000,
-    "L_shoulder_pitch_joint":   0.0000,
-    "L_shoulder_roll_joint":    -0.1500,
-    "L_shoulder_yaw_joint":     -1.5600,
-    "L_wrist_pitch_joint":      0.0000,
-    "L_wrist_roll_joint":       0.0000,
-    "R_elbow_roll_joint":       -1.700,
-    # "R_elbow_yaw_joint":        -2.8800,
-    "R_elbow_yaw_joint":        -1.5000,
-    "R_shoulder_pitch_joint":   0.0000,
-    "R_shoulder_roll_joint":    -0.1500,
-    "R_shoulder_yaw_joint":     1.5600,
-    "R_wrist_pitch_joint":      0.0000,
-    "R_wrist_roll_joint":       0.0000,
-    "head_pitch_joint":         -0.6500,
-    "head_yaw_joint":           0.0000,
-    "waist_yaw_joint":          0.0000,
-}
-
-# 初始化分段 1a：直接复制仿真侧 walker_s2_controller.py 的 init 流程
-READY_STAGE_1_PITCH_ROLL_POSE = {
-    "L_shoulder_yaw_joint": -1.5600,
-    "R_shoulder_yaw_joint": 1.5600,
-    "L_elbow_yaw_joint": 1.5000,
-    "R_elbow_yaw_joint": -1.5000,
-}
-
-# 初始化分段 1b：抬肩/收肘/调整腕 pitch
-READY_STAGE_1_ELBOW_YAW_POSE = {
-    "L_shoulder_pitch_joint":   -2.000,
-    "R_shoulder_pitch_joint":   2.000,
-    "L_wrist_pitch_joint": 0.8000,
-    "R_wrist_pitch_joint": -0.8000,
-    "L_elbow_roll_joint":        -2.6000,
-    "R_elbow_roll_joint":        -2.6000,
-}
-
-# 初始化分段 2：肩 pitch 回到最终预备姿态，再执行完整 READY_POSE
-READY_STAGE_2_POSE = {
-    "L_shoulder_pitch_joint": READY_POSE["L_shoulder_pitch_joint"],
-    "R_shoulder_pitch_joint": READY_POSE["R_shoulder_pitch_joint"],
-}
 
 # ============================================================================
 # 主控制器
@@ -330,7 +128,7 @@ class RobotController(Node):
         pvt_kp=None,
         pvt_kd=None,
         pvt_effort=None,
-        hold_when_idle=True,
+        hold_when_idle=False,
     ):
         super().__init__(node_name)
 
@@ -573,6 +371,10 @@ class RobotController(Node):
 
     # ---- 手部关节 API ----
 
+    # ========================================================================
+    # V4 手部控制
+    # ========================================================================
+
     def hand_joint_names(self, side):
         """获取指定手的关节名列表。
 
@@ -780,6 +582,10 @@ class RobotController(Node):
         self._publish_hand_cmd(publisher, joint_names, pos_list)
 
     # ---- 夹爪 API ----
+
+    # ========================================================================
+    # 夹爪控制
+    # ========================================================================
 
     def wait_for_grip_state(self, side=None, timeout=5.0):
         """阻塞等待夹爪状态消息。
@@ -998,6 +804,10 @@ class RobotController(Node):
         with self._hand_state_lock:
             self._hand_states[side] = positions
         self._hand_state_received[side].set()
+
+    # ========================================================================
+    # 关节空间运动
+    # ========================================================================
 
     def move_to_position(self, target_position, duration_sec=3.0, wait=True,
                          publish_changed_only=False, profile=PROFILE_QUINTIC):
@@ -1514,11 +1324,256 @@ class RobotController(Node):
     move_left_arm = move_left_arm_joints
     move_right_arm = move_right_arm_joints
 
+    # ========================================================================
+    # 单关节粒度的便捷方法与诊断工具
+    # ========================================================================
+
+    # -- 身体单关节 --
+
+    def get_joint_position(self, joint_name):
+        """获取单个身体关节的当前位置（rad），None 表示无数据。"""
+        try:
+            idx = self.joint_index(joint_name)
+        except ValueError:
+            self.get_logger().error(f"Unknown joint: {joint_name}")
+            return None
+        pos = self.get_current_position()
+        return float(pos[idx]) if pos is not None else None
+
+    def get_joints_positions(self, joint_names):
+        """批量获取身体关节的当前位置，返回 {name: position} dict。"""
+        pos = self.get_current_position()
+        result = {}
+        for name in joint_names:
+            try:
+                idx = self.joint_index(name)
+                result[name] = float(pos[idx]) if pos is not None else None
+            except ValueError:
+                result[name] = None
+        return result
+
+    def move_joint(self, joint_name, target_rad, duration_sec=2.0, wait=True):
+        """移动单个身体关节到目标角度，其他关节保持当前位置。
+
+        等价于 ``move_to_pose({joint_name: target_rad}, ...)``。
+        """
+        return self.move_to_pose(
+            {joint_name: target_rad},
+            duration_sec=duration_sec,
+            wait=wait,
+            unlock_required_joints=True,
+        )
+
+    def shift_joint(self, joint_name, delta_rad, duration_sec=2.0, wait=True):
+        """单个身体关节相对当前位置偏移。
+
+        Args:
+            joint_name: 关节名
+            delta_rad: 偏移量（rad），正=正向，负=负向
+        """
+        current = self.get_joint_position(joint_name)
+        if current is None:
+            self.get_logger().error(f"Cannot shift {joint_name}: no current position")
+            return False
+        target = current + delta_rad
+        if joint_name in BODY_JOINT_LIMITS:
+            lo, hi = BODY_JOINT_LIMITS[joint_name]
+            if target < lo or target > hi:
+                clamped = max(lo, min(hi, target))
+                self.get_logger().warning(
+                    f"{joint_name}: target {target:.4f} rad exceeds limit "
+                    f"[{lo}, {hi}], will be clamped to {clamped:.4f}"
+                )
+        self.get_logger().info(
+            f"Shift {joint_name}: {current:.4f} → {target:.4f} rad "
+            f"(Δ={delta_rad:+.4f} rad, {np.degrees(delta_rad):+.2f}°)"
+        )
+        return self.move_joint(joint_name, target, duration_sec=duration_sec, wait=wait)
+
+    def print_joint_states(self, joint_names=None):
+        """格式化打印身体关节的当前状态（含限位和锁定信息）。"""
+        names = joint_names or self.all_joints
+        pos = self.get_current_position()
+        if pos is None:
+            print("No current position available")
+            return
+        print(f"\n{'关节名':<32s} {'位置(rad)':>10s} {'位置(°)':>9s} {'限位范围':>18s} {'状态':>8s}")
+        print("-" * 82)
+        for name in names:
+            try:
+                idx = self.joint_index(name)
+            except ValueError:
+                print(f"  {name:<32s} UNKNOWN")
+                continue
+            val = pos[idx]
+            deg = np.degrees(val)
+            locked = "LOCKED" if name in self.lock_joints else ""
+            if name in BODY_JOINT_LIMITS:
+                lo, hi = BODY_JOINT_LIMITS[name]
+                range_str = f"[{lo:.2f}, {hi:.2f}]"
+                status = "⚠️BELOW" if val < lo else ("⚠️ABOVE" if val > hi else "OK")
+            else:
+                range_str = "N/A"
+                status = ""
+            print(f"  {name:<32s} {val:>+10.4f} {deg:>+9.2f} {range_str:>18s} {status:>8s} {locked}")
+
+    def monitor_joints(self, joint_names, hz=10, duration_sec=None):
+        """持续监控指定身体关节的位置变化（终端实时打印）。"""
+        interval = 1.0 / hz
+        start_time = time.time()
+        header = f"{'time':>6s}" + "".join(
+            f"  {n.replace('_joint','').replace('_',' '):>12s}" for n in joint_names
+        )
+        print(header + "\n" + "-" * len(header))
+        try:
+            while True:
+                if duration_sec is not None and (time.time() - start_time) >= duration_sec:
+                    break
+                pos = self.get_current_position()
+                if pos is not None:
+                    elapsed = time.time() - start_time
+                    line = f"{elapsed:6.1f}"
+                    for name in joint_names:
+                        try:
+                            line += f"  {pos[self.joint_index(name)]:>+12.4f}"
+                        except ValueError:
+                            line += f"  {'N/A':>12s}"
+                    print(line, flush=True)
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            pass
+        print("\n监控结束")
+
+    # -- 手部单关节 --
+
+    def print_hand_states(self, sides=None):
+        """格式化打印手指关节的当前状态（含限位信息）。"""
+        sides = sides or ["left", "right"]
+        print(f"\n{'关节名':<24s} {'位置(rad)':>10s} {'位置(°)':>9s} {'限位范围':>18s} {'状态':>8s}")
+        print("-" * 75)
+        for side in sides:
+            joint_names = V4_HAND_JOINT_MAP[side]
+            pos = self.get_hand_position(side)
+            for name in joint_names:
+                short = name.removeprefix("left_").removeprefix("right_")
+                if pos is not None:
+                    idx = joint_names.index(name)
+                    val, deg = pos[idx], np.degrees(pos[idx])
+                else:
+                    val = deg = None
+                if short in V4_HAND_JOINT_LIMITS:
+                    lo, hi = V4_HAND_JOINT_LIMITS[short]
+                    range_str = f"[{lo:.2f}, {hi:.2f}]"
+                    status = ("⚠️BELOW" if val < lo else ("⚠️ABOVE" if val > hi else "OK")) if val is not None else "NO DATA"
+                else:
+                    range_str, status = "N/A", ""
+                val_str = f"{val:>+10.4f}" if val is not None else f"{'N/A':>10s}"
+                deg_str = f"{deg:>+9.2f}" if deg is not None else f"{'N/A':>9s}"
+                print(f"  {name:<24s} {val_str} {deg_str} {range_str:>18s} {status:>8s}")
+
+    def move_hand_joint(self, side, joint_name, target_rad, duration_sec=2.0, wait=True):
+        """移动单个手指关节到目标角度。等价于 ``move_hand(side, {joint_name: target_rad}, ...)``。"""
+        return self.move_hand(side, {joint_name: target_rad}, duration_sec=duration_sec, wait=wait)
+
+    def shift_hand_joint(self, side, joint_name, delta_rad, duration_sec=2.0, wait=True):
+        """手指关节相对当前位置偏移。等价于 ``shift_hand(side, joint_name, delta_rad, ...)``。"""
+        return self.shift_hand(side, joint_name, delta_rad, duration_sec=duration_sec, wait=wait)
+
+    def monitor_hand_joints(self, joint_names, hz=10, duration_sec=None):
+        """持续监控手指关节的位置变化（终端实时打印）。
+
+        joint_names 必须是手指关节全名（如 ``left_thumb_swing``）。
+        """
+        by_side = {}
+        for name in joint_names:
+            side = _infer_hand_side(name)
+            if side is None:
+                print(f"⚠️ 无法判断手别: {name}，跳过")
+                continue
+            by_side.setdefault(side, []).append(name)
+
+        interval = 1.0 / hz
+        start_time = time.time()
+        header = f"{'time':>6s}" + "".join(
+            f"  {n.removeprefix('left_').removeprefix('right_'):>12s}" for n in joint_names
+        )
+        print(header + "\n" + "-" * len(header))
+        try:
+            while True:
+                if duration_sec is not None and (time.time() - start_time) >= duration_sec:
+                    break
+                elapsed = time.time() - start_time
+                line = f"{elapsed:6.1f}"
+                for name in joint_names:
+                    side = _infer_hand_side(name)
+                    if side is None:
+                        line += f"  {'N/A':>12s}"
+                        continue
+                    pos = self.get_hand_position(side)
+                    if pos is not None:
+                        try:
+                            idx = V4_HAND_JOINT_MAP[side].index(name)
+                            line += f"  {pos[idx]:>+12.4f}"
+                        except ValueError:
+                            line += f"  {'N/A':>12s}"
+                    else:
+                        line += f"  {'N/A':>12s}"
+                print(line, flush=True)
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            pass
+        print("\n监控结束")
+
+    # -- 夹爪诊断 --
+
+    def print_grip_states(self, sides=None):
+        """格式化打印夹爪当前状态。"""
+        sides = sides or ["left", "right"]
+        print(f"\n{'夹爪':<8s} {'init':>6s} {'state':>6s} {'error':>6s} {'homed':>6s} {'位置(m)':>10s} {'速度(m/s)':>10s} {'电流(A)':>10s}")
+        print("-" * 78)
+        for side in sides:
+            state = self.get_grip_state(side)
+            if state is None:
+                print(f"  {side:<6s} {'NO DATA':>68s}")
+                continue
+            print(f"  {side:<6s} {state.init_state:>6d} {state.grip_state:>6d} "
+                  f"{state.error_code:>6d} {state.homed:>6d} "
+                  f"{state.pos:>+10.4f} {state.vel:>+10.4f} {state.cur:>+10.4f}")
+
+    def monitor_grips(self, sides=None, hz=10, duration_sec=None):
+        """持续监控夹爪状态（终端实时打印）。"""
+        sides = sides or ["left", "right"]
+        interval = 1.0 / hz
+        start_time = time.time()
+        header = f"{'time':>6s}" + "".join(f"  {s}_pos {s}_vel {s}_state" for s in sides)
+        print(header + "\n" + "-" * len(header))
+        try:
+            while True:
+                if duration_sec is not None and (time.time() - start_time) >= duration_sec:
+                    break
+                elapsed = time.time() - start_time
+                line = f"{elapsed:6.1f}"
+                for side in sides:
+                    state = self.get_grip_state(side)
+                    if state is None:
+                        line += f"  {'N/A':>8s} {'N/A':>8s} {'N/A':>8s}"
+                    else:
+                        line += f"  {state.pos:>+8.4f} {state.vel:>+8.4f} {state.grip_state:>8d}"
+                print(line, flush=True)
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            pass
+        print("\n监控结束")
+
     def open_hand(self, side, duration_sec=1.0, wait=True):
         return self.move_hand(side, V4_HAND_OPEN_POSE, duration_sec=duration_sec, wait=wait)
 
     def close_hand(self, side, duration_sec=1.0, wait=True):
         return self.move_hand(side, V4_HAND_CLOSE_POSE, duration_sec=duration_sec, wait=wait)
+
+    # ========================================================================
+    # 周期运动测试
+    # ========================================================================
 
     def head_periodic_motion(
         self,
@@ -1887,6 +1942,67 @@ WalkerS2Controller = RobotController
 # ============================================================================
 
 
+# ============================================================================
+# CLI 辅助解析函数
+# ============================================================================
+
+
+def parse_move_arg(move_list):
+    """解析 --move / --shift / --hand-move / --hand-shift 参数，格式：JointName=angle"""
+    result = {}
+    for item in move_list:
+        if "=" not in item:
+            print(f"✗ 格式错误: '{item}'，应为 JointName=angle（如 R_elbow_yaw_joint=0.5）")
+            sys.exit(1)
+        name, val_str = item.split("=", 1)
+        name = name.strip()
+        try:
+            val = float(val_str.strip())
+        except ValueError:
+            print(f"✗ 数值错误: '{val_str}' 不是有效浮点数")
+            sys.exit(1)
+        result[name] = val
+    return result
+
+
+def resolve_hand_sides(hand_arg):
+    """将 --hand 参数值转为手别列表。"""
+    if hand_arg == "both":
+        return ["left", "right"]
+    if hand_arg in ("left", "right"):
+        return [hand_arg]
+    print(f"✗ 无效的 --hand 值: '{hand_arg}'，应为 left/right/both")
+    sys.exit(1)
+
+
+def resolve_grip_sides(grip_arg):
+    """将 --grip 参数值转为夹爪侧列表。"""
+    if grip_arg == "both":
+        return ["left", "right"]
+    if grip_arg in ("left", "right"):
+        return [grip_arg]
+    print(f"✗ 无效的 --grip 值: '{grip_arg}'，应为 left/right/both")
+    sys.exit(1)
+
+
+def resolve_hand_pose_arg(pose_list):
+    """将 --hand-pose 参数（7个浮点数）转为角度列表。"""
+    if len(pose_list) != 7:
+        print(f"✗ --hand-pose 需要 7 个角度值（V4 手 = 7 关节），当前 {len(pose_list)} 个")
+        sys.exit(1)
+    try:
+        return [float(v) for v in pose_list]
+    except ValueError:
+        print("✗ --hand-pose 的值必须为浮点数")
+        sys.exit(1)
+
+
+def build_hand_pose_dict_from_full(pose_values, side):
+    """从 7 个角度值和手别构建 {joint_name: angle} dict。"""
+    joint_names = V4_HAND_JOINT_MAP[side]
+    return dict(zip(joint_names, pose_values))
+
+
 def cmd_print_state(controller):
     """打印当前关节状态"""
     pos = controller.get_current_position()
@@ -2045,122 +2161,421 @@ def cmd_hand_test(controller, amplitude, period_sec, cycles, phase_diff,
     print("✓ V4 手部测试完成（已回到 0 位）")
 
 
+def _has_joint_cli_action(cli_args):
+    """Check if any joint/grip CLI action flag is set."""
+    return any([
+        cli_args.print,
+        cli_args.move,
+        cli_args.shift,
+        cli_args.monitor,
+        cli_args.hand_move,
+        cli_args.hand_shift,
+        cli_args.hand_pose,
+        cli_args.hand_open,
+        cli_args.hand_close,
+        cli_args.hand_wave,
+        cli_args.grip_print,
+        cli_args.grip_move is not None,
+        cli_args.grip_home,
+        cli_args.grip_stop,
+        cli_args.grip_monitor,
+    ])
+
+
+def _run_joint_cli_actions(controller, cli_args):
+    """Execute joint / hand / gripper CLI actions (ported from joint_test.py)."""
+    # -- resolve joint name lists --
+    specified = cli_args.joints or []
+    body_joint_names = []
+    hand_joint_names = []
+    if specified:
+        for name in specified:
+            if name in BODY_JOINT_NAMES:
+                body_joint_names.append(name)
+            elif _is_hand_joint(name):
+                hand_joint_names.append(name)
+            else:
+                print(f"✗ 未知关节名: '{name}'")
+                sys.exit(1)
+    else:
+        body_joint_names = list(BODY_JOINT_NAMES)
+
+    # -- resolve hand / grip sides --
+    has_hand_action = any([cli_args.hand_move, cli_args.hand_shift,
+                           cli_args.hand_pose, cli_args.hand_open,
+                           cli_args.hand_close, cli_args.hand_wave])
+    hand_sides = resolve_hand_sides(cli_args.hand or "both") if (
+        has_hand_action or cli_args.hand
+    ) else []
+
+    has_grip_action = any([cli_args.grip_print, cli_args.grip_move is not None,
+                           cli_args.grip_home, cli_args.grip_stop,
+                           cli_args.grip_monitor])
+    grip_sides = resolve_grip_sides(cli_args.grip or "both") if (
+        has_grip_action or cli_args.grip
+    ) else []
+
+    # ── Gripper actions ──────────────────────────────────────────────────
+
+    if cli_args.grip_print:
+        controller.wait_for_grip_state(timeout=2.0)
+        controller.print_grip_states(grip_sides)
+
+    elif cli_args.grip_move is not None:
+        print("\n=== 移动夹爪 ===")
+        for side in grip_sides:
+            print(f"  {side} grip → pos={cli_args.grip_move:.4f}m "
+                  f"force={cli_args.grip_force:.1f}N vel={cli_args.grip_vel:.4f}m/s "
+                  f"acc={cli_args.grip_acc:.2f}m/s^2 mode={cli_args.grip_mode}")
+        input("\n按回车发送夹爪命令（Ctrl+C 取消）...")
+        for side in grip_sides:
+            controller.send_grip_command(
+                side, pos=cli_args.grip_move, force=cli_args.grip_force,
+                vel=cli_args.grip_vel, acc=cli_args.grip_acc,
+                mode=cli_args.grip_mode, repeat_sec=cli_args.grip_repeat,
+            )
+        print("✓ 夹爪命令已发送")
+
+    elif cli_args.grip_home:
+        print("\n=== 夹爪回零 ===")
+        for side in grip_sides:
+            print(f"  {side} grip homing=1")
+        input("\n按回车发送回零命令（Ctrl+C 取消）...")
+        for side in grip_sides:
+            controller.home_grip(side)
+        print("✓ 回零命令已发送")
+
+    elif cli_args.grip_stop:
+        print("\n=== 停止夹爪 ===")
+        for side in grip_sides:
+            print(f"  {side} grip stop=1")
+        input("\n按回车发送停止命令（Ctrl+C 取消）...")
+        for side in grip_sides:
+            controller.stop_grip(side)
+        print("✓ 停止命令已发送")
+
+    elif cli_args.grip_monitor:
+        print(f"\n=== 监控夹爪 ({cli_args.monitor_hz}Hz) ===")
+        controller.monitor_grips(grip_sides, hz=cli_args.monitor_hz,
+                                 duration_sec=cli_args.monitor_time)
+
+    # ── Print ────────────────────────────────────────────────────────────
+
+    elif cli_args.print:
+        if body_joint_names:
+            controller.print_joint_states(body_joint_names)
+        if hand_joint_names:
+            sides_for_print = set()
+            for name in hand_joint_names:
+                side = _infer_hand_side(name)
+                if side:
+                    sides_for_print.add(side)
+            controller.print_hand_states(sorted(sides_for_print))
+        elif hand_sides and not specified:
+            controller.print_hand_states(hand_sides)
+
+    # ── Body joint actions ───────────────────────────────────────────────
+
+    elif cli_args.move:
+        pose_dict = parse_move_arg(cli_args.move)
+        for name in pose_dict:
+            if name not in BODY_JOINT_NAMES:
+                print(f"✗ 未知身体关节名: '{name}'")
+                sys.exit(1)
+        print("\n=== 移动身体关节 ===")
+        for name, angle in pose_dict.items():
+            lo_hi = ""
+            if name in BODY_JOINT_LIMITS:
+                lo, hi = BODY_JOINT_LIMITS[name]
+                lo_hi = f" (限位 [{lo:.2f}, {hi:.2f}])"
+            print(f"  {name} → {angle:+.4f} rad ({np.degrees(angle):+.2f}°){lo_hi}")
+        input("\n按回车开始移动（Ctrl+C 取消）...")
+        ok = controller.move_to_pose(pose_dict, duration_sec=cli_args.duration,
+                                     wait=True, unlock_required_joints=True)
+        if ok:
+            print("✓ 移动完成")
+            controller.print_joint_states(list(pose_dict.keys()))
+        else:
+            print("✗ 移动失败")
+
+    elif cli_args.shift:
+        shift_dict = parse_move_arg(cli_args.shift)
+        for name in shift_dict:
+            if name not in BODY_JOINT_NAMES:
+                print(f"✗ 未知身体关节名: '{name}'")
+                sys.exit(1)
+        print("\n=== 身体关节偏移 ===")
+        for name, delta in shift_dict.items():
+            current = controller.get_joint_position(name)
+            if current is not None:
+                print(f"  {name}: {current:+.4f} → {current+delta:+.4f} rad "
+                      f"(Δ={delta:+.4f} rad, {np.degrees(delta):+.2f}°)")
+            else:
+                print(f"  {name}: 无法读取当前位置")
+        input("\n按回车开始移动（Ctrl+C 取消）...")
+        for name, delta in shift_dict.items():
+            controller.shift_joint(name, delta, duration_sec=cli_args.duration, wait=True)
+        print("✓ 偏移完成")
+        controller.print_joint_states(list(shift_dict.keys()))
+
+    elif cli_args.monitor:
+        print(f"\n=== 监控关节 ({cli_args.monitor_hz}Hz) ===")
+        if body_joint_names:
+            controller.monitor_joints(body_joint_names, hz=cli_args.monitor_hz,
+                                      duration_sec=cli_args.monitor_time)
+        elif hand_joint_names:
+            controller.monitor_hand_joints(hand_joint_names, hz=cli_args.monitor_hz,
+                                           duration_sec=cli_args.monitor_time)
+
+    # ── Hand actions ─────────────────────────────────────────────────────
+
+    elif cli_args.hand_move:
+        pose_dict = parse_move_arg(cli_args.hand_move)
+        print("\n=== 移动手指关节 ===")
+        for side in hand_sides:
+            print(f"\n  [{side} 手]")
+            for name_or_short, angle in pose_dict.items():
+                short = name_or_short
+                if not name_or_short.startswith(side + "_"):
+                    full = f"{side}_{name_or_short}"
+                else:
+                    full = name_or_short
+                    short = name_or_short.removeprefix(side + "_")
+                lo_hi = ""
+                if short in V4_HAND_JOINT_LIMITS:
+                    lo, hi = V4_HAND_JOINT_LIMITS[short]
+                    lo_hi = f" (限位 [{lo:.2f}, {hi:.2f}])"
+                print(f"    {full} → {angle:+.4f} rad ({np.degrees(angle):+.2f}°){lo_hi}")
+        input("\n按回车开始移动（Ctrl+C 取消）...")
+        for side in hand_sides:
+            controller.move_hand(side, pose_dict, duration_sec=cli_args.duration, wait=True)
+            print(f"✓ {side} 手移动完成")
+
+    elif cli_args.hand_shift:
+        shift_dict = parse_move_arg(cli_args.hand_shift)
+        print("\n=== 手指关节偏移 ===")
+        for side in hand_sides:
+            print(f"\n  [{side} 手]")
+            for name_or_short, delta in shift_dict.items():
+                current = controller.get_hand_joint_position(side, name_or_short)
+                if current is not None:
+                    print(f"    {name_or_short}: {current:+.4f} → {current+delta:+.4f} rad "
+                          f"(Δ={delta:+.4f} rad, {np.degrees(delta):+.2f}°)")
+                else:
+                    print(f"    {name_or_short}: 无法读取当前位置")
+        input("\n按回车开始移动（Ctrl+C 取消）...")
+        for side in hand_sides:
+            for name_or_short, delta in shift_dict.items():
+                controller.shift_hand(side, name_or_short, delta,
+                                      duration_sec=cli_args.duration, wait=True)
+        print("✓ 偏移完成")
+
+    elif cli_args.hand_pose:
+        angles = resolve_hand_pose_arg(cli_args.hand_pose)
+        print("\n=== 设置整手姿态 ===")
+        for side in hand_sides:
+            pose_dict = build_hand_pose_dict_from_full(angles, side)
+            print(f"\n  [{side} 手]")
+            for name, angle in pose_dict.items():
+                short = name.removeprefix("left_").removeprefix("right_")
+                lo_hi = ""
+                if short in V4_HAND_JOINT_LIMITS:
+                    lo, hi = V4_HAND_JOINT_LIMITS[short]
+                    lo_hi = f" (限位 [{lo:.2f}, {hi:.2f}])"
+                print(f"    {name} → {angle:+.4f} rad ({np.degrees(angle):+.2f}°){lo_hi}")
+        input("\n按回车开始移动（Ctrl+C 取消）...")
+        for side in hand_sides:
+            controller.move_hand(side, build_hand_pose_dict_from_full(angles, side),
+                                 duration_sec=cli_args.duration, wait=True)
+            print(f"✓ {side} 手姿态设置完成")
+
+    elif cli_args.hand_open:
+        print("\n=== 手指张开 ===")
+        for side in hand_sides:
+            print(f"  {side} 手: 所有关节 → 0.0 rad")
+        input("\n按回车开始移动（Ctrl+C 取消）...")
+        for side in hand_sides:
+            controller.move_hand(side, V4_HAND_OPEN_POSE,
+                                 duration_sec=cli_args.duration, wait=True)
+            print(f"✓ {side} 手张开完成")
+
+    elif cli_args.hand_close:
+        print("\n=== 手指握拳 ===")
+        for side in hand_sides:
+            joint_names = V4_HAND_JOINT_MAP[side]
+            print(f"  {side} 手:")
+            for name in joint_names:
+                short = name.removeprefix("left_").removeprefix("right_")
+                if short in V4_HAND_JOINT_LIMITS:
+                    _, hi = V4_HAND_JOINT_LIMITS[short]
+                    print(f"    {name} → {hi:+.4f} rad ({np.degrees(hi):+.2f}°)")
+        input("\n按回车开始移动（Ctrl+C 取消）...")
+        for side in hand_sides:
+            controller.move_hand(side, V4_HAND_CLOSE_POSE,
+                                 duration_sec=cli_args.duration, wait=True)
+            print(f"✓ {side} 手握拳完成")
+
+    elif cli_args.hand_wave:
+        print("\n=== 手部周期波形运动 ===")
+        for side in hand_sides:
+            print(f"  {side} 手")
+        print("  按 Ctrl+C 停止")
+        controller.hand_periodic_motion(
+            left_hand="left" in hand_sides,
+            right_hand="right" in hand_sides,
+        )
+
+
 def main(args=None):
     parser = argparse.ArgumentParser(
-        description="Walker S2 机器人直接控制脚本（SDK 控制器，模式B）",
+        description=(
+            "Walker S2 机器人直接控制脚本（SDK 控制器 / JointCmd MODE_POSITION=2）\n\n"
+            "示例：\n"
+            "  %(prog)s --print-state                     # 查看当前关节状态\n"
+            "  %(prog)s --init                             # 移动到预备姿态\n"
+            "  %(prog)s --move R_elbow_yaw_joint=0.5       # 移动单个关节\n"
+            "  %(prog)s --shift R_shoulder_pitch_joint=+0.1  # 关节相对偏移\n"
+            "  %(prog)s --joints R_elbow_yaw_joint --monitor  # 监控关节实时位置\n"
+            "  %(prog)s --hand left --hand-open            # 左手张开\n"
+            "  %(prog)s --grip both --grip-move 0.02       # 双侧夹爪移动到 0.02m\n"
+            "  %(prog)s --demo                             # 安全演示\n"
+            "  %(prog)s --interactive                      # 保持运行，供 Python API 调用"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-注意事项：
-  - 运行前必须先 switch_controller config_mc_walker_s2_v1_sps
-  - 启动前用遥控器将机器人移到安全位置
-  - 默认锁定 head_pitch/head_yaw/waist_yaw（不会发送这些关节的指令）
-""",
+        epilog=(
+            "前置条件：\n"
+            "  1. 运控已启动：rosa run t800_mc_server start_mc_client\n"
+            "  2. SDK 控制器已切换：switch_controller config_mc_walker_s2_v1_sps\n"
+            "  3. 机器人已在安全位置（遥控器移到位后再切换控制器）\n"
+            "  4. 默认锁定 head_pitch / head_yaw / waist_yaw（不发送指令，保持原位）"
+        ),
     )
-    parser.add_argument(
-        "--no-lock", action="store_true",
-        help="不锁定任何关节（默认锁定 head/waist）",
-    )
-    parser.add_argument(
-        "--no-safety", action="store_true",
-        help="禁用安全速度检查",
-    )
-    parser.add_argument(
-        "--no-limits", action="store_true",
-        help="禁用关节限位裁剪",
-    )
-    parser.add_argument(
-        "--hz", type=int, default=DEFAULT_CONTROL_HZ,
-        help=f"身体控制发布频率（Hz），默认 {DEFAULT_CONTROL_HZ}（对齐 SDK demo / pub_arm_command）",
-    )
-    parser.add_argument(
-        "--pvt", action="store_true",
-        help="启用 PVT 力位混合模式 (mode=7)：速度前馈 + 可调 Kp/Kd，治手臂抖动"
-             "（增益为保守占位值，必须真机调）",
-    )
-    parser.add_argument(
-        "--pvt-kp", type=float, default=None,
-        help=f"PVT 位置增益 Kp（标量，应用到所有身体关节），默认保守值 {_PVT_DEFAULT_KP}",
-    )
-    parser.add_argument(
-        "--pvt-kd", type=float, default=None,
-        help=f"PVT 速度增益 Kd（标量），默认保守值 {_PVT_DEFAULT_KD}",
-    )
-    parser.add_argument(
-        "--print-state", action="store_true",
-        help="仅打印当前关节状态后退出",
-    )
-    parser.add_argument(
-        "--init", action="store_true",
-        help="移动到预备姿态（双臂自然下垂站立）",
-    )
-    parser.add_argument(
-        "--init-duration", type=float, default=None,
-        help="预备姿态运动时长（秒）；直达默认 3.0，分段默认 20.0",
-    )
-    parser.add_argument(
-        "--staged-init", action="store_true",
-        help="分段移动到预备姿态，适合双臂抬起/大幅 ready pose（建议 --init-duration 20~30）",
-    )
-    parser.add_argument(
-        "--demo", action="store_true",
-        help="运行安全演示：右臂 elbow_yaw ±0.05 rad",
-    )
-    parser.add_argument(
-        "--head-test", action="store_true",
-        help="头部周期 sin 运动测试（参考 SDK pub_head_command.cpp）",
-    )
-    parser.add_argument(
-        "--head-amplitude", type=float, default=HEAD_TEST_AMPLITUDE,
-        help=f"头部测试振幅（rad），默认 {HEAD_TEST_AMPLITUDE} (与 SDK demo 一致)",
-    )
-    parser.add_argument(
-        "--head-period", type=float, default=HEAD_TEST_PERIOD,
-        help=f"头部测试周期（s），默认 {HEAD_TEST_PERIOD:.3f} (与 SDK demo 一致)",
-    )
-    parser.add_argument(
-        "--head-cycles", type=int, default=HEAD_TEST_DEFAULT_CYCLES,
-        help=f"头部测试循环次数，默认 {HEAD_TEST_DEFAULT_CYCLES}",
-    )
-    parser.add_argument(
-        "--yaw-only", action="store_true",
-        help="头部测试：仅运动 head_yaw_joint",
-    )
-    parser.add_argument(
-        "--pitch-only", action="store_true",
-        help="头部测试：仅运动 head_pitch_joint",
-    )
-    parser.add_argument(
-        "--hand-test", action="store_true",
-        help="V4 手部周期 sin 运动测试（参考 SDK pub_hand_v4_command.cpp）",
-    )
-    parser.add_argument(
-        "--hand-amplitude", type=float, default=V4_HAND_TEST_AMPLITUDE,
-        help=f"手部测试振幅（rad），默认 {V4_HAND_TEST_AMPLITUDE} (与 SDK demo 一致)",
-    )
-    parser.add_argument(
-        "--hand-period", type=float, default=V4_HAND_TEST_PERIOD,
-        help=f"手部测试周期（s），默认 {V4_HAND_TEST_PERIOD:.3f} (与 SDK demo 一致)",
-    )
-    parser.add_argument(
-        "--hand-cycles", type=int, default=V4_HAND_TEST_DEFAULT_CYCLES,
-        help=f"手部测试循环次数，默认 {V4_HAND_TEST_DEFAULT_CYCLES}",
-    )
-    parser.add_argument(
-        "--hand-phase-diff", type=float, default=V4_HAND_TEST_PHASE_DIFF,
-        help=f"手部相邻关节相位差（rad），默认 {V4_HAND_TEST_PHASE_DIFF}（产生波浪效果）",
-    )
-    parser.add_argument(
-        "--left-only", action="store_true",
-        help="手部测试：仅运动左手",
-    )
-    parser.add_argument(
-        "--right-only", action="store_true",
-        help="手部测试：仅运动右手",
-    )
-    parser.add_argument(
-        "--interactive", action="store_true",
-        help="保持节点运行，等待外部 Python 调用（适合 IPython/REPL）",
-    )
+
+    # ── 全局控制参数 ──
+    ctrl = parser.add_argument_group("全局控制参数")
+    ctrl.add_argument("--no-lock", action="store_true",
+                      help="不锁定任何关节（默认锁定 head/waist）")
+    ctrl.add_argument("--no-safety", action="store_true",
+                      help="禁用安全速度检查")
+    ctrl.add_argument("--no-limits", action="store_true",
+                      help="禁用关节限位裁剪")
+    ctrl.add_argument("--hz", type=int, default=DEFAULT_CONTROL_HZ,
+                      help=f"控制发布频率（Hz），默认 {DEFAULT_CONTROL_HZ}")
+    ctrl.add_argument("--pvt", action="store_true",
+                      help="启用 PVT 力位混合模式 (mode=7)，治手臂抖动（需真机调增益）")
+    ctrl.add_argument("--pvt-kp", type=float, default=None, metavar="K",
+                      help=f"PVT 位置增益 Kp（标量），默认 {_PVT_DEFAULT_KP}")
+    ctrl.add_argument("--pvt-kd", type=float, default=None, metavar="K",
+                      help=f"PVT 速度增益 Kd（标量），默认 {_PVT_DEFAULT_KD}")
+
+    # ── 高级动作 ──
+    actions = parser.add_argument_group("高级动作（互斥，每次只选一个）")
+    actions.add_argument("--print-state", action="store_true",
+                         help="打印全部身体关节状态后退出")
+    actions.add_argument("--init", action="store_true",
+                         help="移动到预备姿态（双臂自然下垂站立）")
+    actions.add_argument("--init-duration", type=float, default=None, metavar="SEC",
+                         help="预备姿态时长（秒）；直达默认 3，分段默认 20")
+    actions.add_argument("--staged-init", action="store_true",
+                         help="分段移动到预备姿态（安全，适合大幅运动）")
+    actions.add_argument("--demo", action="store_true",
+                         help="安全演示：右臂 elbow_yaw ±0.05 rad 小幅运动")
+    actions.add_argument("--head-test", action="store_true",
+                         help="头部周期 sin 运动测试")
+    actions.add_argument("--hand-test", action="store_true",
+                         help="V4 手部周期 sin 运动测试（波浪效果）")
+    actions.add_argument("--interactive", action="store_true",
+                         help="保持节点运行，供外部 Python API 调用")
+
+    # ── 身体关节操作 ──
+    body = parser.add_argument_group("身体关节操作")
+    body.add_argument("--joints", nargs="+", default=None, metavar="NAME",
+                      help="指定关节名（空格分隔），默认全部身体关节")
+    body.add_argument("--print", action="store_true",
+                      help="打印指定关节的当前状态")
+    body.add_argument("--move", nargs="+", default=None, metavar="NAME=ANGLE",
+                      help="移动关节到目标角度（rad），如 R_elbow_yaw_joint=0.5")
+    body.add_argument("--shift", nargs="+", default=None, metavar="NAME=DELTA",
+                      help="关节相对偏移（rad），如 R_shoulder_pitch_joint=+0.1")
+    body.add_argument("--monitor", action="store_true",
+                      help="持续监控关节位置（Ctrl+C 停止）")
+
+    # ── 手部操作 ──
+    hand = parser.add_argument_group("V4 手部操作")
+    hand.add_argument("--hand", default=None, choices=["left", "right", "both"], metavar="SIDE",
+                      help="指定手别：left / right / both")
+    hand.add_argument("--hand-move", nargs="+", default=None, metavar="NAME=ANGLE",
+                      help="移动手指关节（rad），短名如 thumb_swing=0.5")
+    hand.add_argument("--hand-shift", nargs="+", default=None, metavar="NAME=DELTA",
+                      help="手指关节偏移（rad），格式同 --hand-move")
+    hand.add_argument("--hand-pose", nargs=7, default=None, metavar="ANGLE",
+                      help="整手姿态（7 个角度 rad，按 V4 关节顺序）")
+    hand.add_argument("--hand-open", action="store_true",
+                      help="手指张开（全关节归零）")
+    hand.add_argument("--hand-close", action="store_true",
+                      help="手指握拳（全关节到限位上限）")
+    hand.add_argument("--hand-wave", action="store_true",
+                      help="手部波浪运动（hand_periodic_motion）")
+
+    # ── 夹爪操作 ──
+    grip = parser.add_argument_group("夹爪操作（大寰 PGC / 电缸）")
+    grip.add_argument("--grip", default=None, choices=["left", "right", "both"], metavar="SIDE",
+                      help="指定夹爪侧：left / right / both")
+    grip.add_argument("--grip-print", action="store_true",
+                      help="打印夹爪当前状态")
+    grip.add_argument("--grip-move", type=float, default=None, metavar="POS",
+                      help="夹爪目标位置 [0, 0.05] m")
+    grip.add_argument("--grip-force", type=float, default=41.0, metavar="N",
+                      help="夹爪目标力 [41, 100] N，默认 41")
+    grip.add_argument("--grip-vel", type=float, default=0.005, metavar="M/S",
+                      help="夹爪目标速度 [0, 0.01] m/s，默认 0.005")
+    grip.add_argument("--grip-acc", type=float, default=0.0, metavar="M/S2",
+                      help="夹爪加速度 [0, 3] m/s²，默认 0")
+    grip.add_argument("--grip-mode", type=int, default=0, metavar="M",
+                      help="夹爪模式：0=位/力/速控制，10=推压")
+    grip.add_argument("--grip-repeat", type=float, default=0.5, metavar="SEC",
+                      help="命令连续发布时长（秒），默认 0.5；0=只发一次")
+    grip.add_argument("--grip-home", action="store_true",
+                      help="夹爪回零（homing=1）")
+    grip.add_argument("--grip-stop", action="store_true",
+                      help="夹爪停止（stop=1）")
+    grip.add_argument("--grip-monitor", action="store_true",
+                      help="持续监控夹爪状态")
+
+    # ── 头部/手部测试参数 ──
+    test = parser.add_argument_group("测试参数（配合 --head-test / --hand-test）")
+    test.add_argument("--yaw-only", action="store_true",
+                      help="头部测试仅运动 yaw")
+    test.add_argument("--pitch-only", action="store_true",
+                      help="头部测试仅运动 pitch")
+    test.add_argument("--head-amplitude", type=float, default=HEAD_TEST_AMPLITUDE, metavar="RAD",
+                      help=f"头部测试振幅，默认 {HEAD_TEST_AMPLITUDE}")
+    test.add_argument("--head-period", type=float, default=HEAD_TEST_PERIOD, metavar="SEC",
+                      help=f"头部测试周期，默认 {HEAD_TEST_PERIOD:.3f}")
+    test.add_argument("--head-cycles", type=int, default=HEAD_TEST_DEFAULT_CYCLES, metavar="N",
+                      help=f"头部测试循环次数，默认 {HEAD_TEST_DEFAULT_CYCLES}")
+    test.add_argument("--left-only", action="store_true",
+                      help="手部测试仅运动左手")
+    test.add_argument("--right-only", action="store_true",
+                      help="手部测试仅运动右手")
+    test.add_argument("--hand-amplitude", type=float, default=V4_HAND_TEST_AMPLITUDE, metavar="RAD",
+                      help=f"手部测试振幅，默认 {V4_HAND_TEST_AMPLITUDE}")
+    test.add_argument("--hand-period", type=float, default=V4_HAND_TEST_PERIOD, metavar="SEC",
+                      help=f"手部测试周期，默认 {V4_HAND_TEST_PERIOD:.3f}")
+    test.add_argument("--hand-cycles", type=int, default=V4_HAND_TEST_DEFAULT_CYCLES, metavar="N",
+                      help=f"手部测试循环次数，默认 {V4_HAND_TEST_DEFAULT_CYCLES}")
+    test.add_argument("--hand-phase-diff", type=float, default=V4_HAND_TEST_PHASE_DIFF, metavar="RAD",
+                      help=f"手部相邻关节相位差，默认 {V4_HAND_TEST_PHASE_DIFF}")
+
+    # ── 通用参数 ──
+    common = parser.add_argument_group("通用参数")
+    common.add_argument("--duration", type=float, default=2.0, metavar="SEC",
+                        help="运动持续时间（秒），默认 2.0")
+    common.add_argument("--monitor-hz", type=float, default=10.0, metavar="HZ",
+                        help="监控刷新频率（Hz），默认 10")
+    common.add_argument("--monitor-time", type=float, default=None, metavar="SEC",
+                        help="监控时长（秒），默认持续到 Ctrl+C")
+
     cli_args, ros_args = parser.parse_known_args()
 
     rclpy.init(args=ros_args)
@@ -2245,9 +2660,18 @@ def main(args=None):
             cmd_print_state(controller)
             print("\n节点运行中，按 Ctrl+C 退出。")
             spin_thread.join()
+
+        # ── 单关节 / 手部 / 夹爪操作（移植自 joint_test.py）─────────────
+        elif _has_joint_cli_action(cli_args):
+            spin_thread.join(0)
+            _run_joint_cli_actions(controller, cli_args)
+
         else:
             cmd_print_state(controller)
-            print("\n用法: --print-state | --init | --demo | --head-test | --hand-test | --interactive")
+            print("\n用法: --print-state | --init | --demo | --head-test | --hand-test | --interactive\n"
+                  "      --joints J1 J2 --print | --move J=0.5 | --shift J=+0.1 | --monitor\n"
+                  "      --hand left --print | --hand-move thumb=0.5 | --hand-open | --hand-wave\n"
+                  "      --grip both --grip-print | --grip-move 0.02 | --grip-home | --grip-monitor")
 
     except KeyboardInterrupt:
         controller.get_logger().info("Interrupted, shutting down")

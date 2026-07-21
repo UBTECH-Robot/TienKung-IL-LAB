@@ -1,48 +1,95 @@
-"""Walker S2 teleoperation constants.
+"""Walker S2 机器人控制常量 —— 关节定义、限位、话题、预备姿态等。
 
-This module is independent from source/ubt_sim because ROS2 control scripts run
-with system Python while Isaac Sim runs with its own Python environment.
+所有常量集中在此模块中，通过 ``from robot_control.constants import *`` 或
+``from robot_control import ...`` 使用。
 """
 
 import numpy as np
 
+__all__ = [
+    # 默认参数
+    "DEFAULT_COMMAND_TOPIC",
+    "DEFAULT_STATE_TOPIC",
+    "DEFAULT_CONTROL_HZ",
+    "DEFAULT_MAX_JOINT_SPEED",
+    "DEFAULT_LOCK_JOINTS",
+    # PVT
+    "_PVT_DEFAULT_KP",
+    "_PVT_DEFAULT_KD",
+    "PROFILE_LINEAR",
+    "PROFILE_QUINTIC",
+    # 身体关节
+    "BODY_JOINT_NAMES",
+    "BODY_JOINT_LIMITS",
+    "LEFT_ARM_JOINTS",
+    "RIGHT_ARM_JOINTS",
+    # V4 手部
+    "V4_HAND_JOINT_LIMITS",
+    "V4_HAND_LEFT_JOINTS",
+    "V4_HAND_RIGHT_JOINTS",
+    "V4_HAND_JOINT_MAP",
+    "V4_HAND_OPEN_POSE",
+    "V4_HAND_CLOSE_POSE",
+    # V4 手部测试
+    "V4_HAND_TEST_AMPLITUDE",
+    "V4_HAND_TEST_PERIOD",
+    "V4_HAND_TEST_PHASE_DIFF",
+    "V4_HAND_TEST_DEFAULT_CYCLES",
+    "V4_HAND_TEST_HZ",
+    "V4_HAND_LEFT_TOPIC",
+    "V4_HAND_RIGHT_TOPIC",
+    "V4_HAND_LEFT_STATE_TOPIC",
+    "V4_HAND_RIGHT_STATE_TOPIC",
+    # 夹爪
+    "GRIP_LEFT_CMD_TOPIC",
+    "GRIP_RIGHT_CMD_TOPIC",
+    "GRIP_LEFT_STATE_TOPIC",
+    "GRIP_RIGHT_STATE_TOPIC",
+    "GRIP_POSITION_LIMIT",
+    "GRIP_FORCE_LIMIT",
+    "GRIP_VELOCITY_LIMIT",
+    "GRIP_ACCELERATION_LIMIT",
+    # 头部测试
+    "HEAD_TEST_AMPLITUDE",
+    "HEAD_TEST_PERIOD",
+    "HEAD_TEST_DEFAULT_CYCLES",
+    # 预备姿态
+    "READY_POSE",
+    "READY_STAGE_1_PITCH_ROLL_POSE",
+    "READY_STAGE_1_ELBOW_YAW_POSE",
+    "READY_STAGE_2_POSE",
+]
+
+# ============================================================================
+# 默认参数
+# ============================================================================
+
 DEFAULT_COMMAND_TOPIC = "/mc/sdk/robot_command"
 DEFAULT_STATE_TOPIC = "/mc/sdk/robot_state"
-DEFAULT_LEFT_HAND_COMMAND_TOPIC = "/mc/left_hand/command"
-DEFAULT_RIGHT_HAND_COMMAND_TOPIC = "/mc/right_hand/command"
-DEFAULT_LEFT_HAND_STATE_TOPIC = "/mc/left_hand/joint_states"
-DEFAULT_RIGHT_HAND_STATE_TOPIC = "/mc/right_hand/joint_states"
-DEFAULT_LEFT_GRIP_COMMAND_TOPIC = "/ecat/left_grip/cmd"
-DEFAULT_RIGHT_GRIP_COMMAND_TOPIC = "/ecat/right_grip/cmd"
-DEFAULT_LEFT_GRIP_STATE_TOPIC = "/ecat/left_grip/state"
-DEFAULT_RIGHT_GRIP_STATE_TOPIC = "/ecat/right_grip/state"
-DEFAULT_RESET_TOPIC = "/sim/cmd_reset"
-DEFAULT_FINGER_LINK_STATES_TOPIC = "/sim/finger_link_states"
-DEFAULT_IMAGE_RGB_TOPIC = "/sensor/camera/stereo/color/raw"
-DEFAULT_IMAGE_DEPTH_TOPIC = "/sensor/camera/stereo/depth/raw"
-
-# 四路独立相机 topic（commit 961d319 新增，shm_msgs/Image2m，640x480 RGB）
-DEFAULT_IMAGE_STEREO_LEFT_TOPIC = "/sensor/camera/stereo_left/image/raw"
-DEFAULT_IMAGE_STEREO_RIGHT_TOPIC = "/sensor/camera/stereo_right/image/raw"
-DEFAULT_IMAGE_WRIST_LEFT_TOPIC = "/sensor/camera/wrist_left/color/raw"
-DEFAULT_IMAGE_WRIST_RIGHT_TOPIC = "/sensor/camera/wrist_right/color/raw"
-
-CAMERA_TOPICS = {
-    "stereo_left": DEFAULT_IMAGE_STEREO_LEFT_TOPIC,
-    "stereo_right": DEFAULT_IMAGE_STEREO_RIGHT_TOPIC,
-    "wrist_left": DEFAULT_IMAGE_WRIST_LEFT_TOPIC,
-    "wrist_right": DEFAULT_IMAGE_WRIST_RIGHT_TOPIC,
-}
-
-DEFAULT_CONTROL_HZ = 200
+DEFAULT_CONTROL_HZ = 500  # 对齐 pub_arm_command / SDK demo 基线（500Hz，2ms/点）
 DEFAULT_MAX_JOINT_SPEED = 6.28  # rad/s，安全速度上限
 DEFAULT_LOCK_JOINTS = ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"]
 
-# 夹爪参数（GRIP_*，原 walker_s2_controller 独有，合并为单一来源）
-GRIP_OPENING_MIN_M = 0.0
-GRIP_OPENING_MAX_M = 0.05
-GRIP_DEFAULT_VEL = 0.05
-GRIP_DEFAULT_FORCE = 20.0
+# ============================================================================
+# PVT 力位混合模式（JointCmd.CUSTOM_MODE_1 = 7）参数
+# 控制律：tau = Kp·(q_des − q) + Kd·(dq_des − dq) + effort_ff
+#   position = q_des（目标位置）
+#   velocity = dq_des（速度前馈，规划速度）
+#   effort   = effort_ff（力矩前馈，如重力补偿，默认 0）
+#   v1 = Kp, v2 = Kd
+# ⚠️ 以下 Kp/Kd 是 deliberately soft 的未验证占位值，必须真机调！
+#    Kp 太小 → 手臂下垂（重力补偿不足）；Kp 太大 → 振荡。
+#    理想基线：容器内 config_mc_walker_s2_v1_sps 的 mode=2 内部增益。
+# ============================================================================
+
+# 对齐 pub_arm_command.py 的 PVT 基线增益（kp=50/kd=2，velocity=0 纯阻尼）：
+# 原 30/1 过软 → 跟踪误差与振荡（抖动）。真机仍可经 pvt_kp/pvt_kd 覆盖。
+_PVT_DEFAULT_KP = 50.0   # 位置增益（对齐 pub_arm_command 基线）
+_PVT_DEFAULT_KD = 2.0    # 速度增益（阻尼，对齐 pub_arm_command 基线）
+
+# 轨迹插值 profile
+PROFILE_LINEAR = "linear"
+PROFILE_QUINTIC = "quintic"   # s(τ)=10τ³−15τ⁴+6τ⁵，起止速度/加速度均为 0 → 无 jerk 阶跃
 
 # ============================================================================
 # 关节定义（原 utars_clamp_and_place_large_bio_box_in_test_field.yaml 中的
@@ -158,10 +205,28 @@ V4_HAND_TEST_PERIOD = 2 * np.pi     # 周期（s），与 SDK demo 一致（time
 V4_HAND_TEST_PHASE_DIFF = 0.2       # 关节间相位差（rad），与 SDK demo 一致
 V4_HAND_TEST_DEFAULT_CYCLES = 2     # 默认循环数
 V4_HAND_TEST_HZ = 200               # 手部测试发布频率
-V4_HAND_LEFT_TOPIC = DEFAULT_LEFT_HAND_COMMAND_TOPIC
-V4_HAND_RIGHT_TOPIC = DEFAULT_RIGHT_HAND_COMMAND_TOPIC
-V4_HAND_LEFT_STATE_TOPIC = DEFAULT_LEFT_HAND_STATE_TOPIC
-V4_HAND_RIGHT_STATE_TOPIC = DEFAULT_RIGHT_HAND_STATE_TOPIC
+V4_HAND_LEFT_TOPIC = "/mc/left_hand/command"
+V4_HAND_RIGHT_TOPIC = "/mc/right_hand/command"
+V4_HAND_LEFT_STATE_TOPIC = "/mc/left_hand/joint_states"
+V4_HAND_RIGHT_STATE_TOPIC = "/mc/right_hand/joint_states"
+
+GRIP_LEFT_CMD_TOPIC = "/ecat/left_grip/cmd"
+GRIP_RIGHT_CMD_TOPIC = "/ecat/right_grip/cmd"
+GRIP_LEFT_STATE_TOPIC = "/ecat/left_grip/state"
+GRIP_RIGHT_STATE_TOPIC = "/ecat/right_grip/state"
+GRIP_POSITION_LIMIT = (0.0, 0.05)     # m
+GRIP_FORCE_LIMIT = (41.0, 100.0)      # N
+GRIP_VELOCITY_LIMIT = (0.0, 0.01)     # m/s
+GRIP_ACCELERATION_LIMIT = (0.0, 3.0)  # m/s^2，复用 GripCmd.cur 字段
+
+LEFT_ARM_JOINTS = [
+    "L_shoulder_pitch_joint", "L_shoulder_roll_joint", "L_shoulder_yaw_joint",
+    "L_elbow_roll_joint", "L_elbow_yaw_joint", "L_wrist_pitch_joint", "L_wrist_roll_joint",
+]
+RIGHT_ARM_JOINTS = [
+    "R_shoulder_pitch_joint", "R_shoulder_roll_joint", "R_shoulder_yaw_joint",
+    "R_elbow_roll_joint", "R_elbow_yaw_joint", "R_wrist_pitch_joint", "R_wrist_roll_joint",
+]
 
 # 手部关节查找表：side → (joint_names_list, publisher_topic)
 V4_HAND_JOINT_MAP = {
@@ -172,31 +237,23 @@ V4_HAND_JOINT_MAP = {
 # 手部预设姿态（用于 --hand-open / --hand-close）
 V4_HAND_OPEN_POSE = {name: 0.0 for name in V4_HAND_JOINT_LIMITS}
 V4_HAND_CLOSE_POSE = {name: hi for name, (_, hi) in V4_HAND_JOINT_LIMITS.items()}
-HOME_POSE = {name: 0.0 for name in BODY_JOINT_NAMES}
-LEFT_ARM_JOINTS = [
-    "L_shoulder_pitch_joint", "L_shoulder_roll_joint", "L_shoulder_yaw_joint",
-    "L_elbow_roll_joint", "L_elbow_yaw_joint", "L_wrist_pitch_joint", "L_wrist_roll_joint",
-]
-RIGHT_ARM_JOINTS = [
-    "R_shoulder_pitch_joint", "R_shoulder_roll_joint", "R_shoulder_yaw_joint",
-    "R_elbow_roll_joint", "R_elbow_yaw_joint", "R_wrist_pitch_joint", "R_wrist_roll_joint",
-]
 
 # ============================================================================
 # 预备姿态（双臂抬起预备抓取的站立位姿）
-# 注：以下为 walker_s2_controller.move_to_ready_pose 实际执行的活值。
 # ============================================================================
 
 READY_POSE = {
-    "L_elbow_roll_joint":       -1.5600,
-    "L_elbow_yaw_joint":        2.8790,
+    "L_elbow_roll_joint":       -1.700,
+    "L_elbow_yaw_joint":        2.8800,
+    # "L_elbow_yaw_joint":        1.5000,
     "L_shoulder_pitch_joint":   0.0000,
     "L_shoulder_roll_joint":    -0.1500,
     "L_shoulder_yaw_joint":     -1.5600,
     "L_wrist_pitch_joint":      0.0000,
     "L_wrist_roll_joint":       0.0000,
-    "R_elbow_roll_joint":       -1.5600,
-    "R_elbow_yaw_joint":        -2.8790,
+    "R_elbow_roll_joint":       -1.700,
+    "R_elbow_yaw_joint":        -2.8800,
+    # "R_elbow_yaw_joint":        -1.5000,
     "R_shoulder_pitch_joint":   0.0000,
     "R_shoulder_roll_joint":    -0.1500,
     "R_shoulder_yaw_joint":     1.5600,
@@ -207,28 +264,7 @@ READY_POSE = {
     "waist_yaw_joint":          0.0000,
 }
 
-# 搬箱预备姿态：elbow_yaw = ±1.5（前臂指向前方），便于双臂靠近桌面箱子。
-# 其余关节与 READY_POSE 一致。
-CARRY_READY_POSE = {
-    "L_elbow_roll_joint":       -1.5600,
-    "L_elbow_yaw_joint":        1.5000,
-    "L_shoulder_pitch_joint":   0.0000,
-    "L_shoulder_roll_joint":    -0.1500,
-    "L_shoulder_yaw_joint":     -1.5600,
-    "L_wrist_pitch_joint":      0.0000,
-    "L_wrist_roll_joint":       0.0000,
-    "R_elbow_roll_joint":       -1.5600,
-    "R_elbow_yaw_joint":        -1.5000,
-    "R_shoulder_pitch_joint":   0.0000,
-    "R_shoulder_roll_joint":    -0.1500,
-    "R_shoulder_yaw_joint":     1.5600,
-    "R_wrist_pitch_joint":      0.0000,
-    "R_wrist_roll_joint":       0.0000,
-    "head_pitch_joint":         -0.6500,
-    "head_yaw_joint":           0.0000,
-    "waist_yaw_joint":          0.0000,
-}
-
+# 初始化分段 1a：直接复制仿真侧 walker_s2_controller.py 的 init 流程
 READY_STAGE_1_PITCH_ROLL_POSE = {
     "L_shoulder_yaw_joint": -1.5600,
     "R_shoulder_yaw_joint": 1.5600,
@@ -236,6 +272,7 @@ READY_STAGE_1_PITCH_ROLL_POSE = {
     "R_elbow_yaw_joint": -1.5000,
 }
 
+# 初始化分段 1b：抬肩/收肘/调整腕 pitch
 READY_STAGE_1_ELBOW_YAW_POSE = {
     "L_shoulder_pitch_joint":   -2.000,
     "R_shoulder_pitch_joint":   2.000,
@@ -245,13 +282,8 @@ READY_STAGE_1_ELBOW_YAW_POSE = {
     "R_elbow_roll_joint":        -2.5000,
 }
 
+# 初始化分段 2：肩 pitch 回到最终预备姿态，再执行完整 READY_POSE
 READY_STAGE_2_POSE = {
     "L_shoulder_pitch_joint": READY_POSE["L_shoulder_pitch_joint"],
     "R_shoulder_pitch_joint": READY_POSE["R_shoulder_pitch_joint"],
 }
-
-
-LEFT_HAND_JOINTS = V4_HAND_LEFT_JOINTS
-RIGHT_HAND_JOINTS = V4_HAND_RIGHT_JOINTS
-HAND_OPEN_POSE = V4_HAND_OPEN_POSE
-HAND_CLOSE_POSE = V4_HAND_CLOSE_POSE
