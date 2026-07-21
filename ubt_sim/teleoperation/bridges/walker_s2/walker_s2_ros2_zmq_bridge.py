@@ -209,9 +209,16 @@ class WalkerS2RosBridge(Node):
             "--msg-type",
             image_msg_type,
         ]
-        camera_topics = self.cfg.get("camera_topics", {})
-        if camera_topics:
-            camera_topics_json = json.dumps(camera_topics, separators=(',', ':'))
+        camera_topics_raw = self.cfg.get("camera_topics", {})
+        if camera_topics_raw:
+            # Normalize: support both old {"name":"topic"} and new {"name":{...}} formats
+            normalized = {}
+            for name, value in camera_topics_raw.items():
+                if isinstance(value, str):
+                    normalized[name] = {"topic": value, "msg_type": image_msg_type}
+                else:
+                    normalized[name] = value
+            camera_topics_json = json.dumps(normalized, separators=(',', ':'))
             args.extend(["--camera-topics", camera_topics_json])
         self.get_logger().info(f"Starting C++ Bridge: {' '.join(args)}")
         try:

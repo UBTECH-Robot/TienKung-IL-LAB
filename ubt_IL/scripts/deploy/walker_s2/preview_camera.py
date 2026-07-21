@@ -44,7 +44,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--msg-type", default="Image2m",
-        choices=["Image8k", "Image512k", "Image1m", "Image2m", "Image4m", "Image8m",
+        choices=["Image8k", "Image512k", "Image1m", "Image2m", "Image4m", "Image6m", "Image8m",
                  "sensor_msgs/Image"],
         help="Image message type (default: Image2m / shm_msgs.msg.Image2m)",
     )
@@ -106,7 +106,77 @@ def _resolve_camera_topics(args: argparse.Namespace) -> dict[str, str]:
     return {"camera": topic}
 
 
-def _setup_cameras(topics: dict[str, str], msg_type) -> list[CameraEntry]:
+def _topic_to_default_msg_type(topic: str):
+    """Heuristic fallback when DDS type discovery fails.
+
+    Returns the most likely shm_msgs type class for a given camera topic.
+    """
+    import shm_msgs.msg
+
+    if "wrist" in topic:
+        return shm_msgs.msg.Image1m
+    if "stereo_left" in topic or "stereo_right" in topic:
+        return shm_msgs.msg.Image6m
+    if "stereo" in topic:
+        return shm_msgs.msg.Image2m
+    return shm_msgs.msg.Image2m
+
+
+def _auto_detect_msg_types(topics: dict[str, str]) -> dict[str, object]:
+    """Auto-detect the best shm_msgs/Image* type for each topic via ROS2 discovery.
+
+    Creates a temporary node, queries get_topic_names_and_types(), then destroys
+    the node. Falls back to a topic-name-based heuristic if discovery fails.
+    """
+    import rclpy
+    import shm_msgs.msg
+
+    result: dict[str, object] = {}
+
+    try:
+        temp_node = rclpy.create_node("_preview_type_discovery")
+    except Exception:
+        return {name: _topic_to_default_msg_type(topic) for name, topic in topics.items()}
+
+    try:
+        # Retry discovery a few times (DDS may need time to settle)
+        discovered = []
+        for _ in range(5):
+            time.sleep(0.5)
+            discovered = temp_node.get_topic_names_and_types()
+            if discovered:
+                break
+
+        # Build lookup: topic → set of shm_msgs type names
+        type_lookup: dict[str, set[str]] = {}
+        for t, types in discovered:
+            for typ in types:
+                if typ.startswith("shm_msgs/msg/Image"):
+                    type_lookup.setdefault(t, set()).add(typ.split("/")[-1])
+
+        for name, topic in topics.items():
+            candidates = type_lookup.get(topic, set())
+            if not candidates:
+                fallback = _topic_to_default_msg_type(topic)
+                logger.warning(
+                    "Cannot auto-detect msg_type for '%s' (%s), falling back to %s",
+                    topic, name, fallback.__name__,
+                )
+                result[name] = fallback
+            else:
+                choice = sorted(candidates)[-1]  # lexicographic: Image6m > Image2m > Image1m
+                result[name] = getattr(shm_msgs.msg, choice)
+                logger.info("  auto-detected %s for '%s' (%s)", choice, topic, name)
+    finally:
+        temp_node.destroy_node()
+
+    return result
+
+
+def _setup_cameras(
+    topics: dict[str, str],
+    msg_types: dict[str, object],
+) -> list[CameraEntry]:
     """Create one Camera node per topic.  Must be called after rclpy.init()."""
     import sys
     _walker_sdk_path = "/ubt_IL/walker/walker_sdk_ros2/robot_control"
@@ -116,6 +186,7 @@ def _setup_cameras(topics: dict[str, str], msg_type) -> list[CameraEntry]:
 
     entries: list[CameraEntry] = []
     for name, topic in topics.items():
+        msg_type = msg_types.get(name, None)
         node = Camera(topic=topic, msg_type=msg_type, node_name=f"cam_{name}")
         entries.append(CameraEntry(name=name, node=node, topic=topic))
     return entries
@@ -197,58 +268,25 @@ def main() -> int:
         logger.error("Missing dependency: %s. Install opencv-python-headless.", exc)
         return 1
 
-    # ── Resolve topics & message type ────────────────────────────────────
+    # ── Resolve topics & message types ────────────────────────────────────
     camera_topics = _resolve_camera_topics(args)
-    MsgType = _resolve_msg_type(args.msg_type)
 
     # ── ROS2 init ────────────────────────────────────────────────────────
     import rclpy
     from rclpy.executors import MultiThreadedExecutor
 
     rclpy.init()
-    entries = _setup_cameras(camera_topics, MsgType)
+
+    # Always auto-detect per-camera msg_type; --msg-type serves as manual fallback.
+    camera_msg_types = _auto_detect_msg_types(camera_topics)
+
+    entries = _setup_cameras(camera_topics, camera_msg_types)
 
     executor = MultiThreadedExecutor(num_threads=max(2, len(entries) + 1))
     for e in entries:
         executor.add_node(e.node)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
-
-    # ── Wait for all cameras ─────────────────────────────────────────────
-    logger.info("Waiting for %d camera(s) (timeout=%.1fs) ...", len(entries), args.timeout)
-    all_ready = True
-    for e in entries:
-        if not e.node.wait_for_image(timeout=args.timeout):
-            logger.error("Timeout: no image on '%s' (%s)", e.topic, e.name)
-            all_ready = False
-    if not all_ready:
-        logger.error("Not all cameras are publishing. Check topics and RMW_IMPLEMENTATION.")
-
-    # Print info for ready cameras
-    for e in entries:
-        if e.node.is_available():
-            info = e.node.get_image_info()
-            if info:
-                logger.info("  %-20s → %dx%d %s", e.name,
-                            info["width"], info["height"], info["encoding"])
-
-    if not args.once and any(e.node.is_available() for e in entries):
-        cv2.namedWindow(args.window, cv2.WINDOW_NORMAL)
-        logger.info("Press 'q' or Esc in the preview window to exit.")
-
-    # ── Determine cell size ──────────────────────────────────────────────
-    cell_w = args.width
-    cell_h = args.height
-    if cell_w == 0 or cell_h == 0:
-        # Use first available camera's native resolution
-        for e in entries:
-            info = e.node.get_image_info()
-            if info:
-                cell_w = cell_w or info["width"]
-                cell_h = cell_h or info["height"]
-                break
-        cell_w = cell_w or 640
-        cell_h = cell_h or 480
 
     # ── Main loop ────────────────────────────────────────────────────────
     last_tile: np.ndarray | None = None
@@ -257,6 +295,42 @@ def main() -> int:
     return_code = 0
 
     try:
+        # ── Wait for all cameras ─────────────────────────────────────────
+        logger.info("Waiting for %d camera(s) (timeout=%.1fs) ...", len(entries), args.timeout)
+        all_ready = True
+        for e in entries:
+            if not e.node.wait_for_image(timeout=args.timeout):
+                logger.error("Timeout: no image on '%s' (%s)", e.topic, e.name)
+                all_ready = False
+        if not all_ready:
+            logger.error("Not all cameras are publishing. Check topics and RMW_IMPLEMENTATION.")
+
+        # Print info for ready cameras
+        for e in entries:
+            if e.node.is_available():
+                info = e.node.get_image_info()
+                if info:
+                    logger.info("  %-20s → %dx%d %s", e.name,
+                                info["width"], info["height"], info["encoding"])
+
+        if not args.once and any(e.node.is_available() for e in entries):
+            cv2.namedWindow(args.window, cv2.WINDOW_NORMAL)
+            logger.info("Press 'q' or Esc in the preview window to exit.")
+
+        # ── Determine cell size ──────────────────────────────────────────
+        cell_w = args.width
+        cell_h = args.height
+        if cell_w == 0 or cell_h == 0:
+            # Use first available camera's native resolution
+            for e in entries:
+                info = e.node.get_image_info()
+                if info:
+                    cell_w = cell_w or info["width"]
+                    cell_h = cell_h or info["height"]
+                    break
+            cell_w = cell_w or 640
+            cell_h = cell_h or 480
+
         while rclpy.ok():
             # Collect latest frame from each camera
             frame_list: list[tuple[str, np.ndarray | None]] = []

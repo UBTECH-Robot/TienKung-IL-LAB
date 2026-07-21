@@ -327,7 +327,7 @@ class Camera(Node):
         elif src_encoding == "mono8":
             img = np.frombuffer(img_data, dtype=np.uint8)[:byte_count].reshape((height, width))
         elif src_encoding == "yuv422":
-            img = Camera.yuv422_to_bgr(img_data, width, height, order="UYVY")
+            img = Camera.yuv422_to_bgr(img_data[:byte_count], width, height, order="UYVY")
         elif src_encoding == "16UC1":
             img = np.frombuffer(img_data, dtype=np.uint16)[:byte_count].reshape((height, width))
         elif src_encoding == "32FC1":
@@ -486,7 +486,7 @@ def main():
     )
     parser.add_argument(
         "--msg-type", type=str, default="Image2m",
-        choices=["Image8k", "Image512k", "Image1m", "Image2m", "Image4m", "Image8m",
+        choices=["Image8k", "Image512k", "Image1m", "Image2m", "Image4m", "Image6m", "Image8m",
                  "sensor_msgs/Image"],
         help="图像消息类型 (default: Image2m / shm_msgs.msg.Image2m)",
     )

@@ -172,7 +172,7 @@ class WalkerRobotConfig(RobotConfig):
 
     # Cameras (keyed by name matching policy's expected image key)
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
-    camera_topics: dict[str, str] = field(default_factory=dict)
+    camera_topics: dict[str, dict[str, str]] = field(default_factory=dict)
 
     # Populated by __post_init__ when joint_config resolves to a valid DOF enum.
     # Keys already carry .pos suffix; values are floats.
@@ -438,8 +438,9 @@ class WalkerRobotConfig(RobotConfig):
         """
         warmup = spec.get("camera_warmup_s", DEFAULT_CAMERA_WARMUP_S)
         topics: dict[str, str] = spec["camera_topics"]
+        per_camera_types: dict[str, str] = spec.get("camera_msg_types", {})
         self.camera_topics = {
-            k: {"topic": v, "msg_type": DEFAULT_CAMERA_MSG_TYPE}
+            k: {"topic": v, "msg_type": per_camera_types.get(k, DEFAULT_CAMERA_MSG_TYPE)}
             for k, v in topics.items()
         }
         self.cameras = {

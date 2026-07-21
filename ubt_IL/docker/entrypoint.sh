@@ -144,6 +144,27 @@ if [ -d "/ubt_IL" ]; then
         uv pip install -e /ubt_IL/walker/lerobot_robot_walker || echo "[entrypoint] WARNING: walker plugin install failed"
     fi
 
+    # RealSense D405 wrist camera service (optional, on-demand install + start).
+    # Set INSTALL_REALSENSE_WRIST_CAMERA=1 to auto-install at container startup.
+    # Set REALSENSE_WRIST_CAMERA_CONFIG=/path/to/config.json to auto-start the service.
+    if [ "${INSTALL_REALSENSE_WRIST_CAMERA:-0}" = "1" ]; then
+        if [ -f "/ubt_IL/realsense_wrist_camera/scripts/install.sh" ]; then
+            echo "[entrypoint] Installing realsense_wrist_camera..."
+            bash /ubt_IL/realsense_wrist_camera/scripts/install.sh || \
+                echo "[entrypoint] WARNING: realsense_wrist_camera install failed"
+        fi
+        export PATH="$HOME/.local/bin:$PATH"
+        if [ -n "${REALSENSE_WRIST_CAMERA_CONFIG:-}" ]; then
+            echo "[entrypoint] Starting realsense-wrist-camera with config: ${REALSENSE_WRIST_CAMERA_CONFIG}"
+            /usr/bin/python3 -m realsense_wrist_camera \
+                --config "$REALSENSE_WRIST_CAMERA_CONFIG" &
+        else
+            echo "[entrypoint] Starting realsense-wrist-camera with auto-discover..."
+            /usr/bin/python3 -m realsense_wrist_camera \
+                --discover &
+        fi
+    fi
+
     # 安全网：editable 安装后确认/恢复 sm_87 torch（见函数注释）。
     reinstall_jetson_torch
 

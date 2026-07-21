@@ -6,13 +6,16 @@ zmq:
   image_port: 5657
   jpeg_image_port: 5658
 
-# Multi-camera topic mapping: camera_name → ROS2 topic.
+# Multi-camera topic mapping: camera_name → {topic, msg_type}.
 # Passed to C++ bridge via --camera-topics JSON.
+# NOTE: Real hardware publishes different shm_msgs/Image* types per camera:
+#   stereo_left/right → Image6m, wrist_left/right → Image1m, head → Image2m.
+#   The C++ bridge uses per-camera msg_type from this config.
 camera_topics:
-  stereo_left: "/sensor/camera/stereo_left/image/raw"
-  stereo_right: "/sensor/camera/stereo_right/image/raw"
-  wrist_left: "/sensor/camera/wrist_left/color/raw"
-  wrist_right: "/sensor/camera/wrist_right/color/raw"
+  stereo_left:  {topic: "/sensor/camera/stereo_left/image/raw",  msg_type: "Image6m"}
+  stereo_right: {topic: "/sensor/camera/stereo_right/image/raw", msg_type: "Image6m"}
+  wrist_left:   {topic: "/sensor/camera/wrist_left/color/raw",  msg_type: "Image1m"}
+  wrist_right:  {topic: "/sensor/camera/wrist_right/color/raw", msg_type: "Image1m"}
 
 topics:
   sub:

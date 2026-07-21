@@ -622,27 +622,25 @@ class CameraRelay:
             durability=DurabilityPolicy.VOLATILE,
         )
 
-        image_msg_types = {}
-        try:
-            from shm_msgs.msg import Image2m
-            image_msg_types["shm_msgs/Image2m"] = Image2m
-        except ImportError:
-            logger.warning("shm_msgs not available; shm_msgs/Image2m camera topics are disabled")
-        try:
-            from sensor_msgs.msg import Image
-            image_msg_types["sensor_msgs/Image"] = Image
-        except ImportError:
-            logger.warning("sensor_msgs/Image not available; standard Image camera topics are disabled")
+        # Dynamically resolve shm_msgs/Image* or sensor_msgs/Image type strings.
+        def _resolve_msg_type(msg_type_name: str):
+            if msg_type_name == "sensor_msgs/Image":
+                from sensor_msgs.msg import Image
+                return Image
+            pkg, sep, msg_name = msg_type_name.partition("/")
+            if not sep:
+                return None
+            try:
+                import importlib
+                msg_module = importlib.import_module(f"{pkg}.msg")
+                return getattr(msg_module, msg_name)
+            except (ImportError, AttributeError):
+                return None
 
         for cam_name, cam_cfg in self._camera_topics.items():
             topic = cam_cfg.get("topic")
             msg_type_name = cam_cfg.get("msg_type", "shm_msgs/Image2m")
-            if msg_type_name != "shm_msgs/Image2m":
-                logger.warning(
-                    "Camera relay: %s uses %s; expected shm_msgs/Image2m for unified Walker sim/real pipeline",
-                    cam_name, msg_type_name,
-                )
-            msg_type = image_msg_types.get(msg_type_name)
+            msg_type = _resolve_msg_type(msg_type_name)
             if msg_type is None:
                 logger.warning("Camera relay: unsupported/unavailable msg_type %s for %s", msg_type_name, cam_name)
                 continue
@@ -671,7 +669,7 @@ class CameraRelay:
                 img = np.frombuffer(img_data, dtype=np.uint8)[:byte_count].reshape((height, width, 3))
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
             elif encoding == "yuv422":
-                img = self._yuv422_to_bgr(img_data, width, height)
+                img = self._yuv422_to_bgr(img_data[:byte_count], width, height)
             elif encoding == "mono8":
                 img = np.frombuffer(img_data, dtype=np.uint8)[:byte_count].reshape((height, width))
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)

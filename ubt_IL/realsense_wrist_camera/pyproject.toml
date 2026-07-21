@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "realsense_wrist_camera"
+version = "0.1.0"
+description = "Intel RealSense D405 wrist camera ROS2 publisher — standalone service"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "pyrealsense2>=2.55",
+    "numpy<2",
+    "opencv-python<4.10",
+]
+
+[project.scripts]
+realsense-wrist-camera = "realsense_wrist_camera.cli:main"
+find-realsense-cameras = "realsense_wrist_camera.find_devices:main"

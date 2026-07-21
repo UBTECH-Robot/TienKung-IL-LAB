@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+*.egg-info/
+configs/wrist_cameras.json

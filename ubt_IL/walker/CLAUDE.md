@@ -30,11 +30,15 @@ Initial models:
 | `walker_s2_v4_hand_31d` | 31 | left/right 7D V4 hands | `walker_s2_v4_hand_31d.json` |
 | `walker_s2_gripper_19d` | 19 | left/right 1D PGC grippers | `walker_s2_gripper_19d.json` |
 
-Walker sim and real deployment use `shm_msgs/msg/Image2m` for camera topics. Camera configs should set:
+Walker sim/real deployment uses **per-camera `shm_msgs/Image*` types** — each camera topic may use a different buffer size. The authoritative mapping is defined in `constants.py` `RobotConfig.camera_msg_types`. Camera configs should set `msg_type` per camera:
 
-```json
-"msg_type": "shm_msgs/Image2m"
-```
+| Camera | Type |
+|--------|------|
+| `camera_head` (stereo/color/raw) | `Image2m` |
+| `camera_head_left` (stereo_left) | `Image6m` |
+| `camera_head_right` (stereo_right) | `Image6m` |
+| `camera_wrist_left` | `Image1m` |
+| `camera_wrist_right` | `Image1m` |
 
 Do not publish `sensor_msgs/Image` on the same camera topic name; use a separate debug topic if a standard ROS image stream is needed.
 
@@ -140,13 +144,15 @@ V4 hand command uses `mode = [5, ...]` and clamps values by V4 joint limits.
 
 ### Camera
 
-Walker sim and real camera topics should use `shm_msgs/msg/Image2m`. The Bridge2 camera relay subscribes to the configured `msg_type` and republishes JPEG frames over ZMQ 5563 for LeRobot.
+Walker sim and real camera topics use different `shm_msgs/Image*` types per camera (Image1m/Image2m/Image6m). The Bridge2 camera relay subscribes to the configured `msg_type` and republishes JPEG frames over ZMQ 5563 for LeRobot.
 
 | Topic | Message Type | Purpose | QoS |
 |-------|-------------|---------|-----|
-| `/sensor/camera/.../raw` | `shm_msgs/Image2m` | RGB/depth camera images | BEST_EFFORT + VOLATILE |
+| `/sensor/camera/stereo/color/raw` | `shm_msgs/Image2m` | head RGB camera | BEST_EFFORT + VOLATILE |
+| `/sensor/camera/stereo_{left,right}/image/raw` | `shm_msgs/Image6m` | stereo camera pair | BEST_EFFORT + VOLATILE |
+| `/sensor/camera/wrist_{left,right}/color/raw` | `shm_msgs/Image1m` | wrist camera pair | BEST_EFFORT + VOLATILE |
 
-Avoid using the same topic name for both `sensor_msgs/Image` and `shm_msgs/Image2m`.
+Avoid using the same topic name for both `sensor_msgs/Image` and `shm_msgs/Image*`.
 ### PGC 1-DOF gripper
 
 | Topic | Message Type | Purpose | QoS |

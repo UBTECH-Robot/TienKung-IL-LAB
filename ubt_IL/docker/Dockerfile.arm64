@@ -44,12 +44,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # bodyctrl_msgs (天工 msgs): arm64 无预编译 deb，从源码编译。
 # 源码备份自 ubt_sim/teleoperation/msgs/body_crtl_msgs_src（包名 bodyctrl_msgs，与 x86 deb 同名）。
+# setup.bash 必须用 bash 执行（sh/dash 不支持 ${BASH_SOURCE[0]} 等 bash 语法）
 COPY docker/ros2_msgs/bodyctrl_msgs_src /opt/bodyctrl_msgs_ws/src
-RUN . /opt/ros/humble/setup.bash \
+SHELL ["/bin/bash", "-c"]
+RUN source /opt/ros/humble/setup.bash \
     && cd /opt/bodyctrl_msgs_ws \
     && colcon build --packages-select bodyctrl_msgs \
         --cmake-args -DCMAKE_BUILD_TYPE=Release \
     && rm -rf build log
+SHELL ["/bin/sh", "-c"]
 
 # System Python dependencies for ROS2 Bridge2.
 RUN /usr/bin/python3 -m pip install --upgrade pip \

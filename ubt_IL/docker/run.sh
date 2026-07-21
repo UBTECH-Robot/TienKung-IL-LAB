@@ -3,6 +3,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
+# 捕获 DISPLAY（sudo 默认不传递），用于容器 X11 转发
+_HOST_DISPLAY="${DISPLAY:-}"
+
 WALKER_WS="/ubt_IL/walker/walker_sdk_ros2"
 
 case "${1:-}" in
@@ -42,13 +45,16 @@ case "${1:-}" in
                 "${GPU_ARGS[@]}" \
                 --network=host \
                 --shm-size=16g \
+                --privileged \
+                -v /dev:/dev \
                 -e DOMAIN_ID="$DOMAIN_ID" \
                 -e HF_HOME="$HF_HOME" \
                 -e TORCH_HOME="$TORCH_HOME" \
                 -e UV_INDEX_URL="$UV_INDEX_URL" \
                 -v "$PROJECT_ROOT":/ubt_IL \
-                -e DISPLAY="${DISPLAY}" \
+                -e DISPLAY="${_HOST_DISPLAY}" \
                 -v /tmp/.X11-unix:/tmp/.X11-unix \
+                -v "${XAUTHORITY:-$HOME/.Xauthority}":/home/user_lerobot/.Xauthority:ro \
                 -w /ubt_IL \
                 "$IMAGE" \
                 tail -f /dev/null
@@ -169,6 +175,7 @@ PY' >/dev/null 2>&1
             source $WALKER_WS/install/setup.bash 2>/dev/null || true; \
             export ROS_DOMAIN_ID=$DOMAIN_ID; \
             export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/fastdds_no_shm.xml; \
+            export DISPLAY=\${DISPLAY:-} 2>/dev/null; \
             bash"
         ;;
     rm)

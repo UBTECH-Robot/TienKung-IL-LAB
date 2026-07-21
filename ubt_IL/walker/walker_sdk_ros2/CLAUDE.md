@@ -199,7 +199,7 @@ rclcpp::QoS(10)  // 默认 reliable，命令方向这样写即可
 | 后背 RGBD 彩色/深度 | `/sensor/camera/body_back_rgbd/{color,depth}/raw` | `Image1m` |
 | 腰前 RGBD 彩色/深度 | `/sensor/camera/waist_front_rgbd/{color,depth}/raw` | `Image1m` |
 | 鱼眼 左/右 | `/sensor/camera/fisheye_{left,right}/image/raw` | `Image2m` |
-| 立体 左/右 | `/sensor/camera/stereo_{left,right}/image/raw` | `Image2m` |
+| 立体 左/右 | `/sensor/camera/stereo_{left,right}/image/raw` | `Image6m` |
 
 **有效像素字节数 = `step × height`**，不是 `data.size()`（后者始终是完整的固定缓冲区大小）。编码字符串存于 `msg->encoding.data`（固定 `char[256]`，非 `std::string`）。示例订阅者仅打印元数据——不做 OpenCV 图像解码。
 

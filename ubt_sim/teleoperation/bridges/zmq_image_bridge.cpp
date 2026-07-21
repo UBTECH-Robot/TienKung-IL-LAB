@@ -9,7 +9,9 @@
 
 #include <zmq.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <shm_msgs/msg/image1m.hpp>
 #include <shm_msgs/msg/image2m.hpp>
+#include <shm_msgs/msg/image6m.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
 // Minimal JSON parser — extracts integer values for known keys.
@@ -45,9 +47,17 @@ inline std::string get_string(const std::string& json, const std::string& key) {
 }
 } // namespace tinyjson
 
-// Parse {"k1":"v1","k2":"v2"} → map<string,string>
-static std::map<std::string, std::string> parse_camera_topics(const std::string& json) {
-    std::map<std::string, std::string> map;
+// Camera spec: topic + optional msg_type
+struct CameraSpec {
+    std::string topic;
+    std::string msg_type = "Image2m";
+};
+
+// Parse camera_topics JSON. Supports two formats:
+//   Old: {"name":"topic"}                        → msg_type defaults to Image2m
+//   New: {"name":{"topic":"...","msg_type":"..."}} → per-camera msg_type
+static std::map<std::string, CameraSpec> parse_camera_topics(const std::string& json) {
+    std::map<std::string, CameraSpec> map;
     if (json.empty()) return map;
     size_t pos = 0;
     while ((pos = json.find('"', pos)) != std::string::npos) {
@@ -55,15 +65,38 @@ static std::map<std::string, std::string> parse_camera_topics(const std::string&
         size_t key_end = json.find('"', key_start);
         if (key_end == std::string::npos) break;
         std::string key = json.substr(key_start, key_end - key_start);
+        // Skip internal keys like "topic" and "msg_type" when inside a spec object
+        if (key == "topic" || key == "msg_type") {
+            pos = key_end + 1;
+            continue;
+        }
         size_t val_start = json.find('"', key_end + 1);
         if (val_start == std::string::npos) break;
-        size_t val_end = json.find('"', val_start + 1);
-        if (val_end == std::string::npos) break;
-        std::string val = json.substr(val_start + 1, val_end - val_start - 1);
-        if (!key.empty() && !val.empty()) {
-            map[key] = val;
+        // Peek ahead: if the character after ':' is '{', it's the new format
+        size_t colon = json.rfind(':', val_start);
+        bool is_object = false;
+        for (size_t c = colon + 1; c < val_start; c++) {
+            if (json[c] == '{') { is_object = true; break; }
         }
-        pos = val_end + 1;
+        if (is_object) {
+            CameraSpec spec;
+            spec.topic = tinyjson::get_string(json.substr(colon, json.find('}', colon) - colon + 1), "topic");
+            std::string mt = tinyjson::get_string(json.substr(colon, json.find('}', colon) - colon + 1), "msg_type");
+            if (!mt.empty()) spec.msg_type = mt;
+            map[key] = spec;
+            pos = json.find('}', val_start) + 1;
+        } else {
+            size_t val_end = json.find('"', val_start + 1);
+            if (val_end == std::string::npos) break;
+            std::string val = json.substr(val_start + 1, val_end - val_start - 1);
+            if (!key.empty() && !val.empty()) {
+                CameraSpec spec;
+                spec.topic = val;
+                spec.msg_type = "Image2m";  // old format default
+                map[key] = spec;
+            }
+            pos = val_end + 1;
+        }
     }
     return map;
 }
@@ -74,8 +107,8 @@ struct BridgeConfig {
     std::string depth_topic = "/ob_camera_head/depth/image_raw";
     // "Image2m" (shm_msgs/Image2m, default — walker S2) or "Image" (sensor_msgs/Image — 天工)
     std::string msg_type = "Image2m";
-    // camera_name → ros2_topic (multi-camera routing, Walker S2)
-    std::map<std::string, std::string> camera_topics;
+    // camera_name → CameraSpec (multi-camera routing, Walker S2)
+    std::map<std::string, CameraSpec> camera_topics;
 };
 
 static BridgeConfig parse_args(int argc, char* argv[]) {
@@ -112,8 +145,10 @@ static void set_shm_string(shm_msgs::msg::String& dst, const std::string& src) {
     dst.size = static_cast<uint8_t>(std::min<size_t>(n, 255));
 }
 
-static bool fill_image2m(
-    shm_msgs::msg::Image2m& msg,
+// Template: fill any shm_msgs Image* message (Image1m/Image2m/Image6m/…)
+template<typename MsgT>
+static bool fill_image_shm(
+    MsgT& msg,
     const rclcpp::Time& stamp,
     const std::string& frame_id,
     int width,
@@ -141,6 +176,19 @@ static bool fill_image2m(
     std::fill(msg.data.begin(), msg.data.end(), 0);
     std::memcpy(msg.data.data(), data, byte_count);
     return true;
+}
+
+// Keep a named alias for backward-compatible calls (fill_image2m → fill_image_shm<Image2m>)
+static bool fill_image2m(
+    shm_msgs::msg::Image2m& msg,
+    const rclcpp::Time& stamp,
+    const std::string& frame_id,
+    int width, int height,
+    const std::string& encoding,
+    uint32_t step,
+    const void* data, size_t size)
+{
+    return fill_image_shm<shm_msgs::msg::Image2m>(msg, stamp, frame_id, width, height, encoding, step, data, size);
 }
 
 // Fill a sensor_msgs::msg::Image (variable-length data, no 2MB cap). Used for 天工.
@@ -188,11 +236,20 @@ public:
             pub_depth_2m_ = this->create_publisher<shm_msgs::msg::Image2m>(cfg.depth_topic, qos);
         }
 
-        // Per-camera publishers (multi-camera routing)
-        for (const auto& [cam_name, topic] : cfg.camera_topics) {
-            auto pub = this->create_publisher<shm_msgs::msg::Image2m>(topic, qos);
-            publishers_[cam_name] = pub;
-            RCLCPP_INFO(this->get_logger(), "  Camera '%s' → %s", cam_name.c_str(), topic.c_str());
+        // Per-camera publishers (multi-camera routing, type-aware)
+        for (const auto& [cam_name, spec] : cfg.camera_topics) {
+            if (spec.msg_type == "Image1m") {
+                auto pub = this->create_publisher<shm_msgs::msg::Image1m>(spec.topic, qos);
+                publishers_1m_[cam_name] = pub;
+            } else if (spec.msg_type == "Image6m") {
+                auto pub = this->create_publisher<shm_msgs::msg::Image6m>(spec.topic, qos);
+                publishers_6m_[cam_name] = pub;
+            } else {
+                auto pub = this->create_publisher<shm_msgs::msg::Image2m>(spec.topic, qos);
+                publishers_2m_[cam_name] = pub;
+            }
+            RCLCPP_INFO(this->get_logger(), "  Camera '%s' → %s (%s)",
+                        cam_name.c_str(), spec.topic.c_str(), spec.msg_type.c_str());
         }
 
         context_ = zmq::context_t(1);
@@ -294,15 +351,39 @@ private:
             return;
         }
 
-        // --- Path B: "camera" field present → route to per-camera publisher ---
-        auto it = publishers_.find(cam_name);
-        if (it != publishers_.end()) {
-            shm_msgs::msg::Image2m img_msg;
-            if (fill_image2m(img_msg, current_time, cam_name, w, h, "rgb8",
-                             static_cast<uint32_t>(w * 3), rgb_msg.data(), rgb_msg.size())) {
-                it->second->publish(img_msg);
+        // --- Path B: "camera" field present → route to per-camera publisher (type-aware) ---
+        bool published = false;
+        // Try Image1m publishers
+        auto it1 = publishers_1m_.find(cam_name);
+        if (it1 != publishers_1m_.end()) {
+            shm_msgs::msg::Image1m img_msg;
+            if (fill_image_shm(img_msg, current_time, cam_name, w, h, "rgb8",
+                               static_cast<uint32_t>(w * 3), rgb_msg.data(), rgb_msg.size())) {
+                it1->second->publish(img_msg);
+                published = true;
             }
-        } else {
+        }
+        // Try Image2m publishers
+        auto it2 = publishers_2m_.find(cam_name);
+        if (it2 != publishers_2m_.end()) {
+            shm_msgs::msg::Image2m img_msg;
+            if (fill_image_shm(img_msg, current_time, cam_name, w, h, "rgb8",
+                               static_cast<uint32_t>(w * 3), rgb_msg.data(), rgb_msg.size())) {
+                it2->second->publish(img_msg);
+                published = true;
+            }
+        }
+        // Try Image6m publishers
+        auto it6 = publishers_6m_.find(cam_name);
+        if (it6 != publishers_6m_.end()) {
+            shm_msgs::msg::Image6m img_msg;
+            if (fill_image_shm(img_msg, current_time, cam_name, w, h, "rgb8",
+                               static_cast<uint32_t>(w * 3), rgb_msg.data(), rgb_msg.size())) {
+                it6->second->publish(img_msg);
+                published = true;
+            }
+        }
+        if (!published) {
             RCLCPP_WARN(this->get_logger(), "Unknown camera '%s', dropping frame",
                         cam_name.c_str());
         }
@@ -322,8 +403,10 @@ private:
     rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr pub_depth_2m_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_rgb_img_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_depth_img_;
-    // Per-camera publishers (multi-camera routing, Image2m only)
-    std::map<std::string, rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr> publishers_;
+    // Per-camera publishers by type (multi-camera routing)
+    std::map<std::string, rclcpp::Publisher<shm_msgs::msg::Image1m>::SharedPtr> publishers_1m_;
+    std::map<std::string, rclcpp::Publisher<shm_msgs::msg::Image2m>::SharedPtr> publishers_2m_;
+    std::map<std::string, rclcpp::Publisher<shm_msgs::msg::Image6m>::SharedPtr> publishers_6m_;
     std::string msg_type_;
 
     zmq::context_t context_;

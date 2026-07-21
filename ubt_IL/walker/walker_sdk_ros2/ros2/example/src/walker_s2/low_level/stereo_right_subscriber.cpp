@@ -1,12 +1,12 @@
 #include "rclcpp/rclcpp.hpp"
-#include "shm_msgs/msg/image2m.hpp"
+#include "shm_msgs/msg/image6m.hpp"
 
 class StereoRightSubscriber : public rclcpp::Node
 {
  public:
   StereoRightSubscriber() : Node("stereo_right_subscriber")
   {
-    subscription_ = this->create_subscription<shm_msgs::msg::Image2m>(
+    subscription_ = this->create_subscription<shm_msgs::msg::Image6m>(
         "/sensor/camera/stereo_right/image/raw",  // 话题名称
         rclcpp::QoS(rclcpp::KeepLast(10)).best_effort(),
         std::bind(&StereoRightSubscriber::topic_callback, this,
@@ -14,7 +14,7 @@ class StereoRightSubscriber : public rclcpp::Node
   }
 
  private:
-  void topic_callback(const shm_msgs::msg::Image2m::SharedPtr msg)
+  void topic_callback(const shm_msgs::msg::Image6m::SharedPtr msg)
   {
     RCLCPP_INFO(this->get_logger(), "Cruent Time: %d sec %u nanosec",
                 msg->header.stamp.sec, msg->header.stamp.nanosec);
@@ -30,7 +30,7 @@ class StereoRightSubscriber : public rclcpp::Node
                 sizeof(msg->data) / sizeof(msg->data[0]));
   }
 
-  rclcpp::Subscription<shm_msgs::msg::Image2m>::SharedPtr subscription_;
+  rclcpp::Subscription<shm_msgs::msg::Image6m>::SharedPtr subscription_;
 };
 
 int main(int argc, char *argv[])

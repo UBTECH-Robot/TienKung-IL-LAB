@@ -197,6 +197,7 @@ CANONICAL_JOINT_NAMES = (
 #     由 joint_names_with_pos() 统一追加）
 #   - camera_topics：相机源 key → ROS2 topic 映射
 #   - camera_to_image_key：相机源 key → 模型 observation.images key 映射
+#   - camera_msg_types：相机源 key → msg_type 字符串（可选，默认 DEFAULT_CAMERA_MSG_TYPE）
 #   - camera_warmup_s：相机预热时间（可选，默认 DEFAULT_CAMERA_WARMUP_S）
 #
 # 新增型号：在 ROBOT_MODELS 注册即可，无需创建外部 JSON 配置文件。
@@ -216,10 +217,11 @@ class RobotConfig:
     joint_order: list[str] = []
     camera_topics: dict[str, str] = {}
     camera_to_image_key: dict[str, str] = {}
+    camera_msg_types: dict[str, str] = {}
 
     def __init__(self, **kwargs):
         cls = type(self)
-        for key in ("joint_order", "camera_topics", "camera_to_image_key"):
+        for key in ("joint_order", "camera_topics", "camera_to_image_key", "camera_msg_types"):
             val = kwargs.get(key, getattr(cls, key))
             object.__setattr__(self, key, val)
         # camera_warmup_s 仅当子类显式定义或 kwargs 传入时才设置
@@ -316,6 +318,14 @@ class Walker_S2_31D_5Camera(RobotConfig):
         "camera_wrist_right": "camera_wrist_right",
     }
 
+    camera_msg_types = {
+        "camera_head":        "shm_msgs/Image2m",
+        "camera_head_left":   "shm_msgs/Image6m",
+        "camera_head_right":  "shm_msgs/Image6m",
+        "camera_wrist_left":  "shm_msgs/Image1m",
+        "camera_wrist_right": "shm_msgs/Image1m",
+    }
+
 
 class Walker_S2_19D_4Camera(RobotConfig):
     """19 DOF: body(17) + left PGC grip(1) + right PGC grip(1)"""
@@ -361,6 +371,13 @@ class Walker_S2_19D_4Camera(RobotConfig):
         "camera_wrist_right": "camera_wrist_right",
     }
 
+    camera_msg_types = {
+        "camera_head_left":   "shm_msgs/Image6m",
+        "camera_head_right":  "shm_msgs/Image6m",
+        "camera_wrist_left":  "shm_msgs/Image1m",
+        "camera_wrist_right": "shm_msgs/Image1m",
+    }
+
     camera_warmup_s = 10
 
 
@@ -391,6 +408,11 @@ class Walker_S2_10D_2Camera(RobotConfig):
     camera_to_image_key = {
         "camera_head_right":  "camera_head_right",
         "camera_wrist_right": "camera_wrist_right",
+    }
+
+    camera_msg_types = {
+        "camera_head_right":  "shm_msgs/Image6m",
+        "camera_wrist_right": "shm_msgs/Image1m",
     }
 
 
