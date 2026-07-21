@@ -4,6 +4,197 @@
 
 ---
 
+## 2026-07-21 最终状态总览（后续接手先读本节）
+
+### 1. 当前完成度与版本
+
+Walker C1 已完成一条可实际运行的 Isaac Sim + ROS 2 闭环任务链：机器人进入安全准备姿势，
+在线读取苹果位置，使用多种子 6D IK 完成抓取、抬升、静置防滑检查、经身体前方路点搬运、
+放入粉色盘子，最后双臂安全归位。ROS 运行时可同步记录左右臂、左右手、动作目标、时间戳和
+头部 RGB，成功后保存 HDF5，因此目前具备自动执行和自动采集固定位置示范数据的能力。
+
+本节对应的实现基线：
+
+```text
+branch: walker_c1
+commit: d8e9320 feat(walker-c1): merge mentor sensors and restore task visuals
+remote: origin/walker_c1（已 push）
+```
+
+commit `d8e9320` 已包含 mentor 原始 USD、合并后的双手 USD、苹果复合 USD、构建脚本、控制
+代码和本文档。两个主 USD 分别约 51.7/54.8 MB，GitHub 已接受，但因为本机没有 `git-lfs`，
+它们是普通 Git blob，push 时只有超过推荐 50 MB 的警告，没有失败。无关 Astron SDK `.docx`
+始终未提交。
+
+### 2. 推荐启动方式（两个终端进入同一个容器）
+
+不要同时启动两套 Isaac Sim。终端 A 只负责仿真，终端 B 只运行 ROS pick-and-place；这里的
+“两个终端”是两次 `docker exec` 进入同一个 `walker-c1-ubt-sim` 容器，不是再创建一个容器。
+
+终端 A，启动 mentor 机身 + 当前灵巧手 + ROS 控制 + 五相机视窗：
+
+```bash
+docker exec -it walker-c1-ubt-sim \
+  bash /ubt_sim/scripts/start_c1_mentor_sensor_sim.sh --control
+```
+
+等仿真完成场景加载并出现 ZMQ controller 日志后，终端 B 执行一次任务并保存轨迹：
+
+```bash
+docker exec -it walker-c1-ubt-sim \
+  bash /ubt_sim/scripts/run_c1_pick_place_once.sh
+```
+
+仅验动作、不保存数据：
+
+```bash
+docker exec -it walker-c1-ubt-sim \
+  bash /ubt_sim/scripts/run_c1_pick_place_once.sh --no-record
+```
+
+修改采集帧率（默认 30 Hz，例如 20 Hz）：
+
+```bash
+docker exec -it walker-c1-ubt-sim \
+  bash /ubt_sim/scripts/run_c1_pick_place_once.sh --record-hz 20
+```
+
+成功轨迹保存到 `/ubt_sim/dataset/walker_c1_ros/<毫秒时间戳>/trajectory.hdf5`。失败默认丢弃，
+调试时可加 `--save-on-failure`。ROS 记录器优先使用 `/sim/object_state` 的 100 Hz `sim_step`
+调度 3/3/4 步采一帧以得到平均 30 Hz；没有仿真步（真机）时回退 ROS 图像时间戳节流。
+
+`run_c1_online_ik_batch.sh` 会自行管理 Isaac 进程，不应在 GUI 仿真已经运行时再启动；此前
+“一运行就 Killed”主要来自同时运行两套 Isaac 的内存/GPU 资源竞争。该 batch 脚本当前启动
+默认 `walker_c1_force_drive_grip.usd`，尚未切换到 mentor 合并 USD；采集 mentor 版本数据时
+使用上面的终端 A/B 方式，每次调用 `run_c1_pick_place_once.sh` 生成一条成功轨迹。
+
+### 3. 机器人 USD 的实际组成
+
+mentor 资产目录：
+
+```text
+ubt_sim/assets/robots/walker_c1/Collected_walker_c1_v1_sensorKpkd/
+  Collected_walker_astron_v1_sensorKpkd/
+    walker_astron_v1_sensorKpkd.usd          # mentor 原始身体/传感器，无灵巧手
+    walker_astron_v1_sensorKpkd_hands.usd    # 当前推荐的合并结果
+    SubUSDs/                                  # 双目、鱼眼、下巴相机子层
+```
+
+mentor 原始资产有 31 个身体可动关节、40 个身体刚体、5 个相机和 2 个 IMU，但缺少双灵巧手。
+`merge_walker_c1_mentor_usd.py` 从已经通过抓放验证的 `walker_c1_force_drive_grip.usd` 拼入：
+
+```text
+30 个手部刚体
+22 个手指 revolute joints
+8 个手部 fixed joints
+56 个实际被手部使用的独立 prototype
+4 个手部视觉材料
+1 个手部高摩擦物理材料
+```
+
+最终组合为 53 revolute + 17 fixed + 70 rigid body。mentor 身体原有 80 条视觉/碰撞引用逐条
+保持不变。绝不能把原 C1 的全部 `Flattened_Prototype_N` 原路径复制进 mentor USD：两边同名
+编号对应不同网格，会覆盖身体 prototype，表现就是机器人四分五裂。当前脚本把手部模板放在
+独立 `/C1HandPrototypes` 并重写引用，已经解决该问题。
+
+手并不是选择一种统一颜色。原手模型的 4 种视觉材料同时按子网格出现：白色、银灰和淡蓝灰
+分别用于掌壳、手指等零件；左右手的具体分配沿用原 USD。物理抓取材料独立位于 default prim
+内部 `/walker_astron_v1/PhysicsMaterials/HandGripMaterial`，绑定 30 个手部 collision instance，
+不会因 Robot reference scope 丢失。
+
+mentor 左鱼眼主层曾多出 0.646 m 局部平移，合并脚本会清除该错误 opinion，使左右鱼眼恢复
+约 `+/-71.4 mm` 的对称安装位置。五个 GUI viewport 分别显示 Stereo Left/Right、Fisheye
+Left/Right 和 Jaw Camera。
+
+默认 `start_sim.sh` 仍使用原来的 `walker_c1_force_drive_grip.usd`；只有推荐的
+`start_c1_mentor_sensor_sim.sh` 通过 `UBT_SIM_WALKER_C1_USD_PATH` 选择 mentor 合并版本。
+不带 `--control` 时该脚本只是 load-only 传感器预览，不启动 ROS bridge；做抓放必须加
+`--control`。
+
+### 4. 苹果、桌子和盘子的最终几何
+
+苹果不再显示为纯红球，但物理抓取条件没有改变。`c1_task_apple.usda` 的结构是：
+
+```text
+/C1Apple                         RigidBody，mass=0.10 kg
+  /Collision                     不可见 Sphere，radius=0.027 m
+  /PhysicsMaterials/...          static/dynamic friction=1.20
+  /Visual                        引用 Tiankung scene_v2.usd 的原苹果网格/材质
+```
+
+Visual 使用原 `Yellow_Red_Nectarine` 材质，Albedo、Normal、Roughness 纹理均可解析；缩放并
+居中后外观包围盒约 `52.6 x 54.0 x 53.3 mm`。原网格上的 RigidBody/Mass/Collision API 已全部
+删除，所以物理引擎只看到原来成功版本的 27 mm 球碰撞体，不会因复杂三角网格改变抓取。
+`build_c1_apple_usd.py` 可重建该小型组合层，但成品已经随 commit `d8e9320` 提交。
+
+最终场景参数：
+
+```text
+robot base world xy: 约 (7.803, 6.083)
+apple fixed world:    (8.170, 5.900)，落稳中心 z=0.929
+plate center world:   (8.190, 5.710)，粉色原盘模型保留
+table top world z:    0.902
+table x shift:        -0.160 m（只把桌子向机器人靠近，苹果/盘子 xy 不跟随）
+apple collision:      sphere r=0.027 m, mass=0.10 kg, friction=1.20
+hand collision:       friction=1.50，手指 effort 仍为 2 N.m
+```
+
+白色厚圆柱不是显示盘子，而是 `visible=False` 的盘子碰撞体；画面中应看到原粉色薄盘。场景
+装饰苹果在 `scene_v2_c1.usda` 中保持 deactivate，避免与任务刚体出现两个苹果。
+
+### 5. 在线 IK、抓取和最终姿势参数
+
+控制入口是 `teleoperation/control/walker_c1/pick_place_controller.py`。任务不是回放固定关节
+轨迹：每局从 `/sim/object_state` 读取实时苹果位置，在线生成掌心路点并用多种子 6D IK 求解。
+完整掌心朝向约束仍保留，抓取阶段仅加入 base-Y `+5 deg` 姿态放松；搬运阶段经过身体前方
+掌心路点 `(0.290, -0.285, 0.220)`，带 `+5 deg` carry yaw，使肘部保持弯曲后再去盘子。
+
+关键阶段：安全 staged reset -> approach -> hover -> descend/闭环掌口对准 -> close -> lift ->
+1.4 仿真秒静置防滑 -> body-front transfer -> carry over plate -> lower/release -> retreat -> staged
+reset。`HELD` 只说明刚抬起，必须随后看到 `static hold ... STABLE` 才算抓持可靠。
+
+最终盘上释放净空为 60 mm，较之前 40 mm 提高 20 mm：目标掌心 base-z 实测由约 `0.141 m`
+变为 `0.161 m`，避免张开手指碰粉色盘沿。盘子位置、盘上 xy、carry 和 retreat 路点均未改。
+
+最终 ready pose 的左臂是右臂严格镜像：肩/肘/腕 pitch 同号，roll/yaw 反号；左右手均发送
+相同的 6 个主动关节全开命令，其余 5 个/手从动关节按镜像机构联动。归位仍采用安全三阶段：
+双臂侧向抬起 0.6 仿真秒 -> 收肘 0.6 仿真秒 -> ready 1.0 仿真秒，避免向前扫桌和盘。
+
+### 6. 最终验证结果
+
+mentor 合并 USD + 原苹果外观 + 球碰撞版本完成完整 ROS 回归：
+
+```text
+apple settled:       world z=0.929 m（与旧球版本一致）
+grasp tracking:      典型 7-8 mm
+lift:                8.3-8.4 cm
+apple-mouth:         2.4 cm
+static hold:         STABLE after 1.4 simulated seconds
+release target:      base z=0.161 m
+final plate distance:2.2 cm（success limit 12 cm）
+result:              1/1 SUCCESS，安全归位
+```
+
+苹果视觉刚替换时、释放净空还是 40 mm 的回归落点为 1.9 cm；净空提高到 60 mm 且左臂镜像后
+再次完整回归，落点为 2.2 cm。两次均 `HELD`、`STABLE`、`SUCCESS`，证明视觉替换、释放抬高
+和左臂镜像没有破坏抓放。
+
+### 7. 已知限制与排查顺序
+
+1. 当前 CPU 仿真约为实时的 0.25 倍，日志中的 0.6/1.0/1.4 秒都是仿真时间，墙钟约放大
+   4 倍；reset 和抓放中的短暂停顿是按物理步等待，不是程序卡死。
+2. 启动时 `Clear_Glass.mdl` 缺失警告来自客厅玻璃材质，与机器人、手和苹果无关。
+3. mentor USD 内含 drive/Kp/Kd，但当前 Isaac Lab `ImplicitActuatorCfg` 会覆盖 USD drive 参数；
+   当前成功只证明几何、惯量、传感器和现有控制增益兼容，尚未直接使用 mentor 的原 Kp/Kd。
+4. 运行很久或经历剧烈失败后的 PhysX 进程可能出现接触状态退化；若连续抓空，不要立刻继续
+   改摩擦/IK，先完整重启仿真做一次冷启动判决。
+5. 回真机前必须核对 SDK joint order、限位和安全控制；当前成果是 Isaac Sim + ROS 控制链，
+   不能把仿真成功直接等同于真机已验证。
+6. 固定位置高成功率是当前验收目标；随机苹果位置仍是后续增强项。批量采集前应先做多次
+   冷启动固定点回归，再逐步扩大随机范围。
+
+---
+
 ## 2026-07-20 Online IK Pick-and-Place 已完成
 
 非 replay 路线已经连续两次独立冷启动完整成功：`reset.py` 准备姿势 → 在线读取
