@@ -1,8 +1,8 @@
 #!/bin/bash
 # Walker C1 online-IK pick-place batch runner.
 #
-# Produces N successful fixed-position pick-place attempts by restarting the
-# sim stack before each fresh attempt. This keeps the retry policy from the
+# Produces N successful recorded fixed-position pick-place trajectories by
+# restarting the sim stack before each fresh attempt. This keeps the retry policy from the
 # replay runner while executing the non-replay controller:
 #   reset.py ready pose -> read /sim/object_state -> IK plan -> grasp -> plate -> ready.
 #
@@ -77,10 +77,10 @@ for ep in $(seq 1 "$N"); do
 
         echo "[BATCH] Stack ready, running online IK controller..."
         OUT=$(timeout 600 /usr/bin/python3 \
-            /ubt_sim/teleoperation/control/walker_c1/pick_place_controller.py --episodes 1 --max-grasp-attempts 1 \
+            /ubt_sim/teleoperation/control/walker_c1/pick_place_controller.py --episodes 1 --max-grasp-attempts 1 --record \
             2>&1 | tee "$LOG_DIR/episode_${ep}_try${try}.log")
 
-        if echo "$OUT" | grep -q "SUCCESS"; then
+        if echo "$OUT" | grep -q "SUCCESS" && echo "$OUT" | grep -q "trajectory saved:"; then
             echo "[BATCH] Target episode $ep: SUCCESS on attempt $try"
             EP_SUCCESS=1
             EPISODE_ATTEMPT_COUNTS+=("$try")

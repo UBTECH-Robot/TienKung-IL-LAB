@@ -10,22 +10,29 @@ targets are planned from the state read back from /sim/object_state.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from typing import Optional, Sequence
 
 import numpy as np
 import rclpy
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import Image
 
 try:
-    from .robot_controller import WalkerC1RobotController
+    from .constants import LEFT_ARM_JOINT_NAMES, RIGHT_ARM_JOINT_NAMES
+    from .robot_controller import (
+        LEFT_HAND_SDK_NAMES,
+        RIGHT_HAND_SDK_NAMES,
+        WalkerC1RobotController,
+    )
 except ImportError:
-    import os
-
     _dir = os.path.dirname(os.path.abspath(__file__))
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
-    from robot_controller import WalkerC1RobotController
+    from constants import LEFT_ARM_JOINT_NAMES, RIGHT_ARM_JOINT_NAMES
+    from robot_controller import LEFT_HAND_SDK_NAMES, RIGHT_HAND_SDK_NAMES, WalkerC1RobotController
 
 
 APPLE_SPAWN_W = (8.17, 5.90, 0.95)
@@ -49,14 +56,210 @@ LIFT_PALM_Z = 0.18
 CARRY_PALM_Z = 0.20
 RELEASE_PALM_Z = 0.12
 
+DEFAULT_CAMERA_TOPIC = "/sensor/camera/head/color/raw"
+DEFAULT_RECORD_ROOT = "/ubt_sim/dataset/walker_c1_ros"
+SIM_PHYSICS_HZ = 100.0
+DEFAULT_RECORD_HZ = 30.0
+_RECORD_BUFFER_KEYS = (
+    "arm_right", "hand_right", "arm_left", "hand_left",
+    "action_arm_right", "action_arm_left", "action_hand_right", "action_hand_left",
+    "img", "timestamp",
+)
+
 
 def _format_vec(values: Sequence[float]) -> str:
     return "[" + ", ".join(f"{float(v):+.3f}" for v in values) + "]"
 
 
 class WalkerC1PickPlace(WalkerC1RobotController):
-    def __init__(self):
+    def __init__(
+        self,
+        record: bool = False,
+        record_root: str = DEFAULT_RECORD_ROOT,
+        save_on_failure: bool = False,
+        camera_topic: str = DEFAULT_CAMERA_TOPIC,
+        record_hz: float = DEFAULT_RECORD_HZ,
+    ):
         super().__init__(node_name="walker_c1_pick_place")
+        self.record_enabled = bool(record)
+        self.record_root = record_root
+        self.save_on_failure = bool(save_on_failure)
+        self.camera_topic = camera_topic
+        self.record_hz = float(record_hz)
+        if self.record_hz <= 0.0:
+            raise ValueError("record_hz must be positive")
+        self._record_active = False
+        self._record_buffers = {key: [] for key in _RECORD_BUFFER_KEYS}
+        self._record_skipped_frames = 0
+        self._next_record_sim_step: Optional[float] = None
+        self._last_record_wall_stamp: Optional[float] = None
+        self._record_uses_sim_time = False
+        self._cv2 = None
+        if self.record_enabled:
+            import cv2
+
+            self._cv2 = cv2
+            self.create_subscription(Image, camera_topic, self._record_image_cb, qos_profile_sensor_data)
+            self.get_logger().info(f"ROS trajectory recording enabled on {camera_topic}")
+
+    # ── synchronized ROS trajectory recording ──
+    def start_recording(self) -> None:
+        if not self.record_enabled:
+            return
+        for values in self._record_buffers.values():
+            values.clear()
+        self._record_skipped_frames = 0
+        self._next_record_sim_step = None
+        self._last_record_wall_stamp = None
+        self._record_uses_sim_time = False
+        self._record_active = True
+        self.get_logger().info("recording synchronized state/action/RGB frames ...")
+
+    def _record_image_cb(self, msg: Image) -> None:
+        if not self._record_active:
+            return
+        sim_step = self.sim_step()
+        if sim_step is not None:
+            sim_step = float(sim_step)
+            if self._next_record_sim_step is None:
+                self._next_record_sim_step = sim_step
+            if sim_step < self._next_record_sim_step:
+                return
+            period_steps = SIM_PHYSICS_HZ / self.record_hz
+            while self._next_record_sim_step <= sim_step:
+                self._next_record_sim_step += period_steps
+        else:
+            stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+            if stamp <= 0.0:
+                stamp = self.get_clock().now().nanoseconds / 1e9
+            if (
+                self._last_record_wall_stamp is not None
+                and stamp - self._last_record_wall_stamp < 1.0 / self.record_hz
+            ):
+                return
+            self._last_record_wall_stamp = stamp
+        try:
+            channels = 4 if msg.encoding in ("rgba8", "bgra8") else 3
+            raw = np.frombuffer(msg.data, dtype=np.uint8)
+            rows = raw[: int(msg.height) * int(msg.step)].reshape(int(msg.height), int(msg.step))
+            image = rows[:, : int(msg.width) * channels].reshape(int(msg.height), int(msg.width), channels)
+            if msg.encoding == "rgb8":
+                rgb = image
+            elif msg.encoding == "bgr8":
+                rgb = image[..., ::-1]
+            elif msg.encoding == "rgba8":
+                rgb = image[..., :3]
+            elif msg.encoding == "bgra8":
+                rgb = image[..., 2::-1]
+            else:
+                raise ValueError(f"unsupported RGB encoding {msg.encoding!r}")
+            self._record_snapshot(rgb, msg)
+        except Exception as exc:
+            self._record_skipped_frames += 1
+            if self._record_skipped_frames <= 3:
+                self.get_logger().warn(f"skipping camera frame: {exc}")
+
+    def _record_snapshot(self, rgb: np.ndarray, msg: Image) -> None:
+        body_names = LEFT_ARM_JOINT_NAMES + RIGHT_ARM_JOINT_NAMES
+        state_ready = all(name in self.joint_pos for name in body_names)
+        state_ready = state_ready and all(name in self.left_hand_pos for name in LEFT_HAND_SDK_NAMES)
+        state_ready = state_ready and all(name in self.right_hand_pos for name in RIGHT_HAND_SDK_NAMES)
+        action_ready = all(name in self.commanded_body for name in body_names)
+        action_ready = action_ready and all(name in self.commanded_hand["left"] for name in LEFT_HAND_SDK_NAMES)
+        action_ready = action_ready and all(name in self.commanded_hand["right"] for name in RIGHT_HAND_SDK_NAMES)
+        if not state_ready or not action_ready:
+            self._record_skipped_frames += 1
+            return
+
+        assert self._cv2 is not None
+        image_bgr = self._cv2.cvtColor(np.ascontiguousarray(rgb), self._cv2.COLOR_RGB2BGR)
+        encoded_ok, encoded = self._cv2.imencode(".jpg", image_bgr)
+        if not encoded_ok:
+            self._record_skipped_frames += 1
+            return
+
+        sim_step = self.sim_step()
+        if sim_step is not None:
+            stamp = float(sim_step) / SIM_PHYSICS_HZ
+            self._record_uses_sim_time = True
+        else:
+            stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+            if stamp <= 0.0:
+                stamp = self.get_clock().now().nanoseconds / 1e9
+        snapshot = {
+            "arm_right": [self.joint_pos[name] for name in RIGHT_ARM_JOINT_NAMES],
+            "hand_right": [self.right_hand_pos[name] for name in RIGHT_HAND_SDK_NAMES],
+            "arm_left": [self.joint_pos[name] for name in LEFT_ARM_JOINT_NAMES],
+            "hand_left": [self.left_hand_pos[name] for name in LEFT_HAND_SDK_NAMES],
+            "action_arm_right": [self.commanded_body[name] for name in RIGHT_ARM_JOINT_NAMES],
+            "action_arm_left": [self.commanded_body[name] for name in LEFT_ARM_JOINT_NAMES],
+            "action_hand_right": [self.commanded_hand["right"][name] for name in RIGHT_HAND_SDK_NAMES],
+            "action_hand_left": [self.commanded_hand["left"][name] for name in LEFT_HAND_SDK_NAMES],
+            "img": encoded.reshape(-1).copy(),
+            "timestamp": stamp,
+        }
+        for key, value in snapshot.items():
+            self._record_buffers[key].append(value)
+
+    def finish_recording(self, success: bool) -> Optional[str]:
+        if not self.record_enabled:
+            return None
+        self._record_active = False
+        frame_count = len(self._record_buffers["timestamp"])
+        if not success and not self.save_on_failure:
+            self.get_logger().info(f"discarding {frame_count} recorded frames because the task failed")
+            return None
+        if frame_count == 0:
+            self.get_logger().error(
+                f"no synchronized frames recorded from {self.camera_topic}; trajectory not saved"
+            )
+            return None
+        lengths = {key: len(values) for key, values in self._record_buffers.items()}
+        if len(set(lengths.values())) != 1:
+            self.get_logger().error(f"record buffer length mismatch: {lengths}")
+            return None
+        return self._save_recording(success)
+
+    def _save_recording(self, success: bool) -> str:
+        import h5py
+
+        episode_dir = os.path.join(self.record_root, str(int(time.time() * 1000)))
+        os.makedirs(episode_dir, exist_ok=False)
+        filename = os.path.join(episode_dir, "trajectory.hdf5")
+        frame_count = len(self._record_buffers["timestamp"])
+        self.get_logger().info(f"saving {frame_count} ROS frames to {filename} ...")
+        with h5py.File(filename, "w") as output:
+            output.attrs["task"] = "walker_c1_online_ik_pick_place"
+            output.attrs["recording_source"] = "ros2"
+            output.attrs["success"] = bool(success)
+            output.attrs["camera_topic"] = self.camera_topic
+            output.attrs["record_hz"] = self.record_hz
+            output.attrs["timestamp_clock"] = "simulation" if self._record_uses_sim_time else "ros"
+            output.create_dataset("puppet/arm_right_position_align/data", data=np.asarray(self._record_buffers["arm_right"], dtype=np.float32))
+            output.create_dataset("puppet/end_effector_right_position_align/data", data=np.asarray(self._record_buffers["hand_right"], dtype=np.float32))
+            output.create_dataset("puppet/arm_left_position_align/data", data=np.asarray(self._record_buffers["arm_left"], dtype=np.float32))
+            output.create_dataset("puppet/end_effector_left_position_align/data", data=np.asarray(self._record_buffers["hand_left"], dtype=np.float32))
+            output.create_dataset("action/arm_right_position_align/data", data=np.asarray(self._record_buffers["action_arm_right"], dtype=np.float32))
+            output.create_dataset("action/arm_left_position_align/data", data=np.asarray(self._record_buffers["action_arm_left"], dtype=np.float32))
+            output.create_dataset("action/end_effector_right_position_align/data", data=np.asarray(self._record_buffers["action_hand_right"], dtype=np.float32))
+            output.create_dataset("action/end_effector_left_position_align/data", data=np.asarray(self._record_buffers["action_hand_left"], dtype=np.float32))
+            output.create_dataset("observations/timestamp", data=np.asarray(self._record_buffers["timestamp"], dtype=np.float64))
+            image_type = h5py.vlen_dtype(np.dtype("uint8"))
+            images = output.create_dataset(
+                "camera_observations/color_images/camera_head", (frame_count,), dtype=image_type
+            )
+            for index, encoded in enumerate(self._record_buffers["img"]):
+                images[index] = encoded
+        try:
+            os.chmod(episode_dir, 0o777)
+            os.chmod(filename, 0o666)
+        except PermissionError:
+            pass
+        self.get_logger().info(
+            f"trajectory saved: {filename} ({frame_count} frames, "
+            f"skipped={self._record_skipped_frames})"
+        )
+        return filename
 
     def _root_rotation_wb(self) -> np.ndarray:
         root = self.object_state.get("robot_root_pose_w")
@@ -407,29 +610,49 @@ def main() -> int:
     parser.add_argument("--use-existing-apple", action="store_true", help="Do not command the sim-only apple placement topic")
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max-grasp-attempts", type=int, default=2)
+    parser.add_argument("--record", dest="record", action="store_true", help="Record synchronized ROS state/action/RGB to HDF5")
+    parser.add_argument("--no-record", dest="record", action="store_false", help="Disable HDF5 recording")
+    parser.add_argument("--record-root", default=DEFAULT_RECORD_ROOT, help="Root directory for ROS-recorded trajectories")
+    parser.add_argument("--save-on-failure", action="store_true", help="Save recorded frames even when the task fails")
+    parser.add_argument("--camera-topic", default=DEFAULT_CAMERA_TOPIC)
+    parser.add_argument("--record-hz", type=float, default=DEFAULT_RECORD_HZ, help="Trajectory recording rate in Hz")
+    parser.set_defaults(record=False)
     args = parser.parse_args()
 
     rclpy.init()
-    node = WalkerC1PickPlace()
+    node = WalkerC1PickPlace(
+        record=args.record,
+        record_root=args.record_root,
+        save_on_failure=args.save_on_failure,
+        camera_topic=args.camera_topic,
+        record_hz=args.record_hz,
+    )
     ok_count = 0
+    saved_count = 0
     try:
         for ep in range(args.episodes):
             node.get_logger().info(f"=== episode {ep + 1}/{args.episodes} ===")
+            node.start_recording()
             ok = node.run_task(
                 randomize=args.randomize,
                 set_apple=not args.use_existing_apple,
                 max_grasp_attempts=args.max_grasp_attempts,
             )
             ok_count += int(ok)
+            saved_count += int(node.finish_recording(ok) is not None)
             node.wait_sim_steps(60, timeout=10.0)
     except KeyboardInterrupt:
-        pass
+        node.finish_recording(False)
     finally:
-        node.get_logger().info(f"done: {ok_count}/{args.episodes} success")
+        record_summary = f", {saved_count} trajectory file(s) saved" if args.record else ""
+        node.get_logger().info(f"done: {ok_count}/{args.episodes} success{record_summary}")
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-    return 0 if ok_count == args.episodes else 1
+    complete = ok_count == args.episodes
+    if args.record:
+        complete = complete and saved_count == args.episodes
+    return 0 if complete else 1
 
 
 if __name__ == "__main__":

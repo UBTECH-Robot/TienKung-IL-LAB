@@ -1,6 +1,8 @@
 #!/bin/bash
-# Run one online-IK pick-and-place episode against an already running C1 sim.
-# This script does not start, stop, or restart the simulator.
+# Run and record one online-IK pick-and-place episode against an existing C1 sim.
+# Successful trajectories are saved under /ubt_sim/dataset/walker_c1_ros.
+# This script does not start, stop, or restart the simulator. Pass --no-record
+# after the script name when only task execution is needed.
 
 set -eo pipefail
 
@@ -12,4 +14,5 @@ exec /usr/bin/python3 \
     /ubt_sim/teleoperation/control/walker_c1/pick_place_controller.py \
     --episodes 1 \
     --max-grasp-attempts 1 \
+    --record \
     "$@"

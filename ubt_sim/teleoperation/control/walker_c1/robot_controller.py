@@ -108,12 +108,19 @@ class WalkerC1RobotController(Node):
         self.object_pose_pub = self.create_publisher(Point, "/sim/cmd_set_object_pose", 1)
 
         self.joint_pos: dict[str, float] = {}
-        self.hand_pos: dict[str, float] = {}
+        self.left_hand_pos: dict[str, float] = {}
+        self.right_hand_pos: dict[str, float] = {}
+        # Backward-compatible alias used by older diagnostics.
+        self.hand_pos = self.right_hand_pos
+        self.commanded_body: dict[str, float] = {}
+        self.commanded_hand: dict[str, dict[str, float]] = {"left": {}, "right": {}}
         self.object_state: dict = {}
         self.create_subscription(RobotState, "/mc/sdk/robot_state", self._state_cb, 10)
         self.create_subscription(String, "/sim/object_state", self._object_cb, 10)
+        self.create_subscription(JointState, "/mc/left_hand/joint_states",
+                                 lambda m: self.left_hand_pos.update(zip(m.name, m.position)), 10)
         self.create_subscription(JointState, "/mc/right_hand/joint_states",
-                                 lambda m: self.hand_pos.update(zip(m.name, m.position)), 10)
+                                 lambda m: self.right_hand_pos.update(zip(m.name, m.position)), 10)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -236,6 +243,7 @@ class WalkerC1RobotController(Node):
 
     # ── command primitives ──
     def _publish_arm(self, arm: Sequence[float]) -> None:
+        self.commanded_body.update(zip(RIGHT_ARM_JOINT_NAMES, (float(v) for v in arm)))
         msg = RobotCommand()
         msg.header.stamp = self.get_clock().now().to_msg()
         for name, pos in zip(RIGHT_ARM_JOINT_NAMES, arm):
@@ -247,6 +255,7 @@ class WalkerC1RobotController(Node):
         self.body_pub.publish(msg)
 
     def publish_body_pose(self, pose: dict[str, float]) -> None:
+        self.commanded_body.update({name: float(pos) for name, pos in pose.items()})
         msg = RobotCommand()
         msg.header.stamp = self.get_clock().now().to_msg()
         for name, pos in pose.items():
@@ -338,6 +347,7 @@ class WalkerC1RobotController(Node):
         msg.names = list(names)
         msg.position = [float(v) for v in sdk_positions]
         msg.mode = [2] * len(names)
+        self.commanded_hand[side].update(zip(names, msg.position))
         for _ in range(repeats):
             pub.publish(msg)
             if wait_steps > 0:
