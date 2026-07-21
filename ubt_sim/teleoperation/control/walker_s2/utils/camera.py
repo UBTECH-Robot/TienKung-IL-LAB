@@ -69,7 +69,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 DEFAULT_TOPIC = "/sensor/camera/stereo/color/raw"
 DEFAULT_BUFFER_SIZE = 2
-DEFAULT_BRIDGE_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, "bridges", "walker_s2_bridge_config.yaml")
+DEFAULT_BRIDGE_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir, os.pardir, "bridges", "walker_s2_bridge_config.yaml")
 
 # shm_msgs/String 的 char[256] 数组长度
 _SHM_STRING_MAX_SIZE = 256
@@ -497,7 +497,7 @@ def cmd_print_info(cam, save=False, count=0, interval=1.0):
         print("\nInterrupted.")
 
 
-def main():
+def main(args=None):
     parser = argparse.ArgumentParser(description="Walker S2 相机图像订阅与解码工具")
     parser.add_argument(
         "--topic", type=str, default=None,
@@ -522,7 +522,7 @@ def main():
         help="打印/保存间隔秒数 (default: 1.0)",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(args)
 
     # 解析消息类型
     if args.msg_type == "sensor_msgs/Image":

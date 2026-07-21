@@ -16,14 +16,16 @@ robot:
 objects:
   table:
     usd_path: "scenes/part_sorting/Collected_table_v2/table_v2.usd"
-    pos: [0.75, 0.3, 0.5]
+    # 桌面离地从 1.0m 降到 0.85m：整体下移 0.15m（pos.z 0.5->0.35），桌面以上物体 z 同步 -0.15。
+    pos: [0.75, 0.3, 0.35]
     # Rotate table 90 degrees around Z to match the current scene layout.
     rot: [0.7071068, 0.0, 0.0, 0.7071068]
     scale: [1.9927, 1.8738, 1.1109]
 
   box:
     usd_path: "scenes/part_sorting/Box_blank/box_60_40_23_cut_0.usd"
-    pos: [1.2, 0.3, 1.05]
+    # box 调换到机器人正前方（原零件区中心）；4 个零件已整体平移到原 box 位置。
+    pos: [0.75, 0.28, 0.90]
     rot: [1.0, 0.0, 0.0, 0.0]
     scale: [0.38, 0.75, 0.36]
     lock: true
@@ -31,22 +33,22 @@ objects:
   parts:
     - name: "part_a_ori"
       usd_path: "scenes/part_sorting/Collected_Task1_PartA_ori_color/Task1_PartA.usd"
-      pos: [0.65, 0.18, 1.08]
+      pos: [1.0, 0.20, 0.93]
       rot: [1.0, 0.0, 0.0, 0.0]
       mass: 0.05
     - name: "part_a_red"
       usd_path: "scenes/part_sorting/Collected_Task1_PartA_red/Task1_PartA.usd"
-      pos: [0.85, 0.18, 1.08]
+      pos: [1.15, 0.20, 0.93]
       rot: [1.0, 0.0, 0.0, 0.0]
       mass: 0.05
     - name: "part_b_blue"
       usd_path: "scenes/part_sorting/Collected_Part_B_blue/Part_B.usd"
-      pos: [0.65, 0.38, 1.08]
+      pos: [1.0, 0.35, 0.93]
       rot: [1.0, 0.0, 0.0, 0.0]
       mass: 0.05
     - name: "part_b_ori"
       usd_path: "scenes/part_sorting/Collected_Part_B_ori_color/Part_B.usd"
-      pos: [0.85, 0.38, 1.08]
+      pos: [1.15, 0.35, 0.93]
       rot: [1.0, 0.0, 0.0, 0.0]
       mass: 0.05
 
@@ -62,11 +64,11 @@ objects:
       yaw: [-0.785398, 0.785398]
 
 cameras:
-  head_stereo_left:
+  stereo_left:
     prim_path: "{ENV_REGEX_NS}/Robot/head_pitch_link/head_stereo_left/head_stereo_left_Camera_01"
     data_types: ["rgb"]
     resolution: [640, 480]
-  head_stereo_right:
+  stereo_right:
     prim_path: "{ENV_REGEX_NS}/Robot/head_pitch_link/head_stereo_right/head_stereo_right_Camera_01"
     data_types: ["rgb"]
     resolution: [640, 480]

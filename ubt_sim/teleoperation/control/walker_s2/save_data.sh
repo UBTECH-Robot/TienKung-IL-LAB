@@ -22,6 +22,6 @@ do
     echo "=================================="
     echo "Starting iteration $i / 400"
     echo "=================================="
-    python3 "$SCRIPT_DIR/pick_part_save_data.py" --all-parts --reset-scene --robot-init --no-unlock-waist
+    python3 "$SCRIPT_DIR/pick_part.py" --save --all-parts --reset-scene --robot-init --no-unlock-waist
     sleep 2
 done

@@ -1,7 +1,7 @@
 {
     "dataset": {
-        "repo_id": "Walker_S2_sim",
-        "root": "/ubt_IL/dataset/Walker_S2_sim",
+        "repo_id": "Walker_S2_sim_10d_2RGB",
+        "root": "/ubt_IL/dataset/Walker_S2_sim_10d_2RGB",
         "episodes": null,
         "image_transforms": {
             "enable": false,
@@ -85,18 +85,26 @@
         "type": "act",
         "n_obs_steps": 1,
         "input_features": {
-            "observation.images.camera_head": {
+            "observation.images.camera_head_right": {
                 "type": "VISUAL",
                 "shape": [
                     3,
-                    360,
+                    480,
+                    640
+                ]
+            },
+            "observation.images.camera_wrist_right": {
+                "type": "VISUAL",
+                "shape": [
+                    3,
+                    480,
                     640
                 ]
             },
             "observation.state": {
                 "type": "STATE",
                 "shape": [
-                    19
+                    10
                 ]
             }
         },
@@ -104,7 +112,7 @@
             "action": {
                 "type": "ACTION",
                 "shape": [
-                    19
+                    10
                 ]
             }
         },
@@ -112,7 +120,7 @@
         "use_amp": false,
         "use_peft": false,
         "push_to_hub": false,
-        "repo_id": "local/Walker_S2_sim_act",
+        "repo_id": "local/Walker_S2_sim_10d_2RGB_act",
         "private": null,
         "tags": null,
         "license": null,
@@ -140,13 +148,13 @@
         "temporal_ensemble_coeff": null,
         "dropout": 0.1,
         "kl_weight": 10.0,
-        "optimizer_lr": 1e-05,
+        "optimizer_lr": 1e-04,
         "optimizer_weight_decay": 0.0001,
         "optimizer_lr_backbone": 1e-05
     },
     "reward_model": null,
-    "output_dir": "/ubt_IL/model/Walker_S2_sim_act",
-    "job_name": "Walker_S2_sim_act",
+    "output_dir": "/ubt_IL/model/Walker_S2_sim_10d_2RGB_act",
+    "job_name": "Walker_S2_sim_10d_2RGB_act",
     "resume": false,
     "seed": 1000,
     "cudnn_deterministic": false,
@@ -163,7 +171,7 @@
     "use_policy_training_preset": true,
     "optimizer": {
         "type": "adamw",
-        "lr": 1e-05,
+        "lr": 1e-04,
         "weight_decay": 0.0001,
         "grad_clip_norm": 10.0,
         "betas": [

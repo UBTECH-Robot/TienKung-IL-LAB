@@ -135,8 +135,9 @@ class WalkerRobot(Robot):
     @property
     def observation_features(self) -> dict[str, type | tuple]:
         motors_ft = {name: float for name in self._all_joints}
+        c2i = self.config._camera_to_image_key
         camera_ft = {
-            cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3)
+            c2i.get(cam, cam): (self.config.cameras[cam].height, self.config.cameras[cam].width, 3)
             for cam in self.cameras
         }
         return {**motors_ft, **camera_ft}
@@ -265,9 +266,12 @@ class WalkerRobot(Robot):
 
         obs: RobotObservation = {name: values_by_feature[name] for name in self._all_joints}
 
-        # Capture images from cameras
+        # Capture images from cameras, applying camera_to_image_key mapping
+        # so that observation.images.<key> matches model's input_features.
+        c2i = self.config._camera_to_image_key
         for cam_key, cam in self.cameras.items():
-            obs[cam_key] = cam.read_latest()
+            obs_key = c2i.get(cam_key, cam_key)
+            obs[obs_key] = cam.read_latest()
 
         return obs
 

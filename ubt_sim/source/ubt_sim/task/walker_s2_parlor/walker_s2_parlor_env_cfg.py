@@ -73,8 +73,8 @@ class WalkerS2ParlorSceneCfg(InteractiveSceneCfg):
     )
 
     # Multi-camera setup: 4 individual camera views
-    head_stereo_left = _make_tiled_camera("head_stereo_left")
-    head_stereo_right = _make_tiled_camera("head_stereo_right")
+    stereo_left = _make_tiled_camera("stereo_left")
+    stereo_right = _make_tiled_camera("stereo_right")
     wrist_left = _make_tiled_camera("wrist_left")
     wrist_right = _make_tiled_camera("wrist_right")
 

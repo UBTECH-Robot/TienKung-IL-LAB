@@ -148,7 +148,7 @@
         "temporal_ensemble_coeff": null,
         "dropout": 0.1,
         "kl_weight": 10.0,
-        "optimizer_lr": 1e-05,
+        "optimizer_lr": 1e-04,
         "optimizer_weight_decay": 0.0001,
         "optimizer_lr_backbone": 1e-05
     },
@@ -171,7 +171,7 @@
     "use_policy_training_preset": true,
     "optimizer": {
         "type": "adamw",
-        "lr": 1e-05,
+        "lr": 1e-04,
         "weight_decay": 0.0001,
         "grad_clip_norm": 10.0,
         "betas": [

@@ -9,8 +9,8 @@ zmq:
 # Multi-camera topic mapping: camera_name → ROS2 topic.
 # Passed to C++ bridge via --camera-topics JSON.
 camera_topics:
-  head_stereo_left: "/sensor/camera/head_stereo_left/color/raw"
-  head_stereo_right: "/sensor/camera/head_stereo_right/color/raw"
+  stereo_left: "/sensor/camera/stereo_left/image/raw"
+  stereo_right: "/sensor/camera/stereo_right/image/raw"
   wrist_left: "/sensor/camera/wrist_left/color/raw"
   wrist_right: "/sensor/camera/wrist_right/color/raw"
 

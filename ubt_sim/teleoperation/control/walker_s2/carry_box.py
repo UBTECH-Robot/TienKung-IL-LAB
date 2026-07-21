@@ -50,13 +50,10 @@ import numpy as np
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 
-try:
-    from .walker_s2_controller import WalkerS2Controller
-except ImportError:
-    _dir = os.path.dirname(os.path.abspath(__file__))
-    if _dir not in sys.path:
-        sys.path.insert(0, _dir)
-    from walker_s2_controller import WalkerS2Controller
+_dir = os.path.dirname(os.path.abspath(__file__))
+if _dir not in sys.path:
+    sys.path.insert(0, _dir)
+from utils.controller import WalkerS2Controller
 
 
 # ============================================================================

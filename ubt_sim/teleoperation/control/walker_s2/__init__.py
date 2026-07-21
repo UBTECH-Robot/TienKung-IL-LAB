@@ -1,7 +1,7 @@
 """Walker S2 teleoperation control helpers."""
 
-from .walker_s2_controller import RobotController, WalkerS2Controller
-from .walker_s2_constants import (
+from .utils.controller import RobotController, WalkerS2Controller
+from .utils.constants import (
     BODY_JOINT_LIMITS,
     BODY_JOINT_NAMES,
     DEFAULT_COMMAND_TOPIC,

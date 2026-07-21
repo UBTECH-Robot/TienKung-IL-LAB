@@ -307,8 +307,8 @@ private:
                         cam_name.c_str());
         }
 
-        // head_stereo_left also publishes to legacy stereo rgb_topic for backward compat
-        if (cam_name == "head_stereo_left" && pub_rgb_2m_) {
+        // stereo_left also publishes to legacy stereo rgb_topic for backward compat
+        if (cam_name == "stereo_left" && pub_rgb_2m_) {
             shm_msgs::msg::Image2m stereo_msg;
             if (fill_image2m(stereo_msg, current_time, cam_name, w, h, "rgb8",
                              static_cast<uint32_t>(w * 3), rgb_msg.data(), rgb_msg.size())) {

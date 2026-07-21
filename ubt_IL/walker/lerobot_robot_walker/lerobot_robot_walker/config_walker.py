@@ -13,14 +13,20 @@ from .camera.config_walker_camera import WalkerCameraConfig
 from .constants import (
     BODY_JOINT_LIMITS,
     BODY_JOINT_NAMES,
+    DEFAULT_CAMERA_FPS,
+    DEFAULT_CAMERA_HEIGHT,
+    DEFAULT_CAMERA_MSG_TYPE,
+    DEFAULT_CAMERA_TIMEOUT_MS,
+    DEFAULT_CAMERA_WARMUP_S,
+    DEFAULT_CAMERA_WIDTH,
     DEFAULT_LOCK_JOINTS,
     HAND_OPEN_POSITION,
     HEAD_JOINTS,
     HOME_POSITION,
-    JOINT_INDEX_ENUMS,
     LEFT_ARM_JOINTS,
     READY_POSE,
     RIGHT_ARM_JOINTS,
+    ROBOT_MODELS,
     TOPIC_BODY_CMD,
     TOPIC_BODY_STATE,
     TOPIC_CAMERA_STEREO,
@@ -172,38 +178,46 @@ class WalkerRobotConfig(RobotConfig):
     # Keys already carry .pos suffix; values are floats.
     _inactive_fill: dict[str, float] = field(default_factory=dict, init=False, repr=False)
 
+    # Populated by __post_init__：相机源 key → 模型 observation.images key 映射。
+    # 默认恒等映射（{k: k}），仅当模型使用不同 key 名时才需要非恒等映射。
+    _camera_to_image_key: dict[str, str] = field(default_factory=dict, init=False, repr=False)
+
     def __post_init__(self):
         if self.robot_config_path:
             self._load_robot_config(Path(self.robot_config_path))
             # 即使从 JSON 加载了完整硬件配置，仍允许 joint_config 覆盖
             # all_joints + 生成 inactive_fill，以支持子集策略部署。
-            if self.joint_config in JOINT_INDEX_ENUMS:
-                enum_cls = JOINT_INDEX_ENUMS[self.joint_config]
-                self.all_joints = joint_names_with_pos(enum_cls)
-                self._inactive_fill = inactive_fill_for(self.joint_config, enum_cls)
+            if self.joint_config in ROBOT_MODELS:
+                joint_order = ROBOT_MODELS[self.joint_config]["joint_order"]
+                self.all_joints = joint_names_with_pos(joint_order)
+                self._inactive_fill = inactive_fill_for(self.joint_config, joint_order)
         else:
             self._normalize_legacy_groups()
-            # 当无 robot_config_path 时，从 DOF 枚举完整派生所有字段。
-            if self.joint_config in JOINT_INDEX_ENUMS:
-                enum_cls = JOINT_INDEX_ENUMS[self.joint_config]
-                self.all_joints = joint_names_with_pos(enum_cls)
-                self._inactive_fill = inactive_fill_for(self.joint_config, enum_cls)
-                self._rebuild_groups_from_enum(enum_cls)
+            # 当无 robot_config_path 时，从 ROBOT_MODELS 注册表完整派生所有字段
+            # （关节 DOF + 相机配置）。
+            if self.joint_config in ROBOT_MODELS:
+                spec = ROBOT_MODELS[self.joint_config]
+                joint_order = spec["joint_order"]
+                self.all_joints = joint_names_with_pos(joint_order)
+                self._inactive_fill = inactive_fill_for(self.joint_config, joint_order)
+                self._rebuild_groups_from_joint_order(joint_order)
+                # 从 spec 构建相机配置
+                self._build_cameras_from_spec(spec)
             else:
                 raise ValueError(
-                    f"joint_config {self.joint_config!r} not registered. "
-                    f"Available: {list(JOINT_INDEX_ENUMS)}. "
-                    f"新增 DOF 请在 walker constants.py 定义 IntEnum 并注册到 JOINT_INDEX_ENUMS。"
+                    f"joint_config {self.joint_config!r} not registered in ROBOT_MODELS. "
+                    f"Available: {list(ROBOT_MODELS)}. "
+                    f"新增型号请在 walker constants.py 的 ROBOT_MODELS 注册表添加。"
                 )
         self._validate()
 
-    def _rebuild_groups_from_enum(self, enum_cls: type) -> None:
-        """从 DOF 枚举重建 6 组关节 feature 列表（真实关节名 + .pos 后缀）。
+    def _rebuild_groups_from_joint_order(self, joint_order: list[str]) -> None:
+        """从 joint_order 列表重建 6 组关节 feature 列表（真实关节名 + .pos 后缀）。
 
-        同时推导 end_effector_type：若枚举含 V4 手关节，则为 v4_hand_7dof；
-        若含 PGC 夹爪执行器名（left_grip/right_grip），则为 pgc_gripper_1dof。
+        同时推导 end_effector_type：若包含 V4 手关节，则为 v4_hand_7dof；
+        若包含 PGC 夹爪执行器名（left_grip/right_grip），则为 pgc_gripper_1dof。
         """
-        member_names = {m.name for m in enum_cls}
+        member_names = set(joint_order)
 
         # 车身分组（按固定硬件组归类）
         self.left_arm_joints = [_feature_name(n)
@@ -247,6 +261,11 @@ class WalkerRobotConfig(RobotConfig):
             "left_hand": list(self.left_hand_joint_names),
             "right_hand": list(self.right_hand_joint_names),
         }
+
+        # 解锁 active joint_order 中的关节，仅锁住非活跃关节。
+        # lock_joints 中不在 member_names（即不在策略输出中的）的条目保留，
+        # 用于禁止 bridge 对非策略控制关节发送命令。
+        self.lock_joints = [j for j in self.lock_joints if j not in member_names]
 
         # 从 READY_POSE 重建 home_position（仅包含 body_joint_names 中的关节）
         self.home_position = [READY_POSE[n] for n in self.body_joint_names]
@@ -395,6 +414,8 @@ class WalkerRobotConfig(RobotConfig):
         )
 
         self.cameras = self._load_cameras(cfg.get("cameras", {}))
+        # JSON 配置不含 camera_to_image_key，默认恒等映射
+        self._camera_to_image_key = {k: k for k in self.cameras}
 
     @staticmethod
     def _require_name_list(data: dict, key: str, *, section: str) -> list[str]:
@@ -405,6 +426,36 @@ class WalkerRobotConfig(RobotConfig):
             raise ValueError(f"{section}.{key} entries must be non-empty strings")
         _validate_unique(value, label=f"{section}.{key}")
         return list(value)
+
+    def _build_cameras_from_spec(self, spec: dict) -> None:
+        """从 ROBOT_MODELS spec 构建 self.cameras 和 self.camera_topics。
+
+        在 __post_init__ Path B（无 robot_config_path）中调用，
+        使 joint_config 即可独立驱动完整机器人配置。
+
+        spec["camera_topics"] 是 {源 key: ROS2 topic}。
+        spec["camera_to_image_key"] 是 {源 key: 模型 obs key}。
+        """
+        warmup = spec.get("camera_warmup_s", DEFAULT_CAMERA_WARMUP_S)
+        topics: dict[str, str] = spec["camera_topics"]
+        self.camera_topics = {
+            k: {"topic": v, "msg_type": DEFAULT_CAMERA_MSG_TYPE}
+            for k, v in topics.items()
+        }
+        self.cameras = {
+            k: WalkerCameraConfig(
+                width=DEFAULT_CAMERA_WIDTH,
+                height=DEFAULT_CAMERA_HEIGHT,
+                fps=DEFAULT_CAMERA_FPS,
+                warmup_s=warmup,
+                timeout_ms=DEFAULT_CAMERA_TIMEOUT_MS,
+                camera_name=k,
+                server_address=self.zmq_host,
+                port=self.zmq_image_port,
+            )
+            for k in topics
+        }
+        self._camera_to_image_key = spec["camera_to_image_key"]
 
     def _load_cameras(self, cameras_cfg: dict[str, Any]) -> dict[str, CameraConfig]:
         cameras: dict[str, CameraConfig] = {}
@@ -487,10 +538,14 @@ class WalkerRobotConfig(RobotConfig):
         if len(self.right_hand_open_position or []) != len(self.right_hand_joints):
             raise ValueError("right hand/gripper open position count must match right hand group")
 
+        # 过滤掉不在活跃 body 集合中的 lock_joints（非活跃关节无需 lock，bridge 本来就不发命令）。
         body_set = set(self.body_joint_names)
-        for j in self.lock_joints:
-            if j not in body_set:
-                raise ValueError(f"lock_joint '{j}' is not in body_joint_names")
+        stale = [j for j in self.lock_joints if j not in body_set]
+        if stale:
+            self.lock_joints = [j for j in self.lock_joints if j in body_set]
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.info("Dropped lock_joints not in active body set: %s", stale)
 
         if self.end_effector_type == "v4_hand_7dof":
             # 允许 0 关节（仅 body 的 DOF 枚举），否则每侧必须恰好 7 关节

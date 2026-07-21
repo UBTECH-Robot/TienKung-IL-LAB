@@ -12,12 +12,37 @@ DEFAULT_LEFT_HAND_COMMAND_TOPIC = "/mc/left_hand/command"
 DEFAULT_RIGHT_HAND_COMMAND_TOPIC = "/mc/right_hand/command"
 DEFAULT_LEFT_HAND_STATE_TOPIC = "/mc/left_hand/joint_states"
 DEFAULT_RIGHT_HAND_STATE_TOPIC = "/mc/right_hand/joint_states"
+DEFAULT_LEFT_GRIP_COMMAND_TOPIC = "/ecat/left_grip/cmd"
+DEFAULT_RIGHT_GRIP_COMMAND_TOPIC = "/ecat/right_grip/cmd"
+DEFAULT_LEFT_GRIP_STATE_TOPIC = "/ecat/left_grip/state"
+DEFAULT_RIGHT_GRIP_STATE_TOPIC = "/ecat/right_grip/state"
 DEFAULT_RESET_TOPIC = "/sim/cmd_reset"
+DEFAULT_FINGER_LINK_STATES_TOPIC = "/sim/finger_link_states"
 DEFAULT_IMAGE_RGB_TOPIC = "/sensor/camera/stereo/color/raw"
 DEFAULT_IMAGE_DEPTH_TOPIC = "/sensor/camera/stereo/depth/raw"
+
+# 四路独立相机 topic（commit 961d319 新增，shm_msgs/Image2m，640x480 RGB）
+DEFAULT_IMAGE_STEREO_LEFT_TOPIC = "/sensor/camera/stereo_left/image/raw"
+DEFAULT_IMAGE_STEREO_RIGHT_TOPIC = "/sensor/camera/stereo_right/image/raw"
+DEFAULT_IMAGE_WRIST_LEFT_TOPIC = "/sensor/camera/wrist_left/color/raw"
+DEFAULT_IMAGE_WRIST_RIGHT_TOPIC = "/sensor/camera/wrist_right/color/raw"
+
+CAMERA_TOPICS = {
+    "stereo_left": DEFAULT_IMAGE_STEREO_LEFT_TOPIC,
+    "stereo_right": DEFAULT_IMAGE_STEREO_RIGHT_TOPIC,
+    "wrist_left": DEFAULT_IMAGE_WRIST_LEFT_TOPIC,
+    "wrist_right": DEFAULT_IMAGE_WRIST_RIGHT_TOPIC,
+}
+
 DEFAULT_CONTROL_HZ = 200
 DEFAULT_MAX_JOINT_SPEED = 6.28  # rad/s，安全速度上限
 DEFAULT_LOCK_JOINTS = ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"]
+
+# 夹爪参数（GRIP_*，原 walker_s2_controller 独有，合并为单一来源）
+GRIP_OPENING_MIN_M = 0.0
+GRIP_OPENING_MAX_M = 0.05
+GRIP_DEFAULT_VEL = 0.05
+GRIP_DEFAULT_FORCE = 20.0
 
 # ============================================================================
 # 关节定义（原 utars_clamp_and_place_large_bio_box_in_test_field.yaml 中的
@@ -158,19 +183,20 @@ RIGHT_ARM_JOINTS = [
 ]
 
 # ============================================================================
-# 预备姿态（上电归零后 RobotState 快照，双臂自然下垂的站立位姿）
+# 预备姿态（双臂抬起预备抓取的站立位姿）
+# 注：以下为 walker_s2_controller.move_to_ready_pose 实际执行的活值。
 # ============================================================================
 
 READY_POSE = {
     "L_elbow_roll_joint":       -1.5600,
-    "L_elbow_yaw_joint":        1.2800, #2.8800,
+    "L_elbow_yaw_joint":        2.8790,
     "L_shoulder_pitch_joint":   0.0000,
     "L_shoulder_roll_joint":    -0.1500,
     "L_shoulder_yaw_joint":     -1.5600,
     "L_wrist_pitch_joint":      0.0000,
     "L_wrist_roll_joint":       0.0000,
     "R_elbow_roll_joint":       -1.5600,
-    "R_elbow_yaw_joint":        -1.2800, #-2.8800,
+    "R_elbow_yaw_joint":        -2.8790,
     "R_shoulder_pitch_joint":   0.0000,
     "R_shoulder_roll_joint":    -0.1500,
     "R_shoulder_yaw_joint":     1.5600,
@@ -182,15 +208,19 @@ READY_POSE = {
 }
 
 READY_STAGE_1_PITCH_ROLL_POSE = {
-    "L_shoulder_pitch_joint":   -1.0000,
-    "R_shoulder_pitch_joint":   1.0000,
-    "L_elbow_roll_joint":       -1.5600,
-    "R_elbow_roll_joint":       -1.5600,
+    "L_shoulder_yaw_joint": -1.5600,
+    "R_shoulder_yaw_joint": 1.5600,
+    "L_elbow_yaw_joint": 1.5000,
+    "R_elbow_yaw_joint": -1.5000,
 }
 
 READY_STAGE_1_ELBOW_YAW_POSE = {
-    "L_elbow_yaw_joint":        2.0000,
-    "R_elbow_yaw_joint":        -2.0000,
+    "L_shoulder_pitch_joint":   -2.000,
+    "R_shoulder_pitch_joint":   2.000,
+    "L_wrist_pitch_joint": 0.8000,
+    "R_wrist_pitch_joint": -0.8000,
+    "L_elbow_roll_joint":        -2.5000,
+    "R_elbow_roll_joint":        -2.5000,
 }
 
 READY_STAGE_2_POSE = {

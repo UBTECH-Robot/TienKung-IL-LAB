@@ -1,57 +1,180 @@
 #!/usr/bin/env python3
-"""Preview Walker S2 camera frames from the Bridge2 ZMQ image stream."""
+"""Preview Walker S2 camera frames from ROS2 image topics.
+
+Two modes:
+  --topic    Single camera preview (legacy mode)
+  --robot    Multi-camera preview from robot config (reads camera_topics)
+
+Usage:
+  python3 preview_camera.py --robot walker_s2_31d
+  python3 preview_camera.py --robot walker_s2_10d
+  python3 preview_camera.py --topic /sensor/camera/stereo/color/raw
+  python3 preview_camera.py --topic /sensor/camera/stereo/color/raw --width 640 --height 480
+  python3 preview_camera.py --robot walker_s2_10d --once --save-frame /tmp/tiled.jpg
+"""
 
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import logging
+import threading
 import time
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger("preview_walker_camera")
 
 
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="127.0.0.1", help="Bridge2 ZMQ image host")
-    parser.add_argument("--port", type=int, default=5563, help="Bridge2 ZMQ image port")
-    parser.add_argument("--camera", default="camera_head", help="Camera key in the ZMQ images map")
-    parser.add_argument("--width", type=int, default=0, help="Preview resize width; 0 keeps native size")
-    parser.add_argument("--height", type=int, default=0, help="Preview resize height; 0 keeps native size")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
+        "--robot", default=None,
+        choices=["walker_s2_31d", "walker_s2_19d", "walker_s2_10d"],
+        help="Robot model name — preview all cameras from its camera_topics",
+    )
+    source.add_argument(
+        "--topic", default=None,
+        help="Single ROS2 camera topic (default if --robot not given: /sensor/camera/stereo/color/raw)",
+    )
+    parser.add_argument(
+        "--msg-type", default="Image2m",
+        choices=["Image8k", "Image512k", "Image1m", "Image2m", "Image4m", "Image8m",
+                 "sensor_msgs/Image"],
+        help="Image message type (default: Image2m / shm_msgs.msg.Image2m)",
+    )
+    parser.add_argument("--width", type=int, default=0,
+                        help="Per-camera cell width; 0 keeps native size")
+    parser.add_argument("--height", type=int, default=0,
+                        help="Per-camera cell height; 0 keeps native size")
     parser.add_argument("--window", default="Walker camera", help="OpenCV preview window title")
-    parser.add_argument("--timeout-ms", type=int, default=5000, help="Warn when no frames arrive for this long")
-    parser.add_argument("--print-fps", action="store_true", help="Periodically print receive/display FPS")
-    parser.add_argument("--save-frame", default=None, help="Optional path to save the latest received frame")
-    parser.add_argument("--once", action="store_true", help="Receive one frame, optionally save it, then exit")
+    parser.add_argument("--timeout", type=float, default=10.0,
+                        help="Wait timeout for first frame in seconds")
+    parser.add_argument("--print-fps", action="store_true", help="Periodically print display FPS")
+    parser.add_argument("--save-frame", default=None,
+                        help="Optional path to save the latest frame (tiled in multi-camera mode)")
+    parser.add_argument("--once", action="store_true",
+                        help="Receive one frame from each camera, optionally save, then exit")
     return parser.parse_args()
 
 
-def _decode_frame(message: str, camera_name: str, cv2, np) -> tuple[object | None, list[str]]:
-    data = json.loads(message)
-    images = data.get("images", {})
-    if not isinstance(images, dict):
-        return None, []
+# ---------------------------------------------------------------------------
+# Camera registry (populated by _setup_cameras)
+# ---------------------------------------------------------------------------
 
-    available = sorted(str(name) for name in images)
-    jpeg_b64 = images.get(camera_name)
-    if jpeg_b64 is None:
-        return None, available
+class CameraEntry:
+    """A named camera node + its metadata."""
+    __slots__ = ("name", "node", "topic")
 
-    jpeg_bytes = base64.b64decode(jpeg_b64)
-    np_img = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-    frame = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
-    return frame, available
+    def __init__(self, name: str, node, topic: str):
+        self.name = name
+        self.node = node
+        self.topic = topic
 
 
-def _resize_for_display(frame: object, width: int, height: int, cv2) -> object:
-    if width > 0 and height > 0:
-        return cv2.resize(frame, (width, height))
-    return frame
+# ---------------------------------------------------------------------------
+# Camera setup
+# ---------------------------------------------------------------------------
+
+def _resolve_msg_type(name: str):
+    """Resolve a --msg-type string to a ROS2 message class."""
+    if name == "sensor_msgs/Image":
+        from sensor_msgs.msg import Image
+        return Image
+    import shm_msgs.msg
+    return getattr(shm_msgs.msg, name)
 
 
-def _save_frame(path: str, frame: object, cv2) -> None:
+def _resolve_camera_topics(args: argparse.Namespace) -> dict[str, str]:
+    """Return {camera_name: ros2_topic} from --robot or --topic."""
+    if args.robot:
+        import importlib.util
+        _constants_path = "/ubt_IL/walker/lerobot_robot_walker/lerobot_robot_walker/constants.py"
+        spec = importlib.util.spec_from_file_location("_walker_constants", _constants_path)
+        _mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_mod)
+        cfg = _mod.ROBOT_MODELS[args.robot]
+        return dict(cfg.camera_topics)
+
+    # Single-topic mode
+    topic = args.topic or "/sensor/camera/stereo/color/raw"
+    return {"camera": topic}
+
+
+def _setup_cameras(topics: dict[str, str], msg_type) -> list[CameraEntry]:
+    """Create one Camera node per topic.  Must be called after rclpy.init()."""
+    import sys
+    _walker_sdk_path = "/ubt_IL/walker/walker_sdk_ros2/robot_control"
+    if _walker_sdk_path not in sys.path:
+        sys.path.insert(0, _walker_sdk_path)
+    from camera import Camera
+
+    entries: list[CameraEntry] = []
+    for name, topic in topics.items():
+        node = Camera(topic=topic, msg_type=msg_type, node_name=f"cam_{name}")
+        entries.append(CameraEntry(name=name, node=node, topic=topic))
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# Tiling
+# ---------------------------------------------------------------------------
+
+def _tile_grid(n: int) -> tuple[int, int]:
+    """Return (cols, rows) for n cameras — prefer 3-column layout for 5 cams."""
+    if n <= 2:
+        return (n, 1)
+    if n == 4:
+        return (2, 2)
+    # 3 or 5 → single row of 3, or 3×2
+    return (3, (n + 2) // 3)
+
+
+def _build_tile(
+    frames: list[tuple[str, np.ndarray | None]],
+    cell_w: int,
+    cell_h: int,
+    cv2,
+) -> np.ndarray:
+    """Tile frames into a single BGR canvas.  Missing frames → black placeholder."""
+    n = len(frames)
+    cols, rows = _tile_grid(n)
+    canvas = np.zeros((rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
+
+    for idx, (name, frame) in enumerate(frames):
+        r, c = divmod(idx, cols)
+        y0, x0 = r * cell_h, c * cell_w
+
+        if frame is not None:
+            h, w = frame.shape[:2]
+            # Scale to fit cell, preserving aspect ratio
+            scale = min(cell_w / w, cell_h / h)
+            fh, fw = int(h * scale), int(w * scale)
+            if fh != h or fw != w:
+                display = cv2.resize(frame, (fw, fh))
+            else:
+                display = frame
+            # Center in cell
+            dy, dx = (cell_h - fh) // 2, (cell_w - fw) // 2
+            canvas[y0 + dy:y0 + dy + fh, x0 + dx:x0 + dx + fw] = display
+
+        # Label
+        cv2.putText(canvas, name, (x0 + 5, y0 + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    return canvas
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _save_frame(path: str, frame: np.ndarray, cv2) -> None:
     output = Path(path)
     ok = cv2.imwrite(str(output), frame)
     if not ok:
@@ -59,92 +182,131 @@ def _save_frame(path: str, frame: object, cv2) -> None:
     logger.info("Saved frame to %s", output)
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main() -> int:
     args = _parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
-
-    if (args.width > 0) != (args.height > 0):
-        logger.error("--width and --height must be set together, or both left as 0")
-        return 2
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
     try:
         import cv2
-        import numpy as np
-        import zmq
     except ImportError as exc:
-        logger.error("Missing dependency: %s. Run this script in the LeRobot venv/container.", exc)
+        logger.error("Missing dependency: %s. Install opencv-python-headless.", exc)
         return 1
 
-    context = zmq.Context()
-    socket = context.socket(zmq.SUB)
-    socket.setsockopt(zmq.RCVHWM, 1)
-    socket.setsockopt_string(zmq.SUBSCRIBE, "")
-    socket.connect(f"tcp://{args.host}:{args.port}")
+    # ── Resolve topics & message type ────────────────────────────────────
+    camera_topics = _resolve_camera_topics(args)
+    MsgType = _resolve_msg_type(args.msg_type)
 
-    poller = zmq.Poller()
-    poller.register(socket, zmq.POLLIN)
+    # ── ROS2 init ────────────────────────────────────────────────────────
+    import rclpy
+    from rclpy.executors import MultiThreadedExecutor
 
-    logger.info("Listening for Walker camera '%s' at tcp://%s:%d", args.camera, args.host, args.port)
-    logger.info("Press 'q' or Esc in the preview window to exit.")
+    rclpy.init()
+    entries = _setup_cameras(camera_topics, MsgType)
 
-    last_warning = 0.0
+    executor = MultiThreadedExecutor(num_threads=max(2, len(entries) + 1))
+    for e in entries:
+        executor.add_node(e.node)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
+
+    # ── Wait for all cameras ─────────────────────────────────────────────
+    logger.info("Waiting for %d camera(s) (timeout=%.1fs) ...", len(entries), args.timeout)
+    all_ready = True
+    for e in entries:
+        if not e.node.wait_for_image(timeout=args.timeout):
+            logger.error("Timeout: no image on '%s' (%s)", e.topic, e.name)
+            all_ready = False
+    if not all_ready:
+        logger.error("Not all cameras are publishing. Check topics and RMW_IMPLEMENTATION.")
+
+    # Print info for ready cameras
+    for e in entries:
+        if e.node.is_available():
+            info = e.node.get_image_info()
+            if info:
+                logger.info("  %-20s → %dx%d %s", e.name,
+                            info["width"], info["height"], info["encoding"])
+
+    if not args.once and any(e.node.is_available() for e in entries):
+        cv2.namedWindow(args.window, cv2.WINDOW_NORMAL)
+        logger.info("Press 'q' or Esc in the preview window to exit.")
+
+    # ── Determine cell size ──────────────────────────────────────────────
+    cell_w = args.width
+    cell_h = args.height
+    if cell_w == 0 or cell_h == 0:
+        # Use first available camera's native resolution
+        for e in entries:
+            info = e.node.get_image_info()
+            if info:
+                cell_w = cell_w or info["width"]
+                cell_h = cell_h or info["height"]
+                break
+        cell_w = cell_w or 640
+        cell_h = cell_h or 480
+
+    # ── Main loop ────────────────────────────────────────────────────────
+    last_tile: np.ndarray | None = None
     last_fps_log = time.perf_counter()
-    last_frame: object | None = None
     frames = 0
+    return_code = 0
 
     try:
-        while True:
-            events = dict(poller.poll(args.timeout_ms))
-            if socket not in events:
-                logger.warning(
-                    "No camera frames received for %.1fs. Is Walker Bridge2 running with camera_topics configured?",
-                    args.timeout_ms / 1000.0,
-                )
+        while rclpy.ok():
+            # Collect latest frame from each camera
+            frame_list: list[tuple[str, np.ndarray | None]] = []
+            for e in entries:
+                img = e.node.get_latest_image(encoding="bgr8")
+                frame_list.append((e.name, img))
+
+            if all(f is None for _, f in frame_list):
+                time.sleep(0.01)
                 continue
 
-            try:
-                message = socket.recv_string(flags=zmq.NOBLOCK)
-                frame, available = _decode_frame(message, args.camera, cv2, np)
-            except zmq.Again:
-                continue
-            except (json.JSONDecodeError, ValueError, TypeError) as exc:
-                now = time.perf_counter()
-                if now - last_warning > 1.0:
-                    logger.warning("Failed to parse camera message: %s", exc)
-                    last_warning = now
-                continue
+            # In single-camera mode, just use the raw frame
+            if len(entries) == 1:
+                display_frame = frame_list[0][1]
+                if display_frame is None:
+                    time.sleep(0.01)
+                    continue
+                if cell_w > 0 and cell_h > 0:
+                    display_frame = cv2.resize(display_frame, (cell_w, cell_h))
+                last_tile = display_frame
+            else:
+                display_frame = _build_tile(frame_list, cell_w, cell_h, cv2)
+                last_tile = display_frame
 
-            if frame is None:
-                now = time.perf_counter()
-                if now - last_warning > 1.0:
-                    logger.warning("Camera '%s' not found in message. Available cameras: %s", args.camera, available)
-                    last_warning = now
-                continue
-
-            last_frame = frame
             frames += 1
 
-            if args.save_frame and args.once:
-                _save_frame(args.save_frame, frame, cv2)
-                return 0
-
+            # --once
             if args.once:
-                logger.info("Received one frame from camera '%s' with shape %s", args.camera, frame.shape)
+                if args.save_frame and last_tile is not None:
+                    _save_frame(args.save_frame, last_tile, cv2)
+                else:
+                    logger.info("Received one frame from %d camera(s)", len(entries))
                 return 0
 
-            display_frame = _resize_for_display(frame, args.width, args.height, cv2)
+            # Show
             try:
                 cv2.imshow(args.window, display_frame)
                 key = cv2.waitKey(1) & 0xFF
             except cv2.error as exc:
                 logger.error(
-                    "OpenCV preview failed: %s. If running headless, use --once --save-frame /tmp/walker_camera.jpg.",
+                    "OpenCV preview failed: %s. "
+                    "If running headless, use --once --save-frame /tmp/frame.jpg.",
                     exc,
                 )
-                return 1
+                return_code = 1
+                break
             if key in (ord("q"), 27):
                 break
 
+            # FPS
             if args.print_fps:
                 now = time.perf_counter()
                 elapsed = now - last_fps_log
@@ -156,14 +318,18 @@ def main() -> int:
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
     finally:
-        if args.save_frame and last_frame is not None and not args.once:
-            _save_frame(args.save_frame, last_frame, cv2)
+        if args.save_frame and last_tile is not None and not args.once:
+            _save_frame(args.save_frame, last_tile, cv2)
         cv2.destroyAllWindows()
-        poller.unregister(socket)
-        socket.close()
-        context.term()
+        for e in entries:
+            executor.remove_node(e.node)
+        executor.shutdown()
+        spin_thread.join(timeout=2.0)
+        for e in entries:
+            e.node.destroy_node()
+        rclpy.shutdown()
 
-    return 0
+    return return_code
 
 
 if __name__ == "__main__":

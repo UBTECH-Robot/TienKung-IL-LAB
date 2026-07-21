@@ -76,9 +76,14 @@ WALKER_S2_RIGHT_LEG_JOINTS = [
 ]
 
 # Position-control gains from the Walker S2 SDK joint parameter table.  Isaac Lab's
-# implicit actuator stiffness is the closest equivalent of the SDK pos_kp.  Damping
-# is kept lower than the SDK velocity-loop gains to avoid over-damping the implicit
-# PD solve while still removing the startup sag seen with the old stiffness=80/120.
+# implicit actuator stiffness is the closest equivalent of the SDK pos_kp.
+#
+# Damping values are chosen to provide critical-to-slightly-overdamped response
+# (damping ratio ζ ≈ 0.8–1.2) for each joint group given its stiffness and typical
+# reflected inertia.  After the stiffness increase from 80–120 → 500–600, the
+# original damping of 40 gave a stiffness/damping ratio ≈ 15:1 which caused
+# underdamped overshoot ("bounce-back") on shoulder joints.  Current values target
+# stiffness/damping ≈ 6:1–8:1 for arms, ~10:1 for head/waist.
 WALKER_S2_HEAD_STIFFNESS = {
     "head_yaw_joint": 600,
     "head_pitch_joint": 600,
@@ -101,7 +106,7 @@ WALKER_S2_ARM_STIFFNESS = {
     "R_wrist_pitch_joint": 600,
     "R_wrist_roll_joint": 600,
 }
-WALKER_S2_ARM_DAMPING = {name: 40 for name in WALKER_S2_ARM_STIFFNESS}
+WALKER_S2_ARM_DAMPING = {name: 50 for name in WALKER_S2_ARM_STIFFNESS}
 
 WALKER_S2_WAIST_STIFFNESS = {
     "waist_yaw_joint": 600,
@@ -202,7 +207,7 @@ WALKER_S2_CFG = ArticulationCfg(
                 ".*elbow_yaw.*": 20,
                 ".*wrist_.*": 20,
             },
-            velocity_limit_sim=4,
+            velocity_limit_sim=3.1,  # 30 rpm (真机手臂最大转速)
             stiffness={name: WALKER_S2_ARM_STIFFNESS[name] for name in WALKER_S2_LEFT_ARM_JOINTS},
             damping={name: WALKER_S2_ARM_DAMPING[name] for name in WALKER_S2_LEFT_ARM_JOINTS},
         ),
@@ -216,7 +221,7 @@ WALKER_S2_CFG = ArticulationCfg(
                 ".*elbow_yaw.*": 20,
                 ".*wrist_.*": 20,
             },
-            velocity_limit_sim=4,
+            velocity_limit_sim=3.1,  # 30 rpm (真机手臂最大转速)
             stiffness={name: WALKER_S2_ARM_STIFFNESS[name] for name in WALKER_S2_RIGHT_ARM_JOINTS},
             damping={name: WALKER_S2_ARM_DAMPING[name] for name in WALKER_S2_RIGHT_ARM_JOINTS},
         ),

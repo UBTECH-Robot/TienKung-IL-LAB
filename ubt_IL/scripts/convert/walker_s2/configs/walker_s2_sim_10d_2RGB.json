@@ -1,0 +1,104 @@
+{
+  "observation.images.camera_head_right": {
+    "dtype": "video",
+    "shape": [3, 480, 640],
+    "names": ["channel", "height", "width"]
+  },
+  "observation.images.camera_wrist_right": {
+    "dtype": "video",
+    "shape": [3, 480, 640],
+    "names": ["channel", "height", "width"]
+  },
+  "observation.state": {
+    "dtype": "float32",
+    "shape": [10],
+    "names": [
+      "R_elbow_roll_joint",
+      "R_elbow_yaw_joint",
+      "R_shoulder_pitch_joint",
+      "R_shoulder_roll_joint",
+      "R_shoulder_yaw_joint",
+      "R_wrist_pitch_joint",
+      "R_wrist_roll_joint",
+      "head_pitch_joint",
+      "head_yaw_joint",
+      "right_grip"
+    ]
+  },
+  "action": {
+    "dtype": "float32",
+    "shape": [10],
+    "names": [
+      "R_elbow_roll_joint",
+      "R_elbow_yaw_joint",
+      "R_shoulder_pitch_joint",
+      "R_shoulder_roll_joint",
+      "R_shoulder_yaw_joint",
+      "R_wrist_pitch_joint",
+      "R_wrist_roll_joint",
+      "head_pitch_joint",
+      "head_yaw_joint",
+      "right_grip"
+    ]
+  },
+  "episode_index": {
+    "dtype": "int64",
+    "shape": [1],
+    "names": null
+  },
+  "frame_index": {
+    "dtype": "int64",
+    "shape": [1],
+    "names": null
+  },
+  "index": {
+    "dtype": "int64",
+    "shape": [1],
+    "names": null
+  },
+  "task_index": {
+    "dtype": "int64",
+    "shape": [1],
+    "names": null
+  },
+  "hdf5_mapping": {
+    "observation.state": [
+      {
+        "hdf5_key": "observation/joint_state/position/data",
+        "indices": [7, 8, 9, 10, 11, 12, 13]
+      },
+      {
+        "hdf5_key": "observation/joint_state/position/data",
+        "indices": [14, 15]
+      },
+      {
+        "hdf5_key": "observation/grip_right_position/data",
+        "expand_dims": true
+      }
+    ],
+    "action": [
+      {
+        "hdf5_key": "action/joint_state/position/data",
+        "indices": [7, 8, 9, 10, 11, 12, 13]
+      },
+      {
+        "hdf5_key": "action/joint_state/position/data",
+        "indices": [14, 15]
+      },
+      {
+        "hdf5_key": "action/grip_right_position/data",
+        "expand_dims": true
+      }
+    ],
+    "observation.images.camera_head_right": {
+      "hdf5_key": "camera_observations/color_images/stereo_right",
+      "encoding": "jpeg",
+      "image_size": [640, 480]
+    },
+    "observation.images.camera_wrist_right": {
+      "hdf5_key": "camera_observations/color_images/wrist_right",
+      "encoding": "jpeg",
+      "image_size": [640, 480]
+    }
+  }
+}

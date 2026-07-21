@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import torch
@@ -61,6 +62,14 @@ action_joint_names = None
 _mapping_logged = False
 _gripper_mapping_logged = set()
 _hold_joint_targets = None
+
+# 重力补偿开关：可通过环境变量 WALKER_S2_GRAVITY_COMP=0 禁用，方便 A/B 对比测试
+_enable_gravity_comp = os.environ.get("WALKER_S2_GRAVITY_COMP", "1") == "1"
+
+if _enable_gravity_comp:
+    from ubt_sim.devices.walker_s2.gravity_compensation import compute_gravity_offsets
+else:
+    compute_gravity_offsets = None  # type: ignore[assignment]
 
 # 仿真 PGC 手指关节的 0 位在中间附近；用 [-closing, +closing] 覆盖完整张合行程。
 # 外部 GripCmd 开口仍保持 [0, 0.05] m，只在这里改变开口到仿真关节的映射。
@@ -282,7 +291,19 @@ def to_controller_data(command: dict[str, Any], env) -> torch.Tensor:
     _hold_joint_targets.update(body_cmd)
     _hold_joint_targets.update(_grip_cmd_to_joint_targets("left", command.get("left_grip"), env))
     _hold_joint_targets.update(_grip_cmd_to_joint_targets("right", command.get("right_grip"), env))
-    values = [float(_hold_joint_targets.get(name, WALKER_S2_HOME_POSE.get(name, 0.0))) for name in action_joint_names]
+
+    # 重力补偿：从当前关节位置计算重力矩，转换为位置偏移叠加到目标上。
+    # 偏移不存储到 _hold_joint_targets（否则逐帧累加），每帧从实际位姿重新计算。
+    gravity_offsets: dict[str, float] = {}
+    if _enable_gravity_comp and compute_gravity_offsets is not None:
+        current_pos = _current_joint_map(env)
+        gravity_offsets = compute_gravity_offsets(current_pos)
+
+    values = [
+        float(_hold_joint_targets.get(name, WALKER_S2_HOME_POSE.get(name, 0.0)))
+        + gravity_offsets.get(name, 0.0)
+        for name in action_joint_names
+    ]
 
     return torch.tensor(values, device=env.device, dtype=torch.float32).unsqueeze(0).repeat(env.num_envs, 1)
 

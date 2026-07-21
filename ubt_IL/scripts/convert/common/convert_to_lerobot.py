@@ -57,8 +57,9 @@ def _read_hdf5_part(file, spec) -> np.ndarray:
 
     spec can be:
       - str: direct HDF5 key, read full array
-      - dict: {"hdf5_key": ..., "expand_dims": true, "repeat": N, "pad": [...], "invert": true,
+      - dict: {"hdf5_key": ..., "indices": [...], "expand_dims": true, "repeat": N, "pad": [...], "invert": true,
                 "extract": "position_by_name" | "field", ...}
+        "indices" (optional): slice array along last axis, e.g. [7,8,9,10,11,12,13]
         "extract" (optional): how to parse JSON-list data —
           "position_by_name" + "names": [...] → extract joint positions by name
           "field" + "field": "pos"            → extract a scalar field from each JSON object
@@ -72,6 +73,10 @@ def _read_hdf5_part(file, spec) -> np.ndarray:
 
     hdf5_key = spec["hdf5_key"]
     data = np.array(file[hdf5_key])
+
+    # --- index-based slicing (for sim data without joint names) ---
+    if "indices" in spec:
+        data = data[..., spec["indices"]]
 
     # --- JSON-list extraction (for real robot data) ---
     if "extract" in spec:
@@ -406,24 +411,43 @@ def main():
         image_writer_threads=args.image_writer_threads,
     )
 
-    # Process all episodes: only directories that actually contain the HDF5
-    # file. This skips sibling LeRobot datasets / output dirs / empty dirs that
-    # happen to live under src_root (avoids noisy "Skipped" errors).
+    # Discover episodes: supports both flat and nested layouts.
+    #   flat:   <top_dir>/trajectory.hdf5
+    #   nested: <top_dir>/<episode_name>/trajectory.hdf5
+    # Skips sibling LeRobot datasets / output dirs / empty dirs that happen to
+    # live under src_root (avoids noisy "Skipped" errors).
     src_root = Path(args.src_root)
-    all_dirs = sorted([ep for ep in src_root.iterdir() if ep.is_dir()])
-    episodes = [ep for ep in all_dirs if (ep / args.hdf5_rel_path).exists()]
-    skipped = [ep.name for ep in all_dirs if ep not in episodes]
+    top_dirs = sorted([d for d in src_root.iterdir() if d.is_dir()])
+
+    episode_pairs = []  # list of (ep_dir, hdf5_path)
+    skipped = []
+    for top_dir in top_dirs:
+        flat_hdf5 = top_dir / args.hdf5_rel_path
+        if flat_hdf5.exists():
+            episode_pairs.append((top_dir, flat_hdf5))
+            continue
+
+        # Check one level deeper for nested layout
+        sub_dirs = sorted([d for d in top_dir.iterdir() if d.is_dir()])
+        found = False
+        for sub_dir in sub_dirs:
+            hdf5_path = sub_dir / args.hdf5_rel_path
+            if hdf5_path.exists():
+                episode_pairs.append((sub_dir, hdf5_path))
+                found = True
+        if not found:
+            skipped.append(top_dir.name)
+
     if skipped:
         logging.info(f"Skipping {len(skipped)} dir(s) without '{args.hdf5_rel_path}': {skipped}")
 
     success_count = 0
-    logging.info(f"Found {len(episodes)} episodes to process...")
-    for ep_dir in episodes:
-        ep_path = ep_dir / args.hdf5_rel_path
+    logging.info(f"Found {len(episode_pairs)} episodes to process...")
+    for ep_dir, ep_path in episode_pairs:
         if process_episode(ep_path, dataset, args.task_name, mapping, features):
             dataset.save_episode()
             success_count += 1
-            logging.info(f"Saved episode: {ep_dir.name} ({success_count}/{len(episodes)})")
+            logging.info(f"Saved episode: {ep_dir.name} ({success_count}/{len(episode_pairs)})")
         else:
             dataset.clear_episode_buffer()
 
@@ -431,7 +455,7 @@ def main():
             break
 
     dataset.finalize()
-    logging.info(f"Conversion complete: {success_count}/{len(episodes)} episodes saved.")
+    logging.info(f"Conversion complete: {success_count}/{len(episode_pairs)} episodes saved.")
 
 
 if __name__ == "__main__":
