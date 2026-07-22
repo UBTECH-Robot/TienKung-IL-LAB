@@ -365,6 +365,40 @@ class WalkerC1RobotController(Node):
             self.publish_body_pose(pose)
             self.wait_sim_steps(step_wait, timeout=5.0)
 
+    def hold_body_pose_until_converged(
+        self,
+        target: dict[str, float],
+        tolerance: float = 0.05,
+        max_checks: int = 10,
+        wait_steps: int = 10,
+    ) -> bool:
+        """Hold a final body target until measured joints, not just commands,
+        are within tolerance. This avoids starting the next motion while a
+        high-speed interpolation is still physically settling."""
+        max_error = float("inf")
+        for check in range(max_checks + 1):
+            errors = [
+                abs(float(self.joint_pos[name]) - float(value))
+                for name, value in target.items()
+                if name in self.joint_pos
+            ]
+            if len(errors) == len(target):
+                max_error = max(errors, default=0.0)
+                if max_error <= tolerance:
+                    self.get_logger().info(
+                        f"ready pose converged: max joint error={max_error:.3f} rad"
+                    )
+                    return True
+            if check < max_checks:
+                self.publish_body_pose(target)
+                self.wait_sim_steps(wait_steps, timeout=5.0)
+
+        self.get_logger().warn(
+            f"ready pose did not converge: max joint error={max_error:.3f} rad "
+            f"(limit {tolerance:.3f})"
+        )
+        return False
+
     def move_right_arm_joints(
         self,
         target_arm: Sequence[float],

@@ -103,6 +103,17 @@ docker exec -it walker-c1-ubt-sim \
 成功轨迹保存到 `/ubt_sim/dataset/walker_c1_ros/<毫秒时间戳>/trajectory.hdf5`。失败默认丢弃，
 调试时可加 `--save-on-failure`。ROS 记录器优先使用 `/sim/object_state` 的 100 Hz `sim_step`
 调度 3/3/4 步采一帧以得到平均 30 Hz；没有仿真步（真机）时回退 ROS 图像时间戳节流。
+连续 `--episodes N` 运行时，上一轮成功结束已经回到 ready，下一轮会跳过重复的开场归位；
+归位以实测关节最大误差不超过 `0.05 rad` 为完成条件，而不是只看指令是否发完。如果上一轮
+失败或关节未收敛，下一轮仍重新执行归位以保证安全。
+`--randomize` 以 `APPLE_SPAWN_W` 为中心，在 X/Y 各 `±0.025 m` 的 `5 cm × 5 cm` 正方形
+区域内均匀采样，Z 高度保持不变。区域中心为 `(8.170, 5.860)`，相对最初中心沿机器人右侧
+（世界 Y 负方向）共移动 `0.040 m`，进一步远离盘子。可用 `--apple-xy X Y` 指定世界坐标，
+用于确定性验证中心和四个角点；不能与 `--randomize` 或 `--use-existing-apple` 同时使用。
+曾测试扩大至 `10 cm × 10 cm`：中心及前三个角点可完成抓放，但靠盘子的角点
+`(8.220, 5.910)` 抓取失败，且用户观察到左上角路径会碰盘，因此该范围判定为不安全并撤回。
+最终 `5 cm × 5 cm` 区域最靠盘子的两个角点 `(8.145, 5.885)`、`(8.195, 5.885)` 均完整通过
+`HELD/STABLE/SUCCESS`；落盘距盘心分别为 `0.065/0.050 m`。
 
 `run_c1_online_ik_batch.sh` 会自行管理 Isaac 进程，不应在 GUI 仿真已经运行时再启动；此前
 “一运行就 Killed”主要来自同时运行两套 Isaac 的内存/GPU 资源竞争。全局默认已切换为 mentor
@@ -172,7 +183,7 @@ Visual 使用原 `Yellow_Red_Nectarine` 材质，Albedo、Normal、Roughness 纹
 
 ```text
 robot base world xy: 约 (7.803, 6.083)
-apple fixed world:    (8.170, 5.900)，落稳中心 z=0.929
+apple fixed world:    (8.170, 5.860)，落稳中心 z=0.929
 plate center world:   (8.190, 6.083)，机器人身体中线正前方，粉色原盘模型保留
 table top world z:    0.902
 table x shift:        -0.160 m（只把桌子向机器人靠近，苹果/盘子 xy 不跟随）

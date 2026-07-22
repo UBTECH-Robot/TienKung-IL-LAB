@@ -59,7 +59,7 @@ _GRASP_OBJECT_MASS = 0.10
 # (ready-pose palm sits at world ~(8.04, 5.89, 0.85+)).
 _GRASP_OBJECT_INIT_POS = (
     8.21 + _TASK_X_SHIFT,
-    5.90,
+    5.86,
     _TABLE_TOP_Z + _GRASP_OBJECT_RADIUS + 0.002,
 )
 

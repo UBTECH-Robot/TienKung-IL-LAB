@@ -35,7 +35,8 @@ except ImportError:
     from robot_controller import LEFT_HAND_SDK_NAMES, RIGHT_HAND_SDK_NAMES, WalkerC1RobotController
 
 
-APPLE_SPAWN_W = (8.17, 5.90, 0.968)
+APPLE_SPAWN_W = (8.17, 5.86, 0.968)
+APPLE_RANDOM_HALF_EXTENT_M = 0.025
 PLATE_CENTER_W = (8.19, 6.083, 0.930)
 PLATE_RADIUS = 0.12
 
@@ -113,6 +114,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         self._last_record_wall_stamp: Optional[float] = None
         self._record_uses_sim_time = False
         self._cv2 = None
+        self.ready_pose_converged = False
         if self.record_enabled:
             import cv2
 
@@ -124,12 +126,14 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         """Scale arm interpolation time without shortening grasp/hold checks."""
         return float(nominal_seconds) / self.motion_speed
 
-    def _go_ready(self) -> None:
+    def _go_ready(self) -> bool:
         self.go_ready(
             clear_duration=self._motion_duration(0.6),
             final_duration=self._motion_duration(1.0),
             hand_repeats=2,
         )
+        self.ready_pose_converged = self.hold_body_pose_until_converged(TASK_RESET_BODY_POSE)
+        return self.ready_pose_converged
 
     # ── synchronized ROS trajectory recording ──
     def start_recording(self) -> None:
@@ -611,7 +615,6 @@ class WalkerC1PickPlace(WalkerC1RobotController):
 
         self.get_logger().info("back to ready ...")
         self._go_ready()
-        self.wait_sim_steps(20, timeout=10.0)
 
         final_w = self.object_state.get("object_pos_w")
         if not final_w:
@@ -630,6 +633,8 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         randomize: bool = False,
         set_apple: bool = True,
         max_grasp_attempts: int = 2,
+        reset_at_start: bool = True,
+        apple_xy: Optional[Sequence[float]] = None,
     ) -> bool:
         rng = np.random.default_rng()
 
@@ -641,15 +646,24 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             self.get_logger().error("no /sim/object_state; is the bridge running?")
             return False
 
-        self.get_logger().info("going to reset.py ready pose ...")
-        self._go_ready()
-        self.wait_sim_steps(20, timeout=12.0)
+        if reset_at_start:
+            self.get_logger().info("going to reset.py ready pose ...")
+            self._go_ready()
+        else:
+            self.get_logger().info("already at ready pose from the previous episode; skipping reset ...")
 
         if set_apple:
             apple_w = list(APPLE_SPAWN_W)
-            if randomize:
-                apple_w[0] += float(rng.uniform(-0.03, 0.01))
-                apple_w[1] += float(rng.uniform(-0.05, 0.01))
+            if apple_xy is not None:
+                apple_w[:2] = [float(apple_xy[0]), float(apple_xy[1])]
+            elif randomize:
+                offset_xy = rng.uniform(
+                    -APPLE_RANDOM_HALF_EXTENT_M,
+                    APPLE_RANDOM_HALF_EXTENT_M,
+                    size=2,
+                )
+                apple_w[0] += float(offset_xy[0])
+                apple_w[1] += float(offset_xy[1])
             self.get_logger().info(f"setting apple near fixed spot {np.round(apple_w, 3).tolist()}")
             self.set_object_world_pos(*apple_w)
             self.get_logger().info("waiting 0.5 simulated seconds for the apple to settle ...")
@@ -667,6 +681,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         grasp_rot = self.prepare_palm_down_cage()
 
         held = False
+        self.ready_pose_converged = False
         for attempt in range(max(1, int(max_grasp_attempts))):
             self.get_logger().info(f"grasp attempt {attempt + 1}/{max_grasp_attempts}")
             held = self.try_grasp_once(apple0_b, grasp_rot)
@@ -692,6 +707,13 @@ class WalkerC1PickPlace(WalkerC1RobotController):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Walker C1 online IK pick-place task")
     parser.add_argument("--randomize", action="store_true", help="Randomize the apple spot around the fixed validation pose")
+    parser.add_argument(
+        "--apple-xy",
+        nargs=2,
+        type=float,
+        metavar=("X", "Y"),
+        help="Place the apple at an exact world XY position (validation only)",
+    )
     parser.add_argument("--use-existing-apple", action="store_true", help="Do not command the sim-only apple placement topic")
     parser.add_argument("--episodes", type=int, default=1)
     parser.add_argument("--max-grasp-attempts", type=int, default=2)
@@ -709,6 +731,10 @@ def main() -> int:
     )
     parser.set_defaults(record=False)
     args = parser.parse_args()
+    if args.use_existing_apple and args.apple_xy is not None:
+        parser.error("--apple-xy cannot be combined with --use-existing-apple")
+    if args.randomize and args.apple_xy is not None:
+        parser.error("--apple-xy cannot be combined with --randomize")
 
     rclpy.init()
     node = WalkerC1PickPlace(
@@ -721,6 +747,7 @@ def main() -> int:
     )
     ok_count = 0
     saved_count = 0
+    previous_ok = False
     try:
         for ep in range(args.episodes):
             node.get_logger().info(f"=== episode {ep + 1}/{args.episodes} ===")
@@ -729,7 +756,10 @@ def main() -> int:
                 randomize=args.randomize,
                 set_apple=not args.use_existing_apple,
                 max_grasp_attempts=args.max_grasp_attempts,
+                reset_at_start=not (ep > 0 and previous_ok and node.ready_pose_converged),
+                apple_xy=args.apple_xy,
             )
+            previous_ok = ok
             ok_count += int(ok)
             saved_count += int(node.finish_recording(ok) is not None)
             node.wait_sim_steps(20, timeout=10.0)
