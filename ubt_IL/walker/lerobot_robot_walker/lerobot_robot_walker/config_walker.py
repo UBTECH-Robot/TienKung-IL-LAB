@@ -166,6 +166,9 @@ class WalkerRobotConfig(RobotConfig):
     topic_left_hand_state: str = TOPIC_LEFT_HAND_STATE
     topic_right_hand_state: str = TOPIC_RIGHT_HAND_STATE
 
+    # Control
+    control_fps: float = 15.0
+
     # Safety
     max_relative_target: float | None = None
     disable_torque_on_disconnect: bool = True
@@ -567,6 +570,7 @@ class WalkerRobotConfig(RobotConfig):
         return {
             "robot_model": self.robot_model,
             "description": self.description,
+            "control_fps": self.control_fps,
             "zmq_cmd_port": self.zmq_cmd_port,
             "zmq_status_port": self.zmq_status_port,
             "zmq_image_port": self.zmq_image_port,

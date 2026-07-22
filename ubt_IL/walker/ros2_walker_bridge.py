@@ -106,6 +106,8 @@ _DEFAULT_CFG = {
     "gripper_velocity": 0.005,
     "gripper_acceleration": 0.0,
     "gripper_mode": 0,
+    "control_fps": 15.0,
+    "max_safe_velocity": 1.0,
     "lock_joints": ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"],
     "home_position": [
         -1.56, 2.88, 0.0, -0.15, -1.56, 0.0, 0.0,
@@ -193,6 +195,8 @@ class WalkerRealRobotBridge:
         self._gripper_velocity = float(cfg.get("gripper_velocity", 0.005))
         self._gripper_acceleration = float(cfg.get("gripper_acceleration", 0.0))
         self._gripper_mode = int(cfg.get("gripper_mode", 0))
+        self._control_fps = float(cfg.get("control_fps", 15.0))
+        self._max_safe_velocity = float(cfg.get("max_safe_velocity", 1.0))
 
         ros_namespace = cfg.get("ros_namespace", "").rstrip("/")
         cmd_namespace = cfg.get("cmd_namespace", "").rstrip("/") if cfg.get("cmd_namespace") else ""
@@ -302,14 +306,13 @@ class WalkerRealRobotBridge:
         self._executor_thread.start()
 
         self._running = True
-        # body 插值状态：500Hz 发布 quintic 斜坡（_start_vec → _goal_vec，窗口 _ramp_dur），
-        # 平滑 15Hz action 的 0.02 rad 步进；无新 action 时 hold 在 goal。
+        # body 插值状态：500Hz 线性插值（_start_vec → _goal_vec，时长 = 1/fps），
+        # 从实际关节位置（_body_jpos）出发匀速到达目标；无新 action 时 hold 在 goal。
         self._body_vec_lock = threading.Lock()
         self._body_start_vec = np.zeros(self._n_body, dtype=float)
         self._body_goal_vec = np.zeros(self._n_body, dtype=float)
         self._body_ramp_t0 = 0.0
-        self._body_ramp_dur = 1.0 / 15.0  # 默认窗口，后续按实测 action 间隔自适应
-        self._body_last_action_t = None
+        self._body_ramp_dur = 1.0 / 15.0
         self._body_has_target = False
         self._body_thread = None
         self._action_thread = threading.Thread(target=self._action_loop, daemon=True, name="action_forward")
@@ -318,9 +321,9 @@ class WalkerRealRobotBridge:
         self._body_thread.start()
 
         logger.info(
-            "Walker bridge started model=%s end_effector=%s ns=%s cmd_ns=%s lock=%s body_joints=%d",
+            "Walker bridge started model=%s end_effector=%s ns=%s cmd_ns=%s lock=%s body_joints=%d fps=%.0f",
             cfg.get("robot_model", "?"), self._end_effector_type, ros_namespace, cmd_namespace,
-            sorted(self._lock_joints), self._n_body,
+            sorted(self._lock_joints), self._n_body, self._control_fps,
         )
 
     @staticmethod
@@ -419,28 +422,28 @@ class WalkerRealRobotBridge:
                 self._publish_end_effector_command("right", action.get("right_hand", []))
 
     def _update_body_target(self, action: dict) -> None:
-        """收到新 action：从当前插值位置 retarget 到新目标，启动新 quintic 斜坡。"""
+        """收到新 action：从机器人实际关节位置出发，在 1/fps 秒内线性插值到目标。"""
         goal = self._body_action_to_vec(action)
         if goal is None:
             return
-        now = time.time()
+
+        # 从 ROS2 状态订阅获取当前实际关节位置
+        with self._state_lock:
+            start = np.array(self._body_jpos, dtype=float).copy()
+
+        duration = 1.0 / self._control_fps
+
+        # 安全帽：裁剪异常大步进（正常运行时 max_relative_target 已限步，此处不触发）
+        delta = goal - start
+        max_delta = self._max_safe_velocity * duration
+        delta = np.clip(delta, -max_delta, max_delta)
+        goal = start + delta
+
         with self._body_vec_lock:
-            if self._body_has_target:
-                start = self._body_interp_at(now)  # 从当前插值位置 retarget，避免跳变
-                if self._body_last_action_t is not None:
-                    interval = now - self._body_last_action_t
-                    ramp_dur = max(0.02, min(interval, 0.2))  # 20ms..200ms
-                else:
-                    ramp_dur = self._body_ramp_dur
-            else:
-                # 首个 action：从 goal 起步（lerobot 侧 max_relative 已限步，无大跳变）
-                start = goal.copy()
-                ramp_dur = self._body_ramp_dur
             self._body_start_vec = start
             self._body_goal_vec = goal
-            self._body_ramp_t0 = now
-            self._body_ramp_dur = ramp_dur
-            self._body_last_action_t = now
+            self._body_ramp_t0 = time.time()
+            self._body_ramp_dur = duration
             self._body_has_target = True
 
     def _body_action_to_vec(self, action: dict) -> np.ndarray | None:
@@ -460,7 +463,7 @@ class WalkerRealRobotBridge:
         return vec if has_any else None
 
     def _body_interp_at(self, t: float) -> np.ndarray:
-        """时刻 t 的插值目标（quintic 斜坡，超时 hold 在 goal）。调用方须持 _body_vec_lock。"""
+        """时刻 t 的线性插值目标。调用方须持 _body_vec_lock。"""
         if self._body_ramp_dur <= 0:
             return self._body_goal_vec.copy()
         tau = (t - self._body_ramp_t0) / self._body_ramp_dur
@@ -468,11 +471,10 @@ class WalkerRealRobotBridge:
             return self._body_start_vec.copy()
         if tau >= 1.0:
             return self._body_goal_vec.copy()
-        s = 10.0 * tau**3 - 15.0 * tau**4 + 6.0 * tau**5  # quintic，起止速度/加速度=0
-        return self._body_start_vec + s * (self._body_goal_vec - self._body_start_vec)
+        return self._body_start_vec + tau * (self._body_goal_vec - self._body_start_vec)
 
     def _body_publish_loop(self) -> None:
-        """500Hz 发布 body 插值目标（quintic 斜坡 + hold），平滑 0.02 rad 步进。
+        """500Hz 发布 body 插值目标（线性斜坡 + hold），平滑 action 步进。
 
         发布节拍由独立线程 sleep 控制，不依赖 executor 调度，不复现 GIL 定时器抖动。
         """

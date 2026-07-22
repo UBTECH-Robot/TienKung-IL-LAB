@@ -185,6 +185,7 @@ fi
     --robot.type=walker \
     "${ROBOT_CONFIG_ARG[@]}" \
     --robot.joint_config="$ROBOT_MODEL" \
+    --robot.control_fps="$FPS" \
     --task="$TASK" \
     --fps="$FPS" \
     --duration="$DURATION"
