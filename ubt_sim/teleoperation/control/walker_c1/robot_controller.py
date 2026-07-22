@@ -453,18 +453,18 @@ class WalkerC1RobotController(Node):
             if wait_steps > 0:
                 self.wait_sim_steps(wait_steps, timeout=3.0)
 
-    def open_hand(self, side: str) -> None:
-        self.move_hand(side, [0.0] * 6)
+    def open_hand(self, side: str, repeats: int = 5) -> None:
+        self.move_hand(side, [0.0] * 6, repeats=repeats)
 
     def close_hand(self, side: str, grip: float = 0.8) -> None:
         self.move_hand(side, [grip] * 6)
 
     # ── task-level helpers ──
     def go_ready(self, clear_duration: float = 0.6, final_duration: float = 1.0,
-                 hz: float = 20.0) -> None:
+                 hz: float = 20.0, hand_repeats: int = 5) -> None:
         """Staged move to the grasp-ready pose (same semantics as reset.py)."""
-        self.open_hand("left")
-        self.open_hand("right")
+        self.open_hand("left", repeats=hand_repeats)
+        self.open_hand("right", repeats=hand_repeats)
         stages = (
             ("raising arms sideways", TASK_RESET_ARM_CLEAR_POSE, clear_duration),
             ("folding elbows clear", TASK_RESET_ELBOW_CLEAR_POSE, clear_duration),
@@ -473,8 +473,8 @@ class WalkerC1RobotController(Node):
         for label, pose, duration in stages:
             self.get_logger().info(f"reset: {label} ({duration:.1f} simulated seconds) ...")
             self.move_body_pose(pose, duration=duration, hz=hz)
-        self.move_hand("left", TASK_RESET_LEFT_HAND_POSE)
-        self.move_hand("right", TASK_RESET_RIGHT_HAND_POSE)
+        self.move_hand("left", TASK_RESET_LEFT_HAND_POSE, repeats=hand_repeats)
+        self.move_hand("right", TASK_RESET_RIGHT_HAND_POSE, repeats=hand_repeats)
         self._last_cmd_arm = [TASK_RESET_BODY_POSE[n] for n in RIGHT_ARM_JOINT_NAMES]
 
     def reset_sim(self) -> None:
