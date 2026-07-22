@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from ._common import DEFAULT_WRIST_TOPICS, topic_to_frame_id
+from ._common import resolve_topic, topic_to_frame_id
 
 
 def main():
@@ -41,8 +41,8 @@ def main():
         help="Frame height (default: 480)",
     )
     parser.add_argument(
-        "--fps", type=int, default=15,
-        help="Frame rate (default: 15)",
+        "--fps", type=int, default=60,
+        help="Frame rate (default: 60)",
     )
     args = parser.parse_args()
 
@@ -66,7 +66,7 @@ def main():
         print(json.dumps(devices, indent=2))
     else:
         for i, dev in enumerate(devices):
-            topic = DEFAULT_WRIST_TOPICS[i] if i < len(DEFAULT_WRIST_TOPICS) else f"/camera/realsense_{i}"
+            topic = resolve_topic(i)
             print(f"[{i}] {dev['name']}  →  {topic}")
             print(f"    Serial:  {dev['serial']}")
             print(f"    USB:     {dev['usb_type']}")

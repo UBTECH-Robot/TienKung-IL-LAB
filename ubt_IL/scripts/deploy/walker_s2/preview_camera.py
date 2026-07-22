@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import socket
+import struct
 import threading
 import time
 from pathlib import Path
@@ -60,6 +63,8 @@ def _parse_args() -> argparse.Namespace:
                         help="Optional path to save the latest frame (tiled in multi-camera mode)")
     parser.add_argument("--once", action="store_true",
                         help="Receive one frame from each camera, optionally save, then exit")
+    parser.add_argument("--headless", action="store_true",
+                        help="Skip GUI preview (useful with --print-fps or --save-frame)")
     return parser.parse_args()
 
 
@@ -245,6 +250,150 @@ def _build_tile(
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _is_headless() -> bool:
+    """Check whether the X11 display is actually usable (no OpenCV GUI calls).
+
+    Does a full authenticated X11 connection handshake — reading the
+    MIT-MAGIC-COOKIE-1 from Xauthority files and including it in the setup
+    request.  Without auth, SSH-X11-forwarded servers send status 0 (failed).
+    """
+    display = os.environ.get("DISPLAY", "")
+    if not display:
+        return True
+
+    # Parse display:  host:D.S  →  host, D, S
+    # ":0" → unix socket,  "localhost:11.0" → TCP port 6011
+    try:
+        host, rest = display.split(":", 1) if ":" in display else ("", display)
+        parts = rest.split(".")
+        d = int(parts[0])
+        if host:
+            port = 6000 + d
+            sock = socket.create_connection((host, port), timeout=1.0)
+            family = b"\x01\x00"       # FamilyInternet
+            conn_addr = host.encode()
+        else:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(1.0)
+            sock.connect(f"/tmp/.X11-unix/X{d}")
+            family = b"\x00\x00"       # FamilyLocal
+            conn_addr = socket.gethostname().encode()
+
+        disp_bytes = str(d).encode()
+
+        # Read auth from both $XAUTHORITY and ~/.Xauthority.
+        # SSH X11 forwarding stores cookies under the machine hostname
+        # (e.g. "vision/unix:10"), not under "localhost:10.0".
+        auth_name, auth_data = b"", b""
+        auth_name, auth_data = _read_xauth(family, conn_addr, disp_bytes)
+        if not auth_data:
+            auth_name, auth_data = _read_xauth_any_display(disp_bytes)
+
+        # Build X11 connection setup with auth.
+        # All multi-byte fields follow byte 0 (0x6c = little-endian).
+        # Auth name and data must be padded to 4-byte boundaries.
+        def _pad4(data):
+            return data + b"\x00" * ((4 - len(data) % 4) % 4)
+
+        setup = bytearray()
+        setup += b"\x6c"                # byte-order: little-endian
+        setup += b"\x00"                # unused
+        setup += struct.pack("<HH", 11, 0)          # protocol major 11, minor 0
+        setup += struct.pack("<HH", len(auth_name), len(auth_data))
+        setup += b"\x00\x00"            # padding
+        setup += _pad4(auth_name)
+        setup += _pad4(auth_data)
+
+        sock.sendall(setup)
+        sock.settimeout(2.0)
+        resp = sock.recv(1)
+        sock.close()
+        # Status 1 = Success, 2 = Authenticate — the server is alive.
+        return not (len(resp) == 1 and resp[0] in (1, 2))
+    except Exception:
+        return True
+
+
+def _read_xauth_any_display(disp: bytes) -> tuple[bytes, bytes]:
+    """Read the FIRST MIT-MAGIC-COOKIE-1 with a matching display number.
+
+    SSH X11 forwarding stores cookies as ``hostname/unix:N`` while DISPLAY
+    is ``localhost:N.0`` — family and address differ, but display number matches.
+    """
+    for xauth_path in _xauth_paths():
+        try:
+            with open(xauth_path, "rb") as f:
+                data = f.read()
+        except (FileNotFoundError, PermissionError):
+            continue
+        for fam, entry_addr, entry_disp, entry_name, entry_data, _ in _parse_xauth(data):
+            if entry_disp == disp and entry_data:
+                return entry_name, entry_data
+    return b"", b""
+
+
+def _xauth_paths():
+    """Xauthority file paths to try, in priority order."""
+    paths = []
+    if os.environ.get("XAUTHORITY"):
+        paths.append(os.environ["XAUTHORITY"])
+    paths.append(os.path.join(os.path.expanduser("~"), ".Xauthority"))
+    return paths
+
+
+def _parse_xauth(data: bytes):
+    """Yield (family, addr, disp, name, data, next_pos) for each Xauthority entry."""
+    pos = 0
+    while pos + 4 <= len(data):
+        fam = data[pos:pos + 2]
+        pos += 2
+        addr_len = struct.unpack(">H", data[pos:pos + 2])[0]
+        pos += 2
+        if pos + addr_len > len(data):
+            break
+        entry_addr = data[pos:pos + addr_len]
+        pos += addr_len
+        if pos + 2 > len(data):
+            break
+        disp_len = struct.unpack(">H", data[pos:pos + 2])[0]
+        pos += 2
+        if pos + disp_len > len(data):
+            break
+        entry_disp = data[pos:pos + disp_len]
+        pos += disp_len
+        if pos + 2 > len(data):
+            break
+        name_len = struct.unpack(">H", data[pos:pos + 2])[0]
+        pos += 2
+        if pos + name_len > len(data):
+            break
+        entry_name = data[pos:pos + name_len]
+        pos += name_len
+        if pos + 2 > len(data):
+            break
+        data_len = struct.unpack(">H", data[pos:pos + 2])[0]
+        pos += 2
+        if pos + data_len > len(data):
+            break
+        entry_data = data[pos:pos + data_len]
+        pos += data_len
+        yield fam, entry_addr, entry_disp, entry_name, entry_data, pos
+
+
+def _read_xauth(family: bytes, addr: bytes, disp: bytes) -> tuple[bytes, bytes]:
+    """Exact-match (family + address + display) MIT-MAGIC-COOKIE-1 lookup."""
+    for xauth_path in _xauth_paths():
+        try:
+            with open(xauth_path, "rb") as f:
+                data = f.read()
+        except (FileNotFoundError, PermissionError):
+            continue
+        for fam, entry_addr, entry_disp, entry_name, entry_data, _ in _parse_xauth(data):
+            if fam == family and entry_addr == addr and entry_disp == disp:
+                return entry_name, entry_data
+    return b"", b""
+
+
 def _save_frame(path: str, frame: np.ndarray, cv2) -> None:
     output = Path(path)
     ok = cv2.imwrite(str(output), frame)
@@ -314,8 +463,21 @@ def main() -> int:
                                 info["width"], info["height"], info["encoding"])
 
         if not args.once and any(e.node.is_available() for e in entries):
-            cv2.namedWindow(args.window, cv2.WINDOW_NORMAL)
-            logger.info("Press 'q' or Esc in the preview window to exit.")
+            # Detect headless environment — test X11 connectivity WITHOUT
+            # touching OpenCV GUI (cv2.namedWindow triggers a C abort on
+            # broken X11 connections, which cannot be caught by try/except).
+            headless = args.headless
+            if not headless:
+                headless = _is_headless()
+                if headless:
+                    logger.warning("X11 display '%s' not reachable — switching to headless mode.",
+                                   os.environ.get("DISPLAY", "(unset)"))
+                    logger.warning("Use --once --save-frame /tmp/frame.jpg for a single capture.")
+            if not headless:
+                cv2.namedWindow(args.window, cv2.WINDOW_NORMAL)
+                logger.info("Press 'q' or Esc in the preview window to exit.")
+            else:
+                logger.info("Headless mode — Ctrl+C to stop. Use --once to capture a single frame.")
 
         # ── Determine cell size ──────────────────────────────────────────
         cell_w = args.width
@@ -365,20 +527,23 @@ def main() -> int:
                     logger.info("Received one frame from %d camera(s)", len(entries))
                 return 0
 
-            # Show
-            try:
-                cv2.imshow(args.window, display_frame)
-                key = cv2.waitKey(1) & 0xFF
-            except cv2.error as exc:
-                logger.error(
-                    "OpenCV preview failed: %s. "
-                    "If running headless, use --once --save-frame /tmp/frame.jpg.",
-                    exc,
-                )
-                return_code = 1
-                break
-            if key in (ord("q"), 27):
-                break
+            # Show (or skip in headless mode)
+            if headless:
+                time.sleep(0.03)  # ~30 fps cap
+            else:
+                try:
+                    cv2.imshow(args.window, display_frame)
+                    key = cv2.waitKey(1) & 0xFF
+                except cv2.error as exc:
+                    logger.error(
+                        "OpenCV preview failed: %s. "
+                        "If running headless, use --once --save-frame /tmp/frame.jpg.",
+                        exc,
+                    )
+                    return_code = 1
+                    break
+                if key in (ord("q"), 27):
+                    break
 
             # FPS
             if args.print_fps:
@@ -395,13 +560,29 @@ def main() -> int:
         if args.save_frame and last_tile is not None and not args.once:
             _save_frame(args.save_frame, last_tile, cv2)
         cv2.destroyAllWindows()
-        for e in entries:
-            executor.remove_node(e.node)
-        executor.shutdown()
+
+        # Ctrl+C triggers rclpy's default SIGINT handler which calls
+        # rclpy.shutdown() asynchronously — the context may already be
+        # invalid by the time we reach this block.  Guard every ROS2 call.
+        if not rclpy.ok():
+            # Already shut down by signal handler; spin_thread is a daemon
+            # so it won't block process exit.
+            return return_code
+
+        try:
+            executor.shutdown()
+        except Exception:
+            pass
         spin_thread.join(timeout=2.0)
         for e in entries:
-            e.node.destroy_node()
-        rclpy.shutdown()
+            try:
+                e.node.destroy_node()
+            except Exception:
+                pass
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
     return return_code
 

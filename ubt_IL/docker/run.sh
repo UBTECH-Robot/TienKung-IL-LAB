@@ -72,16 +72,16 @@ case "${1:-}" in
         fi
 
         # 等待 entrypoint 安装完成，同时实时显示安装日志。
+        # 不使用 `docker logs -f &`（孤儿进程会污染终端），转而用轮询 `docker logs --tail`
+        # 配合 `docker logs --since` 增量输出，并在退出前确认 entrypoint 进程已结束。
         # STARTUP_TIMEOUT=0 表示不超时；如果设置了超时，超时后也不会跳过，
         # 而是直接失败，避免在 lerobot/plugins 仍未安装完时继续使用容器。
         echo "[INFO] Waiting for entrypoint to finish installing lerobot, plugins and messages..."
         STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-0}"
         ELAPSED=0
         IDLE_ELAPSED=0
-
-        # 后台跟踪容器日志（实时输出安装进度）
-        sudo docker logs -f "$CONTAINER_NAME" 2>&1 &
-        LOG_PID=$!
+        # 记录本轮循环开始时间，用作 `docker logs --since` 的起点（增量输出，不重复刷屏）
+        LOG_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%FT%TZ)
 
         is_env_ready() {
             sudo docker exec "$CONTAINER_NAME" bash -lc '/lerobot/.venv/bin/python - <<'"'"'PY'"'"'
@@ -91,18 +91,36 @@ from lerobot_robot_walker import WalkerRobotConfig, WalkerCameraConfig
 PY' >/dev/null 2>&1
         }
 
+        is_entrypoint_install_done() {
+            # entrypoint 最后 exec tail -f /dev/null，所以只要没有
+            # pip/colcon 进程，就认为 entrypoint 安装阶段已结束。
+            if sudo docker exec "$CONTAINER_NAME" pgrep -af "uv pip install|colcon build|pip install|apt-get install" >/dev/null 2>&1; then
+                return 1  # 安装进程还在跑
+            else
+                return 0  # 安装已完成
+            fi
+        }
+
+        show_new_logs() {
+            # 增量输出容器日志（自上次检查以来的新行）
+            sudo docker logs --since "$LOG_SINCE" "$CONTAINER_NAME" 2>&1 || true
+            LOG_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%FT%TZ)
+        }
+
         is_install_running() {
             sudo docker exec "$CONTAINER_NAME" pgrep -af "uv pip install|colcon build|pip install" >/dev/null 2>&1
         }
 
         while true; do
-            if is_env_ready; then
+            show_new_logs
+
+            # 只有当环境就绪 AND 安装进程结束，才真正退出循环。
+            # 避免在 entrypoint 仍在执行 opencv 替换等收尾步骤时过早判定完成。
+            if is_env_ready && is_entrypoint_install_done; then
                 break
             fi
 
             if ! sudo docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-                sudo kill $LOG_PID 2>/dev/null || true
-                wait $LOG_PID 2>/dev/null || true
                 echo "[ERROR] Container stopped before environment setup completed."
                 echo "[INFO] Check logs: sudo docker logs $CONTAINER_NAME"
                 exit 1
@@ -113,8 +131,6 @@ PY' >/dev/null 2>&1
             else
                 IDLE_ELAPSED=$((IDLE_ELAPSED + 3))
                 if [ $IDLE_ELAPSED -ge 30 ]; then
-                    sudo kill $LOG_PID 2>/dev/null || true
-                    wait $LOG_PID 2>/dev/null || true
                     echo "[ERROR] Entrypoint setup appears finished, but lerobot/plugins are not importable."
                     echo "[INFO] Check logs: sudo docker logs $CONTAINER_NAME"
                     exit 1
@@ -124,19 +140,15 @@ PY' >/dev/null 2>&1
             sleep 3
             ELAPSED=$((ELAPSED + 3))
             if [ "$STARTUP_TIMEOUT" != "0" ] && [ $ELAPSED -ge "$STARTUP_TIMEOUT" ]; then
-                sudo kill $LOG_PID 2>/dev/null || true
-                wait $LOG_PID 2>/dev/null || true
                 echo "[ERROR] Environment setup did not complete within ${STARTUP_TIMEOUT}s."
                 echo "[INFO] Install may still be running; not proceeding with incomplete setup."
-                echo "[INFO] Check logs: sudo docker logs -f $CONTAINER_NAME"
+                echo "[INFO] Check logs: sudo docker logs $CONTAINER_NAME"
                 exit 1
             fi
         done
 
-        # 停止日志跟踪（sudo docker logs 以 root 运行，需 sudo kill）
-        sudo kill $LOG_PID 2>/dev/null || true
-        wait $LOG_PID 2>/dev/null || true
-
+        # 输出最后一段日志，确保用户看到完整的安装结果
+        show_new_logs
         echo "[INFO] Environment setup completed (${ELAPSED}s)"
 
         echo ""
@@ -169,13 +181,21 @@ PY' >/dev/null 2>&1
             echo "[INFO] Start it first: bash run.sh start"
             exit 1
         fi
-        sudo docker exec -it "$CONTAINER_NAME" bash -c "\
+        # Pass current SSH X11 auth cookie into the container.
+        # xauth extract writes a binary Xauthority file — pipe via docker exec -i
+        # to avoid shell null-byte issues inside $().
+        _X11_DISPLAY="${DISPLAY:-}"
+        if [ -n "$_X11_DISPLAY" ] && command -v xauth &>/dev/null; then
+            xauth extract - "$_X11_DISPLAY" 2>/dev/null | \
+                sudo docker exec -i "$CONTAINER_NAME" sh -c "cat > /tmp/.xauth-docker" 2>/dev/null || true
+        fi
+        sudo docker exec -it -e DISPLAY="${_X11_DISPLAY}" "$CONTAINER_NAME" bash -c "\
+            export XAUTHORITY=/tmp/.xauth-docker; \
             source /opt/ros/humble/setup.bash 2>/dev/null || true; \
             source /opt/bodyctrl_msgs_ws/install/setup.bash 2>/dev/null || true; \
             source $WALKER_WS/install/setup.bash 2>/dev/null || true; \
             export ROS_DOMAIN_ID=$DOMAIN_ID; \
             export FASTRTPS_DEFAULT_PROFILES_FILE=/opt/fastdds_no_shm.xml; \
-            export DISPLAY=\${DISPLAY:-} 2>/dev/null; \
             bash"
         ;;
     rm)
@@ -283,9 +303,15 @@ PY" 2>/dev/null; then
             WARNINGS=$((WARNINGS + 1))
         fi
 
-        # GPU
+        # GPU: 先以默认用户检测（x86），失败后以 root 重试（Jetson ARM64 上
+        # /dev/nvmap 仅 root:video 可访问，默认非 root 用户无法初始化 NVRM）
+        GPU=""
         if sudo docker exec "$CONTAINER_NAME" nvidia-smi >/dev/null 2>&1; then
             GPU=$(sudo docker exec "$CONTAINER_NAME" nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        elif sudo docker exec -u 0 "$CONTAINER_NAME" nvidia-smi >/dev/null 2>&1; then
+            GPU=$(sudo docker exec -u 0 "$CONTAINER_NAME" nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+        fi
+        if [ -n "$GPU" ]; then
             echo "[OK] GPU: $GPU"
         else
             echo "[FAIL] GPU: not detected"

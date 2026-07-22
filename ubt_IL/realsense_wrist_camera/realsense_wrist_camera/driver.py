@@ -40,7 +40,7 @@ class RealSenseD405Driver:
         serial: str,
         width: int = 640,
         height: int = 480,
-        fps: int = 15,
+        fps: int = 60,
     ):
         if rs is None:
             raise ImportError(

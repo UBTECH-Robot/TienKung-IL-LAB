@@ -71,14 +71,46 @@ echo "[realsense_wrist_camera] Installing package from $PKG_DIR..."
     exit 1
 }
 
-# 5. Verify CLI availability
+# 5. Persist ~/.local/bin in PATH (pip --user installs entry points here)
+LOCAL_BIN="$HOME/.local/bin"
+if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
+    for RC in "$HOME/.bashrc" "$HOME/.profile"; do
+        if [ -f "$RC" ] && ! grep -qF 'export PATH="$HOME/.local/bin:$PATH"' "$RC" 2>/dev/null; then
+            echo '' >> "$RC"
+            echo '# pip --user entry points' >> "$RC"
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$RC"
+        fi
+    done
+    export PATH="$LOCAL_BIN:$PATH"
+    echo "[realsense_wrist_camera] Added ~/.local/bin to PATH (persisted in ~/.bashrc)."
+fi
+
+# 6. Auto-discover cameras and generate config (first install only)
+if [ "${REALSENSE_SKIP_DISCOVER:-0}" = "1" ]; then
+    echo "[realsense_wrist_camera] Skipping camera discovery (REALSENSE_SKIP_DISCOVER=1)."
+elif [ -f "$PKG_DIR/configs/wrist_cameras.json" ]; then
+    echo "[realsense_wrist_camera] Config already exists: $PKG_DIR/configs/wrist_cameras.json"
+    echo "[realsense_wrist_camera] Run 'find-realsense-cameras' to regenerate."
+else
+    echo "[realsense_wrist_camera] Auto-discovering cameras..."
+    set +e
+    find-realsense-cameras --config-dir "$PKG_DIR/configs" 2>/dev/null
+    DISCOVER_EXIT=$?
+    set -e
+    if [ "$DISCOVER_EXIT" -eq 0 ]; then
+        echo "[realsense_wrist_camera] Config generated: $PKG_DIR/configs/wrist_cameras.json"
+    else
+        echo "[realsense_wrist_camera] No cameras detected — skipping config generation."
+        echo "[realsense_wrist_camera] Run 'find-realsense-cameras' after connecting cameras."
+    fi
+fi
+
+# 7. Final output
 echo ""
 echo "[realsense_wrist_camera] Installation complete."
 echo ""
 echo "  One-command start: bash /ubt_IL/realsense_wrist_camera/scripts/start.sh"
 echo ""
-echo "  Device discovery:  find-realsense-cameras"
-echo "  Start service:     realsense-wrist-camera --config <config.json>"
-echo "  Quick test:        realsense-wrist-camera --serial <SN> --topic /test/camera"
-echo ""
-echo "  Example config:    /ubt_IL/realsense_wrist_camera/configs/wrist_cameras.example.json"
+echo "  Config:            $PKG_DIR/configs/wrist_cameras.json"
+echo "  Re-discover:       find-realsense-cameras"
+echo "  Start service:     realsense-wrist-camera --config $PKG_DIR/configs/wrist_cameras.json"

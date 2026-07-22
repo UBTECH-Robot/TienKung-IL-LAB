@@ -121,7 +121,7 @@ class RealSenseWristCameraNode(Node):
         frame_id = cfg.get("frame_id", "realsense_camera")
         width = int(cfg.get("width", 640))
         height = int(cfg.get("height", 480))
-        fps = int(cfg.get("fps", 15))
+        fps = int(cfg.get("fps", 60))
         name = cfg.get("name", serial[:8])
 
         # Resolve message type
@@ -280,12 +280,10 @@ class RealSenseWristCameraNode(Node):
         # Encoding: char[256] array — must write ASCII codes individually
         _write_shm_string(msg.encoding, "bgr8")
 
-        # Data: uint8[N] fixed-size array
-        flat = img.flatten()
-        nbytes = len(flat)
-        data = msg.data
-        for i in range(nbytes):
-            data[i] = int(flat[i])
+        # Data: uint8[N] fixed-size numpy array — slice assignment (C-level copy)
+        # Avoid Python-level per-element loops: .ravel() is O(1), [:] = is O(n) in C.
+        flat = img.ravel()
+        msg.data[:flat.size] = flat
 
         return msg
 

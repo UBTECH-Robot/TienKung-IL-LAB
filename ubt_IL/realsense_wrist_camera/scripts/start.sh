@@ -67,10 +67,21 @@ if [ -d "$HOME/.local/bin" ]; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
+# Separate --fg from real camera arguments (--stop/--status already handled above)
+FG_MODE=0
+REAL_ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--fg" ]; then
+        FG_MODE=1
+    else
+        REAL_ARGS+=("$arg")
+    fi
+done
+
 # Build command
 CMD=(/usr/bin/python3 -m realsense_wrist_camera)
-if [ $# -gt 0 ] && [ "${1:-}" != "--fg" ]; then
-    CMD+=("$@")
+if [ ${#REAL_ARGS[@]} -gt 0 ]; then
+    CMD+=("${REAL_ARGS[@]}")
 elif [ -f "$CONFIG_FILE" ]; then
     echo "[start_realsense_wrist_camera] Using config: ${CONFIG_FILE}"
     CMD+=(--config "$CONFIG_FILE")
@@ -80,8 +91,7 @@ else
 fi
 
 # Foreground mode
-if [ "${1:-}" = "--fg" ]; then
-    shift 2>/dev/null || true
+if [ "$FG_MODE" = "1" ]; then
     echo "[start_realsense_wrist_camera] Starting in foreground (Ctrl+C to stop)..."
     exec "${CMD[@]}"
 fi
