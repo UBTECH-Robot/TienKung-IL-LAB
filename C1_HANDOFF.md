@@ -18,10 +18,19 @@
 根据后续目视反馈，盘上松手净空又从 `0.060 m` 提高 `0.050 m` 至 `0.110 m`；只抬高
 松手点，盘上 xy、搬运高度和撤离路径均不变。完整回归中掌心释放目标 base-z 从约
 `0.161 m` 提高到 `0.211 m`，实测到达 `0.195 m`；任务 `1/1 SUCCESS`，但苹果最终距盘心
-`0.107 m`，已经接近 `0.120 m` 成功边界，后续采集前应继续观察高处落下后的落点分布。
+`0.107 m`，已经接近 `0.120 m` 成功边界；盘子随后移到正前方后该落点问题已消失。
 
 这里的“抓取标定”只指苹果中心相对掌心、手口和指笼中心的任务几何偏移以及手指闭合量，
 不是相机内外参或机器人关节零位标定。固定水平掌心朝向是明确的姿态约束，不再称作经验标定。
+
+后续盘子从右前方 `(8.190, 5.710)` 移到机器人身体中线正前方 `(8.190, 6.083)`。粉色可见
+盘模型、不可见圆柱碰撞体和在线 IK/成功判定目标三者同步移动，盘面高度保持不变。抓稳优先：
+通过 1.4 秒 `STABLE` 检查后才开始搬运；取消旧的右侧固定路点和后续尝试的几何中点，直接
+用 3 秒平滑轨迹移动到正前方盘子上方，同时渐变到 `+35° yaw` 以避开腕 pitch 限位。
+掌心倾角和闭手目标保持不变，盘上搬运点始终比松手点高 `0.040 m`。
+正前方盘位首轮物理回归中苹果—手口距离全程保持约 `0.014-0.015 m`；释放前实测腕
+pitch/roll 为 `-0.035/-0.068 rad`、肘 pitch 为 `-1.488 rad`。苹果最终落在
+`(8.156, 6.081)`，距新盘心 `0.034 m`，结果 `1/1 SUCCESS`。
 
 ---
 
@@ -153,10 +162,10 @@ Visual 使用原 `Yellow_Red_Nectarine` 材质，Albedo、Normal、Roughness 纹
 ```text
 robot base world xy: 约 (7.803, 6.083)
 apple fixed world:    (8.170, 5.900)，落稳中心 z=0.929
-plate center world:   (8.190, 5.710)，粉色原盘模型保留
+plate center world:   (8.190, 6.083)，机器人身体中线正前方，粉色原盘模型保留
 table top world z:    0.902
 table x shift:        -0.160 m（只把桌子向机器人靠近，苹果/盘子 xy 不跟随）
-apple collision:      sphere r=0.027 m, mass=0.10 kg, friction=1.20
+apple collision:      sphere r=0.040 m, mass=0.10 kg, friction=1.20
 hand collision:       friction=1.50，手指 effort 仍为 2 N.m
 ```
 
@@ -167,15 +176,15 @@ hand collision:       friction=1.50，手指 effort 仍为 2 N.m
 
 控制入口是 `teleoperation/control/walker_c1/pick_place_controller.py`。任务不是回放固定关节
 轨迹：每局从 `/sim/object_state` 读取实时苹果位置，在线生成掌心路点并用多种子 6D IK 求解。
-完整掌心朝向约束仍保留，抓取阶段仅加入 base-Y `+5 deg` 姿态放松；搬运阶段经过身体前方
-掌心路点 `(0.290, -0.285, 0.220)`，带 `+5 deg` carry yaw，使肘部保持弯曲后再去盘子。
+完整掌心朝向约束仍保留，抓取阶段固定为水平掌心向下；抓稳后直接用 3 秒平滑轨迹移动到
+正前方盘子上方，并在水平面内渐变到 `+35 deg` place yaw。
 
 关键阶段：安全 staged reset -> approach -> hover -> descend/闭环掌口对准 -> close -> lift ->
-1.4 仿真秒静置防滑 -> body-front transfer -> carry over plate -> lower/release -> retreat -> staged
+1.4 仿真秒静置防滑 -> direct carry over plate -> lower/release -> retreat -> staged
 reset。`HELD` 只说明刚抬起，必须随后看到 `static hold ... STABLE` 才算抓持可靠。
 
-最终盘上释放净空为 60 mm，较之前 40 mm 提高 20 mm：目标掌心 base-z 实测由约 `0.141 m`
-变为 `0.161 m`，避免张开手指碰粉色盘沿。盘子位置、盘上 xy、carry 和 retreat 路点均未改。
+最终盘上释放净空为 110 mm，目标掌心 base-z 约 `0.211 m`，避免张开手指碰粉色盘沿；盘上
+搬运点再高 40 mm，保证动作仍然是先高位搬运、再下降松手。
 
 最终 ready pose 的左臂是右臂严格镜像：肩/肘/腕 pitch 同号，roll/yaw 反号；左右手均发送
 相同的 6 个主动关节全开命令，其余 5 个/手从动关节按镜像机构联动。归位仍采用安全三阶段：

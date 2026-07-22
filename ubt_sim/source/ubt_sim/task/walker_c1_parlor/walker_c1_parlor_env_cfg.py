@@ -49,7 +49,7 @@ _TABLE_X_SHIFT = -0.16
 _TASK_X_SHIFT = -0.04  # preserve the proven apple x position independently
 _TABLE_POS = (8.444 + _TABLE_X_SHIFT, 6.083, _TABLE_TOP_Z - 0.03)
 _TABLE_SIZE = (0.60, 1.20, 0.06)
-_PLATE_POS = (8.19, 5.71, 0.905)  # raised with the tabletop
+_PLATE_POS = (8.19, 6.083, 0.905)  # on the robot centerline, directly in front
 _PLATE_RADIUS = 0.085
 _PLATE_HEIGHT = 0.05
 # Match the original Tiankung task apple at roughly 8 cm diameter.

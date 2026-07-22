@@ -36,7 +36,7 @@ except ImportError:
 
 
 APPLE_SPAWN_W = (8.17, 5.90, 0.968)
-PLATE_CENTER_W = (8.19, 5.71, 0.930)
+PLATE_CENTER_W = (8.19, 6.083, 0.930)
 PLATE_RADIUS = 0.12
 
 PRESHAPE_HAND = [0.2] * 6
@@ -49,8 +49,7 @@ GRASP_CENTER_DZ = 0.059
 # the old trajectory seed's -1.38 rad.
 PREGRASP_IK_SEED = [0.204, -0.115, 0.148, -1.671, 1.295, 0.132, -0.144]
 READY_RIGHT_ARM_IK_SEED = [TASK_RESET_BODY_POSE[name] for name in RIGHT_ARM_JOINT_NAMES]
-CARRY_YAW_RELIEF_DEG = 5.0
-TRANSFER_PALM_B = np.array([0.290, -0.285, 0.220], dtype=float)
+PLACE_YAW_DEG = 35.0
 
 # Palm-origin offset from the live apple center for the calibrated palm-down
 # cage. This is a hand geometry/task calibration, not a replayed joint
@@ -62,6 +61,7 @@ LIFT_PALM_Z = 0.18
 CARRY_PALM_Z = 0.20
 RELEASE_PALM_Z = 0.12
 PLATE_RELEASE_CLEARANCE_B = 0.110
+PLATE_CARRY_ABOVE_RELEASE_B = 0.040
 
 DEFAULT_CAMERA_TOPIC = "/sensor/camera/head/color/raw"
 DEFAULT_RECORD_ROOT = "/ubt_sim/dataset/walker_c1_ros"
@@ -529,42 +529,35 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         plate_b = self.world_to_base(PLATE_CENTER_W)
         plate_x, plate_y, plate_z = [float(v) for v in plate_b[:3]]
 
-        # Preserve the same level inclination through lift, carry and release.
-        # Carry yaw only rotates within the horizontal plane and cannot re-add
-        # the sideways wrist tilt removed from the grasp attitude.
-        release_rot = grasp_rot
-        carry_rot = _base_z_rotation(CARRY_YAW_RELIEF_DEG) @ grasp_rot
+        # Preserve the level inclination through lift, carry and release.  The
+        # plate is on the body centerline, where +35 deg horizontal yaw gives a
+        # fully reachable release pose; yaw does not change palm inclination.
+        place_rot = _base_z_rotation(PLACE_YAW_DEG) @ grasp_rot
         plate_anchor = np.array([plate_x, plate_y, plate_z], dtype=float) + PALM_GRASP_OFFSET_B
-        carry_palm = np.array([plate_anchor[0], plate_anchor[1], max(CARRY_PALM_Z, plate_anchor[2] + 0.10)])
+        release_z = max(RELEASE_PALM_Z, plate_anchor[2] + PLATE_RELEASE_CLEARANCE_B)
+        carry_palm = np.array(
+            [
+                plate_anchor[0],
+                plate_anchor[1],
+                max(CARRY_PALM_Z, release_z + PLATE_CARRY_ABOVE_RELEASE_B),
+            ]
+        )
         lower_palm = np.array(
             [
                 plate_anchor[0],
                 plate_anchor[1],
-                max(RELEASE_PALM_Z, plate_anchor[2] + PLATE_RELEASE_CLEARANCE_B),
+                release_z,
             ]
         )
         retreat_palm = np.array([plate_anchor[0] - 0.06, plate_anchor[1] - 0.06, max(CARRY_PALM_Z, plate_anchor[2] + 0.15)])
 
         self.get_logger().info(
-            f"transfer through body-front waypoint {_format_vec(TRANSFER_PALM_B)} with "
-            f"{CARRY_YAW_RELIEF_DEG:.1f} deg carry-yaw relief ..."
+            f"carry directly over plate with {PLACE_YAW_DEG:.1f} deg place yaw ..."
         )
         if not self.move_right_arm(
-            TRANSFER_PALM_B,
-            rot_mat=carry_rot,
-            duration=2.0,
-            corrections=0,
-            seed_arms=(self.current_arm(), READY_RIGHT_ARM_IK_SEED, PREGRASP_IK_SEED),
-            reference_arm=READY_RIGHT_ARM_IK_SEED,
-            smooth=True,
-        ):
-            return False
-        self.log_hand_geometry("body-front transfer")
-        self.get_logger().info("carry over plate ...")
-        if not self.move_right_arm(
             carry_palm,
-            rot_mat=carry_rot,
-            duration=2.2,
+            rot_mat=place_rot,
+            duration=3.0,
             corrections=0,
             smooth=True,
         ):
@@ -572,7 +565,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         self.get_logger().info("lower into plate ...")
         if not self.move_right_arm(
             lower_palm,
-            rot_mat=release_rot,
+            rot_mat=place_rot,
             duration=2.0,
             corrections=0,
             smooth=True,
@@ -587,7 +580,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         self.get_logger().info("retreat from plate ...")
         self.move_right_arm(
             retreat_palm,
-            rot_mat=release_rot,
+            rot_mat=place_rot,
             duration=1.2,
             corrections=0,
             smooth=True,
