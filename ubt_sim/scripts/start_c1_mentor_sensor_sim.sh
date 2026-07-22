@@ -8,6 +8,7 @@ ASSET_DIR=/ubt_sim/assets/robots/walker_c1/Collected_walker_c1_v1_sensorKpkd/Col
 MERGED_USD="$ASSET_DIR/walker_astron_v1_sensorKpkd_hands.usd"
 PXR_DIR=/isaac-sim/extscache/omni.usd.libs-1.0.1+8131b85d.lx64.r.cp311
 CONTROL_MODE=0
+C1_STEP_HZ="${UBT_SIM_C1_STEP_HZ:-100}"
 
 if [ "${1:-}" = "--control" ]; then
     CONTROL_MODE=1
@@ -36,4 +37,4 @@ else
 fi
 
 cd /ubt_sim
-exec bash scripts/start_sim.sh --device cpu --step_hz 30 "$@"
+exec bash scripts/start_sim.sh --device cpu --step_hz "$C1_STEP_HZ" "$@"

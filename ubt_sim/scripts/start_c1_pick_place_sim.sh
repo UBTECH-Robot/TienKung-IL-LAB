@@ -6,6 +6,7 @@ set -euo pipefail
 
 export UBT_SIM_TASK=UBTSim-WalkerC1-Parlor-v0
 export ROS_DOMAIN_ID=146
+C1_STEP_HZ="${UBT_SIM_C1_STEP_HZ:-100}"
 
 cd /ubt_sim
-exec bash scripts/start_sim.sh --device cpu --step_hz 30 "$@"
+exec bash scripts/start_sim.sh --device cpu --step_hz "$C1_STEP_HZ" "$@"

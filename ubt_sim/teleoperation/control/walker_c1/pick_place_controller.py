@@ -67,6 +67,7 @@ DEFAULT_CAMERA_TOPIC = "/sensor/camera/head/color/raw"
 DEFAULT_RECORD_ROOT = "/ubt_sim/dataset/walker_c1_ros"
 SIM_PHYSICS_HZ = 100.0
 DEFAULT_RECORD_HZ = 30.0
+DEFAULT_MOTION_SPEED = 1.5
 _RECORD_BUFFER_KEYS = (
     "arm_right", "hand_right", "arm_left", "hand_left",
     "action_arm_right", "action_arm_left", "action_hand_right", "action_hand_left",
@@ -92,6 +93,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         save_on_failure: bool = False,
         camera_topic: str = DEFAULT_CAMERA_TOPIC,
         record_hz: float = DEFAULT_RECORD_HZ,
+        motion_speed: float = DEFAULT_MOTION_SPEED,
     ):
         super().__init__(node_name="walker_c1_pick_place")
         self.record_enabled = bool(record)
@@ -99,8 +101,11 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         self.save_on_failure = bool(save_on_failure)
         self.camera_topic = camera_topic
         self.record_hz = float(record_hz)
+        self.motion_speed = float(motion_speed)
         if self.record_hz <= 0.0:
             raise ValueError("record_hz must be positive")
+        if self.motion_speed <= 0.0:
+            raise ValueError("motion_speed must be positive")
         self._record_active = False
         self._record_buffers = {key: [] for key in _RECORD_BUFFER_KEYS}
         self._record_skipped_frames = 0
@@ -114,6 +119,16 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             self._cv2 = cv2
             self.create_subscription(Image, camera_topic, self._record_image_cb, qos_profile_sensor_data)
             self.get_logger().info(f"ROS trajectory recording enabled on {camera_topic}")
+
+    def _motion_duration(self, nominal_seconds: float) -> float:
+        """Scale arm interpolation time without shortening grasp/hold checks."""
+        return float(nominal_seconds) / self.motion_speed
+
+    def _go_ready(self) -> None:
+        self.go_ready(
+            clear_duration=self._motion_duration(0.6),
+            final_duration=self._motion_duration(1.0),
+        )
 
     # ── synchronized ROS trajectory recording ──
     def start_recording(self) -> None:
@@ -247,6 +262,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             output.attrs["success"] = bool(success)
             output.attrs["camera_topic"] = self.camera_topic
             output.attrs["record_hz"] = self.record_hz
+            output.attrs["motion_speed"] = self.motion_speed
             output.attrs["timestamp_clock"] = "simulation" if self._record_uses_sim_time else "ros"
             output.create_dataset("puppet/arm_right_position_align/data", data=np.asarray(self._record_buffers["arm_right"], dtype=np.float32))
             output.create_dataset("puppet/end_effector_right_position_align/data", data=np.asarray(self._record_buffers["hand_right"], dtype=np.float32))
@@ -353,7 +369,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             if not self.move_right_arm(
                 target,
                 rot_mat=rot_mat,
-                duration=0.6,
+                duration=self._motion_duration(0.6),
                 corrections=0,
             ):
                 return target
@@ -470,7 +486,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         if not self.move_right_arm(
             approach,
             rot_mat=grasp_rot,
-            duration=2.0,
+            duration=self._motion_duration(2.0),
             corrections=0,
             seed_arms=(PREGRASP_IK_SEED, self.current_arm(), READY_RIGHT_ARM_IK_SEED),
             reference_arm=READY_RIGHT_ARM_IK_SEED,
@@ -478,12 +494,18 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             return False
         self.get_logger().info("hover over apple ...")
         if not self.move_right_arm(
-            hover, rot_mat=grasp_rot, duration=1.2, corrections=0
+            hover,
+            rot_mat=grasp_rot,
+            duration=self._motion_duration(1.2),
+            corrections=0,
         ):
             return False
         self.get_logger().info("descend around apple ...")
         if not self.move_right_arm(
-            grasp, rot_mat=grasp_rot, duration=3.0, corrections=0
+            grasp,
+            rot_mat=grasp_rot,
+            duration=self._motion_duration(3.0),
+            corrections=0,
         ):
             return False
         palm_target = self.align_grasp(grasp, grasp_rot)
@@ -500,7 +522,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         if not self.move_right_arm(
             lift_palm,
             rot_mat=grasp_rot,
-            duration=3.0,
+            duration=self._motion_duration(3.0),
             corrections=0,
             smooth=True,
         ):
@@ -557,7 +579,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         if not self.move_right_arm(
             carry_palm,
             rot_mat=place_rot,
-            duration=3.0,
+            duration=self._motion_duration(3.0),
             corrections=0,
             smooth=True,
         ):
@@ -566,7 +588,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         if not self.move_right_arm(
             lower_palm,
             rot_mat=place_rot,
-            duration=2.0,
+            duration=self._motion_duration(2.0),
             corrections=0,
             smooth=True,
         ):
@@ -581,13 +603,13 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         self.move_right_arm(
             retreat_palm,
             rot_mat=place_rot,
-            duration=1.2,
+            duration=self._motion_duration(1.2),
             corrections=0,
             smooth=True,
         )
 
         self.get_logger().info("back to ready ...")
-        self.go_ready()
+        self._go_ready()
         self.wait_sim_steps(40, timeout=10.0)
 
         final_w = self.object_state.get("object_pos_w")
@@ -619,7 +641,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
             return False
 
         self.get_logger().info("going to reset.py ready pose ...")
-        self.go_ready()
+        self._go_ready()
         self.wait_sim_steps(40, timeout=12.0)
 
         if set_apple:
@@ -660,7 +682,7 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         if not held:
             self.get_logger().warn("failed to grasp; returning to ready")
             self.open_hand("right")
-            self.go_ready()
+            self._go_ready()
             return False
 
         return self.place_and_return(grasp_rot)
@@ -678,6 +700,12 @@ def main() -> int:
     parser.add_argument("--save-on-failure", action="store_true", help="Save recorded frames even when the task fails")
     parser.add_argument("--camera-topic", default=DEFAULT_CAMERA_TOPIC)
     parser.add_argument("--record-hz", type=float, default=DEFAULT_RECORD_HZ, help="Trajectory recording rate in Hz")
+    parser.add_argument(
+        "--motion-speed",
+        type=float,
+        default=DEFAULT_MOTION_SPEED,
+        help="Arm interpolation speed multiplier; grasp close and hold checks are unchanged",
+    )
     parser.set_defaults(record=False)
     args = parser.parse_args()
 
@@ -688,6 +716,7 @@ def main() -> int:
         save_on_failure=args.save_on_failure,
         camera_topic=args.camera_topic,
         record_hz=args.record_hz,
+        motion_speed=args.motion_speed,
     )
     ok_count = 0
     saved_count = 0
