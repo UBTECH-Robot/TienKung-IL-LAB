@@ -135,13 +135,15 @@ class WalkerC1RobotController(Node):
         self._arm_bounds = [self.chain.links[i].bounds for i in self.arm_link_idx]
         self._last_cmd_arm: Optional[list[float]] = None
 
-        # Proven pre-close attitude from successful dataset 1784105817,
-        # frame 240. This is the last settled [0.2] hand pre-shape before the
-        # closing ramp begins; its palm normal is down with a forward tilt.
+        # Fixed, level palm-down grasp attitude in the robot base frame.  The
+        # previous matrix was copied from one successful trajectory and baked
+        # its ~36 deg sideways tilt into every IK target.  Keeping the palm
+        # normal exactly vertical lets the redundant arm joints absorb the
+        # reach instead of making the wrist look crooked.
         self.grasp_attitude = np.array([
-            [0.8111, -0.3169, 0.4915],
-            [-0.5089, -0.7966, 0.3262],
-            [0.2882, -0.5147, -0.8075],
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
         ])
 
     # ── state ──
@@ -293,11 +295,15 @@ class WalkerC1RobotController(Node):
             motion_penalty = float(np.mean(np.square((arm_array - current) / spans)))
             # C1 right elbow is straight near zero and naturally bent negative.
             elbow_straight_penalty = max(float(arm_array[3]) + 0.45, 0.0) ** 2
+            wrist_neutral_penalty = float(
+                0.75 * arm_array[6] ** 2 + 0.25 * arm_array[5] ** 2
+            )
             cost = (
                 4.0 * limit_penalty
                 + 0.25 * reference_penalty
                 + 0.10 * motion_penalty
                 + 2.0 * elbow_straight_penalty
+                + wrist_neutral_penalty
             )
             candidate = (cost, index, arm, pos_error, orientation_error, min_margin)
             if best is None or candidate[0] < best[0]:

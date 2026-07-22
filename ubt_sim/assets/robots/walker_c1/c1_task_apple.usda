@@ -17,7 +17,7 @@ def Xform "C1Apple" (
     {
         rel material:binding:physics = </C1Apple/PhysicsMaterials/AppleGripMaterial>
         color3f[] primvars:displayColor = [(0.8, 0.1, 0.1)]
-        double radius = 0.027
+        double radius = 0.04
         token visibility = "invisible"
     }
 
@@ -38,7 +38,7 @@ def Xform "C1Apple" (
         prepend references = @../../local_scenes/tiangong_parlor/scene_v2.usd@</World/apple>
     )
     {
-        matrix4d xformOp:transform:fitToCollider = ( (0.4403093436192276, 0, 0, 0), (0, 0.4403093436192276, 0, 0), (0, 0, 0.4403093436192276, 0), (0.026542140867725113, -0.03165331605923779, -0.026625575582147894, 1) )
+        matrix4d xformOp:transform:fitToCollider = ( (0.652310138695152, 0, 0, 0), (0, 0.652310138695152, 0, 0), (0, 0, 0.652310138695152, 0), (0.03932169017440757, -0.04689380156924117, -0.039445297158737624, 1) )
         uniform token[] xformOpOrder = ["xformOp:transform:fitToCollider"]
 
         over "tersdibra_LOD0"

@@ -52,9 +52,8 @@ _TABLE_SIZE = (0.60, 1.20, 0.06)
 _PLATE_POS = (8.19, 5.71, 0.905)  # raised with the tabletop
 _PLATE_RADIUS = 0.085
 _PLATE_HEIGHT = 0.05
-# The successful physical grasp recipe uses a 5.4 cm object: large enough for
-# opposing fingers to establish contact, while still fitting the 5-6 cm cage.
-_GRASP_OBJECT_RADIUS = 0.027
+# Match the original Tiankung task apple at roughly 8 cm diameter.
+_GRASP_OBJECT_RADIUS = 0.040
 _GRASP_OBJECT_MASS = 0.10
 # Apple start: near the table front edge, in front of the right hand
 # (ready-pose palm sits at world ~(8.04, 5.89, 0.85+)).

@@ -35,7 +35,7 @@ except ImportError:
     from robot_controller import LEFT_HAND_SDK_NAMES, RIGHT_HAND_SDK_NAMES, WalkerC1RobotController
 
 
-APPLE_SPAWN_W = (8.17, 5.90, 0.955)
+APPLE_SPAWN_W = (8.17, 5.90, 0.968)
 PLATE_CENTER_W = (8.19, 5.71, 0.930)
 PLATE_RADIUS = 0.12
 
@@ -44,9 +44,11 @@ CLOSED_HAND = [0.7, 0.85, 0.8, 0.8, 0.8, 0.8]
 HOLD_HAND = CLOSED_HAND
 GRASP_MOUTH_OFFSET_XY_B = np.array([-0.010, 0.013], dtype=float)
 GRASP_CENTER_DZ = 0.059
-PREGRASP_IK_SEED = [-0.5419, 0.1211, 0.9164, 0.0530, -0.0293, -0.3610, -1.3760]
+# Natural, tucked-arm solution for the fixed level palm-down attitude at the
+# nominal approach point.  In particular, wrist roll is -0.14 rad instead of
+# the old trajectory seed's -1.38 rad.
+PREGRASP_IK_SEED = [0.204, -0.115, 0.148, -1.671, 1.295, 0.132, -0.144]
 READY_RIGHT_ARM_IK_SEED = [TASK_RESET_BODY_POSE[name] for name in RIGHT_ARM_JOINT_NAMES]
-GRASP_PITCH_RELIEF_DEG = 5.0
 CARRY_YAW_RELIEF_DEG = 5.0
 TRANSFER_PALM_B = np.array([0.290, -0.285, 0.220], dtype=float)
 
@@ -59,7 +61,7 @@ HOVER_PALM_Z = 0.14
 LIFT_PALM_Z = 0.18
 CARRY_PALM_Z = 0.20
 RELEASE_PALM_Z = 0.12
-PLATE_RELEASE_CLEARANCE_B = 0.060
+PLATE_RELEASE_CLEARANCE_B = 0.110
 
 DEFAULT_CAMERA_TOPIC = "/sensor/camera/head/color/raw"
 DEFAULT_RECORD_ROOT = "/ubt_sim/dataset/walker_c1_ros"
@@ -74,12 +76,6 @@ _RECORD_BUFFER_KEYS = (
 
 def _format_vec(values: Sequence[float]) -> str:
     return "[" + ", ".join(f"{float(v):+.3f}" for v in values) + "]"
-
-
-def _base_y_rotation(degrees: float) -> np.ndarray:
-    angle = np.deg2rad(degrees)
-    cosine, sine = float(np.cos(angle)), float(np.sin(angle))
-    return np.array([[cosine, 0.0, sine], [0.0, 1.0, 0.0], [-sine, 0.0, cosine]])
 
 
 def _base_z_rotation(degrees: float) -> np.ndarray:
@@ -404,8 +400,9 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         )
 
     def close_hand_decisive(self) -> None:
-        # The 5.4 cm object recipe closes all six commands together over 60
-        # physics steps, then lets the grasp stabilize before arm motion.
+        # Close all six commands together over 60 physics steps, then let the
+        # grasp stabilize before arm motion.  This also holds the restored
+        # 8 cm task apple with the level palm-down pose.
         start = PRESHAPE_HAND
         updates = 60
         for step in range(1, updates + 1):
@@ -446,11 +443,8 @@ class WalkerC1PickPlace(WalkerC1RobotController):
     def prepare_palm_down_cage(self) -> np.ndarray:
         self.move_hand("right", PRESHAPE_HAND, repeats=4)
         self.wait_sim_steps(15, timeout=6.0)
-        self.get_logger().info(
-            f"using calibrated palm-down cage with {GRASP_PITCH_RELIEF_DEG:.1f} deg "
-            "base-Y posture relief"
-        )
-        return _base_y_rotation(GRASP_PITCH_RELIEF_DEG) @ self.grasp_attitude
+        self.get_logger().info("using fixed level palm-down grasp attitude")
+        return self.grasp_attitude.copy()
 
     def try_grasp_once(
         self,
@@ -535,8 +529,11 @@ class WalkerC1PickPlace(WalkerC1RobotController):
         plate_b = self.world_to_base(PLATE_CENTER_W)
         plate_x, plate_y, plate_z = [float(v) for v in plate_b[:3]]
 
-        release_rot = self.fk_palm()[:3, :3]
-        carry_rot = _base_z_rotation(CARRY_YAW_RELIEF_DEG) @ release_rot
+        # Preserve the same level inclination through lift, carry and release.
+        # Carry yaw only rotates within the horizontal plane and cannot re-add
+        # the sideways wrist tilt removed from the grasp attitude.
+        release_rot = grasp_rot
+        carry_rot = _base_z_rotation(CARRY_YAW_RELIEF_DEG) @ grasp_rot
         plate_anchor = np.array([plate_x, plate_y, plate_z], dtype=float) + PALM_GRASP_OFFSET_B
         carry_palm = np.array([plate_anchor[0], plate_anchor[1], max(CARRY_PALM_Z, plate_anchor[2] + 0.10)])
         lower_palm = np.array(

@@ -13,7 +13,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 DEFAULT_SOURCE = Path("/ubt_sim/assets/local_scenes/tiangong_parlor/scene_v2.usd")
 DEFAULT_OUTPUT = Path("/ubt_sim/assets/robots/walker_c1/c1_task_apple.usda")
 SOURCE_APPLE_PRIM = Sdf.Path("/World/apple")
-APPLE_RADIUS_M = 0.027
+APPLE_RADIUS_M = 0.040
 APPLE_MASS_KG = 0.10
 APPLE_FRICTION = 1.20
 
