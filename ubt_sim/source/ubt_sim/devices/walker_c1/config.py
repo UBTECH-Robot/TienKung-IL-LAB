@@ -8,13 +8,17 @@ from ubt_sim.utils.constant import ASSETS_ROOT
 
 """Configuration for the Walker C1 / Astron robot asset."""
 ROBOTS_ROOT = Path(ASSETS_ROOT) / "robots"
-# Use the force-drive USD: the original walker_c1.usd has all 53 joint drives as
-# type=acceleration, which makes effective torque stiffness = stiffness*inertia
-# ~= 0 (upper body droops under gravity). walker_c1_force_drive.usd is the same
-# asset with every drive converted to force. The grip variant additionally
-# gives the rigid finger collision meshes pad-like friction, preventing a
-# correctly enclosed apple from slowly slipping during a static hold.
-_WALKER_C1_DEFAULT_USD_PATH = ROBOTS_ROOT / "walker_c1" / "walker_c1_force_drive_grip.usd"
+# Default to the mentor-provided body/sensor asset merged with the proven C1
+# dexterous hands. The merged layer preserves the mentor body, five cameras and
+# two IMUs while carrying over the force-drive, high-friction hand physics used
+# by the validated pick-and-place task.
+_WALKER_C1_DEFAULT_USD_PATH = (
+    ROBOTS_ROOT
+    / "walker_c1"
+    / "Collected_walker_c1_v1_sensorKpkd"
+    / "Collected_walker_astron_v1_sensorKpkd"
+    / "walker_astron_v1_sensorKpkd_hands.usd"
+)
 WALKER_C1_USD_PATH = Path(
     os.environ.get("UBT_SIM_WALKER_C1_USD_PATH", str(_WALKER_C1_DEFAULT_USD_PATH))
 ).expanduser()
