@@ -68,6 +68,7 @@ RUN /usr/bin/python3 -m pip install --upgrade pip \
 RUN if ! id -u user_lerobot >/dev/null 2>&1; then \
         useradd -m -s /bin/bash user_lerobot; \
     fi \
+    && usermod -aG video user_lerobot \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
         python3.12 python3.12-dev python3.12-venv \
