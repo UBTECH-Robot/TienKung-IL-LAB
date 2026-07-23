@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,10 @@ from .constants import (
     TOPIC_LEFT_HAND_STATE,
     TOPIC_RIGHT_HAND_CMD,
     TOPIC_RIGHT_HAND_STATE,
+    TOPIC_LEFT_GRIP_CMD,
+    TOPIC_LEFT_GRIP_STATE,
+    TOPIC_RIGHT_GRIP_CMD,
+    TOPIC_RIGHT_GRIP_STATE,
     V4_HAND_JOINT_LIMITS,
     V4_HAND_LEFT_JOINTS,
     V4_HAND_RIGHT_JOINTS,
@@ -168,6 +173,11 @@ class WalkerRobotConfig(RobotConfig):
 
     # Control
     control_fps: float = 15.0
+    body_control_mode: str = "pvt"          # "velocity" | "pvt" | "position"
+    body_velocity_timeout: float = 0.3       # 速度模式超时（秒）
+    body_pvt_kp: float | dict | None = None  # PVT Kp 覆盖
+    body_pvt_kd: float | dict | None = None  # PVT Kd 覆盖
+    max_safe_velocity: float = 1.0           # 速度/PVT 最大关节速度 (rad/s)
 
     # Safety
     max_relative_target: float | None = None
@@ -252,6 +262,11 @@ class WalkerRobotConfig(RobotConfig):
             self.hand_type = "pgc_gripper_1dof"
             self.left_hand_joint_names = ["left_grip"] if "left_grip" in member_names else []
             self.right_hand_joint_names = ["right_grip"] if "right_grip" in member_names else []
+            # PGC 夹爪使用独立 topic，与 V4 手不同
+            self.topic_left_hand_cmd = TOPIC_LEFT_GRIP_CMD
+            self.topic_right_hand_cmd = TOPIC_RIGHT_GRIP_CMD
+            self.topic_left_hand_state = TOPIC_LEFT_GRIP_STATE
+            self.topic_right_hand_state = TOPIC_RIGHT_GRIP_STATE
         else:
             # 仅车身关节，无末端执行器
             self.end_effector_type = "v4_hand_7dof"  # 占位，避免 _validate 报错
@@ -281,6 +296,20 @@ class WalkerRobotConfig(RobotConfig):
             self.left_hand_open_position = [0.0] * len(self.left_hand_joint_names)
             self.right_hand_open_position = [0.0] * len(self.right_hand_joint_names)
         self.hand_open_position = list(self.left_hand_open_position or [])
+
+        # 环境变量覆盖控制模式（部署时无需完整 ROBOT_CONFIG JSON）
+        _env_mode = os.environ.get("BODY_CONTROL_MODE", "")
+        if _env_mode:
+            self.body_control_mode = _env_mode
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.info("BODY_CONTROL_MODE=%s from environment", _env_mode)
+        _env_mvs = os.environ.get("BODY_MAX_SPEED", "")
+        if _env_mvs:
+            self.max_safe_velocity = float(_env_mvs)
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.info("BODY_MAX_SPEED=%s from environment", _env_mvs)
 
     def _load_robot_config(self, path: Path) -> None:
         with path.open("r", encoding="utf-8") as f:
@@ -324,6 +353,10 @@ class WalkerRobotConfig(RobotConfig):
         self.body_joint_names = sum((self.body_groups[group] for group in _BODY_GROUPS), [])
 
         self.lock_joints = list(body_cfg.get("lock_joints", self.lock_joints))
+        self.body_control_mode = body_cfg.get("control_mode", self.body_control_mode)
+        self.body_velocity_timeout = float(body_cfg.get("velocity_timeout", self.body_velocity_timeout))
+        self.body_pvt_kp = body_cfg.get("pvt_kp", self.body_pvt_kp)
+        self.body_pvt_kd = body_cfg.get("pvt_kd", self.body_pvt_kd)
         body_home = body_cfg.get("home", {})
         if not isinstance(body_home, dict):
             raise ValueError("body.home must be an object keyed by real joint name")
@@ -571,6 +604,11 @@ class WalkerRobotConfig(RobotConfig):
             "robot_model": self.robot_model,
             "description": self.description,
             "control_fps": self.control_fps,
+            "body_control_mode": self.body_control_mode,
+            "body_velocity_timeout": self.body_velocity_timeout,
+            "body_pvt_kp": self.body_pvt_kp,
+            "body_pvt_kd": self.body_pvt_kd,
+            "max_safe_velocity": self.max_safe_velocity,
             "zmq_cmd_port": self.zmq_cmd_port,
             "zmq_status_port": self.zmq_status_port,
             "zmq_image_port": self.zmq_image_port,

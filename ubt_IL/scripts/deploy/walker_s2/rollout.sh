@@ -14,7 +14,7 @@ ROBOT_CONFIG="${ROBOT_CONFIG:-}"
 ALLOW_DIM_ONLY_POLICY="${ALLOW_DIM_ONLY_POLICY:-0}"
 STRATEGY="${STRATEGY:-base}"
 FPS="${FPS:-13}"
-DURATION="${DURATION:-30}"
+DURATION="${DURATION:-60}"
 TASK="${TASK:-walker s2 rollout}"
 PREVIEW_CAMERA="${PREVIEW_CAMERA:-1}"
 PREVIEW_CAMERA_WIDTH="${PREVIEW_CAMERA_WIDTH:-0}"
@@ -188,4 +188,5 @@ fi
     --robot.control_fps="$FPS" \
     --task="$TASK" \
     --fps="$FPS" \
-    --duration="$DURATION"
+    --duration="$DURATION" \
+    $EXTRA_ARGS

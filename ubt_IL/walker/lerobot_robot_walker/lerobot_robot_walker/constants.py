@@ -415,6 +415,8 @@ class Walker_S2_10D_2Camera(RobotConfig):
         "camera_wrist_right": "shm_msgs/Image1m",
     }
 
+    camera_warmup_s = 10
+
 
 # ============================================================================
 # ROBOT_MODELS 注册表（实例化上面的规格类）

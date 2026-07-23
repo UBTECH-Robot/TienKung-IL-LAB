@@ -84,8 +84,8 @@ DEFAULT_LOCK_JOINTS = ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"]
 
 # 对齐 pub_arm_command.py 的 PVT 基线增益（kp=50/kd=2，velocity=0 纯阻尼）：
 # 原 30/1 过软 → 跟踪误差与振荡（抖动）。真机仍可经 pvt_kp/pvt_kd 覆盖。
-_PVT_DEFAULT_KP = 50.0   # 位置增益（对齐 pub_arm_command 基线）
-_PVT_DEFAULT_KD = 2.0    # 速度增益（阻尼，对齐 pub_arm_command 基线）
+_PVT_DEFAULT_KP = 200.0  # 位置增益（真机调试值）
+_PVT_DEFAULT_KD = 50.0   # 速度增益（阻尼，真机调试值）
 
 # 轨迹插值 profile
 PROFILE_LINEAR = "linear"

@@ -22,6 +22,14 @@ import cv2
 import numpy as np
 import zmq
 
+# RobotController 集成：bridge 不做插值，所有 500Hz 控制由 RobotController 的 ROS2 Timer 驱动
+import sys as _sys, os as _os
+_robot_control_path = _os.path.join(
+    _os.path.dirname(_os.path.abspath(__file__)), "walker_sdk_ros2"
+)
+if _robot_control_path not in _sys.path:
+    _sys.path.insert(0, _robot_control_path)
+
 logger = logging.getLogger("ros2_walker_bridge")
 
 
@@ -108,6 +116,11 @@ _DEFAULT_CFG = {
     "gripper_mode": 0,
     "control_fps": 15.0,
     "max_safe_velocity": 1.0,
+    # ---- body 控制模式（集成 RobotController）----
+    "body_control_mode": "pvt",       # "velocity" | "pvt" | "position"
+    "body_velocity_timeout": 0.3,    # 速度模式超时（秒）
+    "body_pvt_kp": None,             # PVT Kp 覆盖（None=默认：手臂200,头部50）
+    "body_pvt_kd": None,             # PVT Kd 覆盖（None=默认：手臂50,头部20）
     "lock_joints": ["head_pitch_joint", "head_yaw_joint", "waist_yaw_joint"],
     "home_position": [
         -1.56, 2.88, 0.0, -0.15, -1.56, 0.0, 0.0,
@@ -195,14 +208,16 @@ class WalkerRealRobotBridge:
         self._gripper_velocity = float(cfg.get("gripper_velocity", 0.005))
         self._gripper_acceleration = float(cfg.get("gripper_acceleration", 0.0))
         self._gripper_mode = int(cfg.get("gripper_mode", 0))
-        self._control_fps = float(cfg.get("control_fps", 15.0))
+        self._control_fps = float(cfg.get("control_fps", 15.0))  # 保留用于日志，不再用于插值
         self._max_safe_velocity = float(cfg.get("max_safe_velocity", 1.0))
+        self._body_control_mode = cfg.get("body_control_mode", "pvt")
+        self._body_velocity_timeout = float(cfg.get("body_velocity_timeout", 0.3))
 
         ros_namespace = cfg.get("ros_namespace", "").rstrip("/")
         cmd_namespace = cfg.get("cmd_namespace", "").rstrip("/") if cfg.get("cmd_namespace") else ""
 
         import rclpy
-        from rclpy.executors import MultiThreadedExecutor
+        from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
         from rclpy.node import Node
         from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
         from sensor_msgs.msg import JointState
@@ -238,12 +253,41 @@ class WalkerRealRobotBridge:
         if not rclpy.ok():
             rclpy.init()
 
+        # ================================================================
+        # RobotController：处理所有 body 控制（state sub、500Hz Timer、cmd pub）
+        # ================================================================
+        from robot_control import RobotController
+
+        self._robot_ctrl = RobotController(
+            node_name="walker_body_controller",
+            control_hz=500,
+            control_mode=self._body_control_mode,
+            velocity_timeout=self._body_velocity_timeout,
+            lock_joints=list(self._lock_joints),
+            pvt_kp=cfg.get("body_pvt_kp"),
+            pvt_kd=cfg.get("body_pvt_kd"),
+            enable_safety_check=True,
+            enable_hand_control=False,   # 手/夹爪由 Bridge Node 管理
+        )
+        self._body_executor = SingleThreadedExecutor()
+        self._body_executor.add_node(self._robot_ctrl)
+        self._body_thread = threading.Thread(
+            target=self._body_executor.spin, daemon=True, name="body_executor"
+        )
+        self._body_thread.start()
+
+        if not self._robot_ctrl.wait_for_state(timeout=10.0):
+            raise RuntimeError("RobotController: timeout waiting for RobotState")
+
+        # ================================================================
+        # Bridge Node：CameraRelay + 手/夹爪
+        # ================================================================
         self._node = Node("ros2_walker_bridge")
 
-        self._body_jpos = [0.0] * self._n_body
+        # hand/gripper 位置缓存（Bridge 自己维护，RobotController 不管手/夹爪）
         self._left_hand_pos = [0.0] * self._n_left_hand
         self._right_hand_pos = [0.0] * self._n_right_hand
-        self._state_lock = threading.Lock()
+        self._hand_state_lock = threading.Lock()
 
         qos_sensor = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -258,9 +302,7 @@ class WalkerRealRobotBridge:
             durability=DurabilityPolicy.VOLATILE,
         )
 
-        body_cmd_topic = f"{cmd_namespace}{cfg['topic_body_cmd']}" if cmd_namespace else cfg["topic_body_cmd"]
-        self._body_cmd_pub = self._node.create_publisher(RobotCommand, body_cmd_topic, qos_cmd)
-
+        # 手/夹爪 publisher（保留在 Bridge Node）
         self._left_hand_pub = None
         self._right_hand_pub = None
         self._left_grip_pub = None
@@ -276,9 +318,7 @@ class WalkerRealRobotBridge:
             self._left_hand_pub = self._node.create_publisher(JointCommand, left_topic, qos_cmd)
             self._right_hand_pub = self._node.create_publisher(JointCommand, right_topic, qos_cmd)
 
-        self._node.create_subscription(
-            RobotState, f"{ros_namespace}{cfg['topic_body_state']}", self._body_state_callback, qos_sensor
-        )
+        # 手/夹爪 state subscriber（保留在 Bridge Node）
         if self._end_effector_type == "pgc_gripper_1dof":
             self._node.create_subscription(
                 self._GripStatus,
@@ -300,30 +340,28 @@ class WalkerRealRobotBridge:
                 JointState, f"{ros_namespace}{cfg['topic_right_hand_state']}", self._right_hand_callback, 10
             )
 
-        self._executor = MultiThreadedExecutor(num_threads=4)
-        self._executor.add_node(self._node)
-        self._executor_thread = threading.Thread(target=self._executor.spin, daemon=True, name="ros2_executor")
-        self._executor_thread.start()
+        self._bridge_executor = MultiThreadedExecutor(num_threads=2)
+        self._bridge_executor.add_node(self._node)
+        self._bridge_thread = threading.Thread(
+            target=self._bridge_executor.spin, daemon=True, name="bridge_executor"
+        )
+        self._bridge_thread.start()
 
+        # ================================================================
+        # ZMQ action 转发（不做插值，直接调 robot_ctrl API）
+        # ================================================================
+        self._last_action_time = 0.0
         self._running = True
-        # body 插值状态：500Hz 线性插值（_start_vec → _goal_vec，时长 = 1/fps），
-        # 从实际关节位置（_body_jpos）出发匀速到达目标；无新 action 时 hold 在 goal。
-        self._body_vec_lock = threading.Lock()
-        self._body_start_vec = np.zeros(self._n_body, dtype=float)
-        self._body_goal_vec = np.zeros(self._n_body, dtype=float)
-        self._body_ramp_t0 = 0.0
-        self._body_ramp_dur = 1.0 / 15.0
-        self._body_has_target = False
-        self._body_thread = None
-        self._action_thread = threading.Thread(target=self._action_loop, daemon=True, name="action_forward")
+        self._action_thread = threading.Thread(
+            target=self._action_loop, daemon=True, name="action_forward"
+        )
         self._action_thread.start()
-        self._body_thread = threading.Thread(target=self._body_publish_loop, daemon=True, name="body_forward")
-        self._body_thread.start()
 
         logger.info(
-            "Walker bridge started model=%s end_effector=%s ns=%s cmd_ns=%s lock=%s body_joints=%d fps=%.0f",
+            "Walker bridge started model=%s end_effector=%s ns=%s cmd_ns=%s lock=%s body_joints=%d "
+            "control_mode=%s",
             cfg.get("robot_model", "?"), self._end_effector_type, ros_namespace, cmd_namespace,
-            sorted(self._lock_joints), self._n_body, self._control_fps,
+            sorted(self._lock_joints), self._n_body, self._body_control_mode,
         )
 
     @staticmethod
@@ -335,31 +373,7 @@ class WalkerRealRobotBridge:
             "waist": list(body_joint_names[16:17]),
         }
 
-    def _body_state_callback(self, msg: Any) -> None:
-        """Parse RobotState → extract body joint positions by name."""
-        if self._mc_msgs_available:
-            joint_states = msg.joint_states
-            name_to_idx = {name: idx for idx, name in enumerate(joint_states.name)}
-        else:
-            name_to_idx = {name: idx for idx, name in enumerate(msg.name)}
-
-        positions = [0.0] * self._n_body
-        valid = True
-        for i, jname in enumerate(self._body_joint_names):
-            if jname in name_to_idx:
-                if self._mc_msgs_available:
-                    positions[i] = joint_states.position[name_to_idx[jname]]
-                else:
-                    positions[i] = msg.position[name_to_idx[jname]]
-            else:
-                valid = False
-                break
-
-        if valid:
-            with self._state_lock:
-                self._body_jpos[:] = positions
-            self._publish_status()
-
+    # ---- hand/gripper state callbacks（保留在 Bridge Node，不变）----
     def _left_hand_callback(self, msg: Any) -> None:
         self._joint_state_hand_callback("left", msg)
 
@@ -373,7 +387,7 @@ class WalkerRealRobotBridge:
         for i, jname in enumerate(joint_names):
             if jname in name_to_idx:
                 positions[i] = msg.position[name_to_idx[jname]]
-        with self._state_lock:
+        with self._hand_state_lock:
             if side == "left":
                 self._left_hand_pos[:] = positions
             else:
@@ -382,148 +396,127 @@ class WalkerRealRobotBridge:
 
     def _gripper_callback(self, side: str, msg: Any) -> None:
         pos = float(getattr(msg, "pos", 0.0))
-        with self._state_lock:
+        with self._hand_state_lock:
             if side == "left":
                 self._left_hand_pos[:] = [pos]
             else:
                 self._right_hand_pos[:] = [pos]
         self._publish_status()
 
-    def _body_group_values(self, group: str) -> list[float]:
-        start = 0
-        for name in ("left_arm", "right_arm", "head", "waist"):
-            count = len(self._body_groups[name])
-            if name == group:
-                return list(self._body_jpos[start:start + count])
-            start += count
-        return []
-
+    # ---- ZMQ status（body 从 RobotController 读，hand/gripper 从 Bridge 缓存读）----
     def _publish_status(self) -> None:
-        with self._state_lock:
-            status = {
-                "left_arm": self._body_group_values("left_arm"),
-                "right_arm": self._body_group_values("right_arm"),
-                "head": self._body_group_values("head"),
-                "waist": self._body_group_values("waist"),
-                "left_hand": list(self._left_hand_pos),
-                "right_hand": list(self._right_hand_pos),
-                "ts": time.time(),
-            }
+        body_pos = self._robot_ctrl.get_current_position()
+        if body_pos is None:
+            return
+
+        left_arm = [float(body_pos[self._robot_ctrl.joint_index(n)]) for n in self._body_groups["left_arm"]]
+        right_arm = [float(body_pos[self._robot_ctrl.joint_index(n)]) for n in self._body_groups["right_arm"]]
+        head = [float(body_pos[self._robot_ctrl.joint_index(n)]) for n in self._body_groups["head"]]
+        waist = [float(body_pos[self._robot_ctrl.joint_index(n)]) for n in self._body_groups["waist"]]
+
+        with self._hand_state_lock:
+            left_hand = list(self._left_hand_pos)
+            right_hand = list(self._right_hand_pos)
+
+        status = {
+            "left_arm": left_arm,
+            "right_arm": right_arm,
+            "head": head,
+            "waist": waist,
+            "left_hand": left_hand,
+            "right_hand": right_hand,
+            "ts": time.time(),
+        }
         self.zmq_bridge.send_status(status)
 
+    # ---- ZMQ action 转发（不做插值，直接调 RobotController API）----
     def _action_loop(self) -> None:
         while self._running:
             action = self.zmq_bridge.recv_action(timeout_ms=50)
             if action is not None:
-                # body 目标交给 500Hz 插值发布线程（quintic 斜坡 + hold）
+                # body：转发给 RobotController（500Hz 插值/平滑由 controller 负责）
                 self._update_body_target(action)
-                # 末端执行器（手/夹爪）走独立通路，保持事件驱动
+                # 末端执行器（手/夹爪）走独立通路
                 self._publish_end_effector_command("left", action.get("left_hand", []))
                 self._publish_end_effector_command("right", action.get("right_hand", []))
 
-    def _update_body_target(self, action: dict) -> None:
-        """收到新 action：从机器人实际关节位置出发，在 1/fps 秒内线性插值到目标。"""
-        goal = self._body_action_to_vec(action)
-        if goal is None:
-            return
+    def _body_action_to_dict(self, action: dict) -> dict[str, float] | None:
+        """从 ZMQ action dict 提取 body 目标，返回 {joint_name: target_angle}。
 
-        # 从 ROS2 状态订阅获取当前实际关节位置
-        with self._state_lock:
-            start = np.array(self._body_jpos, dtype=float).copy()
-
-        duration = 1.0 / self._control_fps
-
-        # 安全帽：裁剪异常大步进（正常运行时 max_relative_target 已限步，此处不触发）
-        delta = goal - start
-        max_delta = self._max_safe_velocity * duration
-        delta = np.clip(delta, -max_delta, max_delta)
-        goal = start + delta
-
-        with self._body_vec_lock:
-            self._body_start_vec = start
-            self._body_goal_vec = goal
-            self._body_ramp_t0 = time.time()
-            self._body_ramp_dur = duration
-            self._body_has_target = True
-
-    def _body_action_to_vec(self, action: dict) -> np.ndarray | None:
-        """从 action dict 提取 body 目标向量（按 _body_joint_names 顺序）。None=无 body 关节。"""
-        vec = np.zeros(self._n_body, dtype=float)
-        idx = 0
-        has_any = False
+        action 格式由 LeRobot 插件定义，分组顺序由 _body_groups 配置决定。
+        返回 None 表示 action 中没有 body 关节数据。
+        """
+        result = {}
         for group in ("left_arm", "right_arm", "head", "waist"):
             values = action.get(group, [])
             joint_names = self._body_groups[group]
-            for _jname, val in zip(joint_names, values):
-                if idx >= self._n_body:
-                    break
-                vec[idx] = float(val)
-                idx += 1
-                has_any = True
-        return vec if has_any else None
+            for jname, val in zip(joint_names, values):
+                val = float(val)
+                if jname in self._body_joint_limits:
+                    val = _clamp(val, self._body_joint_limits[jname])
+                result[jname] = val
+        return result if result else None
 
-    def _body_interp_at(self, t: float) -> np.ndarray:
-        """时刻 t 的线性插值目标。调用方须持 _body_vec_lock。"""
-        if self._body_ramp_dur <= 0:
-            return self._body_goal_vec.copy()
-        tau = (t - self._body_ramp_t0) / self._body_ramp_dur
-        if tau <= 0.0:
-            return self._body_start_vec.copy()
-        if tau >= 1.0:
-            return self._body_goal_vec.copy()
-        return self._body_start_vec + tau * (self._body_goal_vec - self._body_start_vec)
+    def _update_body_target(self, action: dict) -> None:
+        """收到新 action：转换为 {name: angle} dict，调用 RobotController API。
 
-    def _body_publish_loop(self) -> None:
-        """500Hz 发布 body 插值目标（线性斜坡 + hold），平滑 action 步进。
-
-        发布节拍由独立线程 sleep 控制，不依赖 executor 调度，不复现 GIL 定时器抖动。
+        dt 使用实际收包间隔（来多快发多快），RobotController 负责所有插值和时序。
         """
-        period = 1.0 / 500.0
-        next_t = time.time()
-        while self._running:
-            now = time.time()
-            with self._body_vec_lock:
-                vec = self._body_interp_at(now) if self._body_has_target else None
-            if vec is not None:
-                self._publish_body_vec(vec)
-            next_t += period
-            sleep_t = next_t - time.time()
-            if sleep_t > 0:
-                time.sleep(sleep_t)
-            else:
-                next_t = time.time()  # 落后过多则重置，避免追赶风暴
-
-    def _publish_body_vec(self, vec: np.ndarray) -> None:
-        """从 body 目标向量构造并发布 RobotCommand（限位裁剪 + lock_joints 过滤）。"""
-        target_joints = []
-        for jname, val in zip(self._body_joint_names, vec):
-            val = float(val)
-            if jname in self._body_joint_limits:
-                val = _clamp(val, self._body_joint_limits[jname])
-            target_joints.append((jname, val))
-
-        if not target_joints:
+        goal = self._body_action_to_dict(action)
+        if not goal:
             return
 
-        if self._mc_msgs_available:
-            from std_msgs.msg import Header
-            msg = self._RobotCommand()
-            msg.header = Header()
-            msg.header.stamp = self._node.get_clock().now().to_msg()
-            for jname, val in target_joints:
-                if jname in self._lock_joints:
-                    continue
-                jc = self._JointCmd()
-                jc.name = jname
-                jc.control_mode = self._JointCmd.MODE_POSITION
-                jc.position = val
-                msg.joint_cmd.append(jc)
-        else:
-            msg = self._JointState()
-            msg.name = [jname for jname, _ in target_joints if jname not in self._lock_joints]
-            msg.position = [val for jname, val in target_joints if jname not in self._lock_joints]
+        now = time.time()
+        dt = now - self._last_action_time if self._last_action_time > 0 else 1.0 / 15.0
+        self._last_action_time = now
 
-        self._body_cmd_pub.publish(msg)
+        mode = self._body_control_mode
+
+        if mode == "velocity":
+            current_pos = self._robot_ctrl.get_current_position()
+            if current_pos is None:
+                return
+            vel_dict = {}
+            for name, target_angle in goal.items():
+                if name in self._lock_joints:
+                    continue
+                idx = self._robot_ctrl.joint_index(name)
+                vel = (target_angle - float(current_pos[idx])) / dt
+                vel = max(-self._max_safe_velocity, min(self._max_safe_velocity, vel))
+                vel_dict[name] = vel
+            if vel_dict:
+                self._robot_ctrl.set_joint_velocities(vel_dict)
+
+        elif mode == "pvt":
+            current_pos = self._robot_ctrl.get_current_position()
+            if current_pos is None:
+                return
+            targets = {}
+            for name, target_angle in goal.items():
+                if name in self._lock_joints:
+                    continue
+                idx = self._robot_ctrl.joint_index(name)
+                dist = abs(target_angle - float(current_pos[idx]))
+                speed = max(0.01, dist / dt)
+                targets[name] = (target_angle, speed)
+            if targets:
+                self._robot_ctrl.move_joints(targets, wait=False)
+
+        else:  # position（向后兼容）
+            target_arr = np.zeros(self._robot_ctrl.n_joints, dtype=float)
+            for name, angle in goal.items():
+                idx = self._robot_ctrl.joint_index(name)
+                target_arr[idx] = float(angle)
+            current = self._robot_ctrl.get_current_position()
+            if current is not None:
+                for i in range(len(target_arr)):
+                    if target_arr[i] == 0.0 and self._robot_ctrl.all_joints[i] not in goal:
+                        target_arr[i] = current[i]
+            self._robot_ctrl.move_to_position(
+                target_arr, duration_sec=dt, wait=False
+            )
+
+    # ---- end effector（保留在 Bridge Node，不变）----
 
     def _publish_end_effector_command(self, side: str, position: list) -> None:
         if not position:
@@ -581,14 +574,27 @@ class WalkerRealRobotBridge:
 
     def stop(self) -> None:
         self._running = False
-        if self._action_thread.is_alive():
+        if self._action_thread is not None and self._action_thread.is_alive():
             self._action_thread.join(timeout=2.0)
+
+        # 先停 RobotController（速度模式：零速+刹车；PVT/位置：停止轨迹）
+        if self._robot_ctrl is not None:
+            try:
+                self._robot_ctrl.stop()
+            except Exception:
+                pass
+
+        # 停 executor（先控制，后通信）
+        if self._body_executor is not None:
+            self._body_executor.shutdown(timeout_sec=2.0)
         if self._body_thread is not None and self._body_thread.is_alive():
-            self._body_thread.join(timeout=2.0)
-        if self._executor is not None:
-            self._executor.shutdown()
-        if self._executor_thread is not None and self._executor_thread.is_alive():
-            self._executor_thread.join(timeout=3.0)
+            self._body_thread.join(timeout=3.0)
+
+        if self._bridge_executor is not None:
+            self._bridge_executor.shutdown(timeout_sec=2.0)
+        if self._bridge_thread is not None and self._bridge_thread.is_alive():
+            self._bridge_thread.join(timeout=3.0)
+
         if self._node is not None:
             self._node.destroy_node()
         import rclpy

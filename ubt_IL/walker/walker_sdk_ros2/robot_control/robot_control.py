@@ -128,9 +128,17 @@ class RobotController(Node):
         pvt_kp=None,
         pvt_kd=None,
         pvt_effort=None,
-        hold_when_idle=False,
+        control_mode="position",
+        velocity_timeout=0.5,
+        enable_hand_control=True,
     ):
         super().__init__(node_name)
+
+        self._control_mode = str(control_mode).lower()
+        self._enable_hand_control = bool(enable_hand_control)
+        # backward compat: use_pvt=True => control_mode="pvt"
+        if use_pvt and self._control_mode == "position":
+            self._control_mode = "pvt"
 
         self._config = self._load_config(config_path)
         command_topic = command_topic or self._get_topic("sub", "command", DEFAULT_COMMAND_TOPIC)
@@ -159,7 +167,7 @@ class RobotController(Node):
         self.lock_joints = set(lock_joints or [])
 
         # PVT 力位混合模式（mode=7）配置
-        self.use_pvt = bool(use_pvt)
+        self.use_pvt = (self._control_mode == "pvt")
         self._pvt_default_kp = _PVT_DEFAULT_KP
         self._pvt_default_kd = _PVT_DEFAULT_KD
         self._pvt_kp = self._normalize_gain_map(pvt_kp, _PVT_DEFAULT_KP)
@@ -187,11 +195,18 @@ class RobotController(Node):
         self.current_publish_joints = None
         self.publish_changed_epsilon = 1e-6
 
-        # 空闲保持（防抖动）：对齐 pub_arm_command.py 持续发布、永不停止的行为。
-        # is_publishing=False 时不再断流，而是持续发布 _hold_position（最近一次指令位姿）
-        # 到所有未锁定关节，避免低层控制器丢失主动保持 → 漂移/恢复抖动。
-        self.hold_when_idle = bool(hold_when_idle)
-        self._hold_position = None  # np.ndarray(n_joints,) 或 None（尚未从 RobotState 种子初始化）
+        # ---- 速度模式状态 ----
+        self._velocity_cmd = np.zeros(self.n_joints, dtype=float)
+        self._last_velocity_time = 0.0
+        self._velocity_timeout = float(velocity_timeout)
+        self._velocity_timeout_override = None
+        self._velocity_timed_out = False
+        self._velocity_trajectory = None
+        self._position_trajectory = None
+        self._velocity_traj_index = 0
+        self._velocity_kp = 50.0
+        self._velocity_prev_moving = np.zeros(self.n_joints, dtype=bool)
+        self._active_velocity_joints = set()
 
         # QoS
         qos_sub = QoSProfile(
@@ -215,57 +230,73 @@ class RobotController(Node):
             RobotCommand, command_topic, qos_pub
         )
 
-        # 手部发布者（V4 手专用，走 JointCommand 通路，与身体控制独立）
-        self.left_hand_pub = self.create_publisher(
-            JointCommand, left_hand_topic, qos_pub
-        )
-        self.right_hand_pub = self.create_publisher(
-            JointCommand, right_hand_topic, qos_pub
-        )
-        self._hand_pubs = {"left": self.left_hand_pub, "right": self.right_hand_pub}
+        # ==== 手/夹爪控制（可选，Bridge 集成时关闭避免话题冲突）====
+        if self._enable_hand_control:
+            # 手部发布者（V4 手专用，走 JointCommand 通路，与身体控制独立）
+            self.left_hand_pub = self.create_publisher(
+                JointCommand, left_hand_topic, qos_pub
+            )
+            self.right_hand_pub = self.create_publisher(
+                JointCommand, right_hand_topic, qos_pub
+            )
+            self._hand_pubs = {"left": self.left_hand_pub, "right": self.right_hand_pub}
 
-        # 手部状态订阅（/mc/{left,right}_hand/joint_states → sensor_msgs/JointState）
-        self._hand_states = {}       # {"left": np.array(7), "right": np.array(7)}
-        self._hand_state_lock = threading.Lock()
-        self._hand_state_received = {
-            "left": threading.Event(),
-            "right": threading.Event(),
-        }
-        self.left_hand_state_sub = self.create_subscription(
-            JointState, left_hand_state_topic,
-            lambda msg: self._hand_state_callback("left", msg),
-            10, callback_group=MutuallyExclusiveCallbackGroup(),
-        )
-        self.right_hand_state_sub = self.create_subscription(
-            JointState, right_hand_state_topic,
-            lambda msg: self._hand_state_callback("right", msg),
-            10, callback_group=MutuallyExclusiveCallbackGroup(),
-        )
+            # 手部状态订阅
+            self._hand_states = {}
+            self._hand_state_lock = threading.Lock()
+            self._hand_state_received = {
+                "left": threading.Event(),
+                "right": threading.Event(),
+            }
+            self.left_hand_state_sub = self.create_subscription(
+                JointState, left_hand_state_topic,
+                lambda msg: self._hand_state_callback("left", msg),
+                10, callback_group=MutuallyExclusiveCallbackGroup(),
+            )
+            self.right_hand_state_sub = self.create_subscription(
+                JointState, right_hand_state_topic,
+                lambda msg: self._hand_state_callback("right", msg),
+                10, callback_group=MutuallyExclusiveCallbackGroup(),
+            )
 
-        # 夹爪发布者/状态订阅（大寰 PGC-140-50 / 电缸）
-        self.left_grip_pub = self.create_publisher(
-            GripCmd, left_grip_topic, qos_pub
-        )
-        self.right_grip_pub = self.create_publisher(
-            GripCmd, right_grip_topic, qos_pub
-        )
-        self._grip_pubs = {"left": self.left_grip_pub, "right": self.right_grip_pub}
-        self._grip_states = {}       # {"left": GripStatus, "right": GripStatus}
-        self._grip_state_lock = threading.Lock()
-        self._grip_state_received = {
-            "left": threading.Event(),
-            "right": threading.Event(),
-        }
-        self.left_grip_state_sub = self.create_subscription(
-            GripStatus, left_grip_state_topic,
-            lambda msg: self._grip_state_callback("left", msg),
-            qos_sub, callback_group=MutuallyExclusiveCallbackGroup(),
-        )
-        self.right_grip_state_sub = self.create_subscription(
-            GripStatus, right_grip_state_topic,
-            lambda msg: self._grip_state_callback("right", msg),
-            qos_sub, callback_group=MutuallyExclusiveCallbackGroup(),
-        )
+            # 夹爪发布者/状态订阅（大寰 PGC-140-50 / 电缸）
+            self.left_grip_pub = self.create_publisher(
+                GripCmd, left_grip_topic, qos_pub
+            )
+            self.right_grip_pub = self.create_publisher(
+                GripCmd, right_grip_topic, qos_pub
+            )
+            self._grip_pubs = {"left": self.left_grip_pub, "right": self.right_grip_pub}
+            self._grip_states = {}
+            self._grip_state_lock = threading.Lock()
+            self._grip_state_received = {
+                "left": threading.Event(),
+                "right": threading.Event(),
+            }
+            self.left_grip_state_sub = self.create_subscription(
+                GripStatus, left_grip_state_topic,
+                lambda msg: self._grip_state_callback("left", msg),
+                qos_sub, callback_group=MutuallyExclusiveCallbackGroup(),
+            )
+            self.right_grip_state_sub = self.create_subscription(
+                GripStatus, right_grip_state_topic,
+                lambda msg: self._grip_state_callback("right", msg),
+                qos_sub, callback_group=MutuallyExclusiveCallbackGroup(),
+            )
+        else:
+            # Bridge 集成模式：手/夹爪由 Bridge 独立管理
+            self.left_hand_pub = None
+            self.right_hand_pub = None
+            self._hand_pubs = {}
+            self._hand_states = {}
+            self._hand_state_lock = threading.Lock()
+            self._hand_state_received = {"left": threading.Event(), "right": threading.Event()}
+            self.left_grip_pub = None
+            self.right_grip_pub = None
+            self._grip_pubs = {}
+            self._grip_states = {}
+            self._grip_state_lock = threading.Lock()
+            self._grip_state_received = {"left": threading.Event(), "right": threading.Event()}
 
         # 500Hz 控制定时器（默认互斥回调组 + 单线程 executor，对齐 pub_arm_command：
         # MultiThreadedExecutor+Reentrant 在 500Hz 下因 GIL 争用导致定时不均 → 运动关节抖）
@@ -276,9 +307,18 @@ class RobotController(Node):
         self.get_logger().info(
             f"RobotController initialized: {self.n_joints} joints, "
             f"{control_hz}Hz, locked={sorted(self.lock_joints)}, "
-            f"limit_check={self.enable_limit_check}, pvt={self.use_pvt}, "
-            f"hold_when_idle={self.hold_when_idle}"
+            f"limit_check={self.enable_limit_check}, mode={self._control_mode}, "
+            f"pvt={self.use_pvt}"
         )
+        if self._control_mode == "velocity":
+            self.get_logger().info(
+                f"Velocity mode timeout={self._velocity_timeout}s, Kp={self._velocity_kp}"
+            )
+
+    @property
+    def control_mode(self):
+        """当前控制模式: "position" | "velocity" | "pvt"."""
+        return self._control_mode
 
     @staticmethod
     def _load_config(config_path=None):
@@ -364,7 +404,64 @@ class RobotController(Node):
             raise ValueError(f"Unknown joint: {joint_name}")
         return self.all_joints.index(joint_name)
 
-    @property
+    def set_joint_velocities(self, velocities, joint_names=None, timeout=None):
+        """Set joint target velocities (rad/s). Velocity mode only.
+
+        Args:
+            velocities: array matching joint_names length, or {name: rad/s} dict
+            joint_names: list of joint names to control, None=all joints
+            timeout: per-call safety timeout (seconds)
+        Returns:
+            bool: True on success
+        """
+        if self._control_mode != "velocity":
+            self.get_logger().error(
+                f"set_joint_velocities requires velocity mode, current={self._control_mode}"
+            )
+            return False
+
+        if isinstance(velocities, dict):
+            joint_names = list(velocities.keys())
+            vel_vals = np.array([float(v) for v in velocities.values()], dtype=float)
+        else:
+            vel_vals = np.array(velocities, dtype=float).ravel()
+
+        if joint_names is None:
+            joint_names = list(self.all_joints)
+
+        if len(vel_vals) != len(joint_names):
+            self.get_logger().error(
+                f"velocities length {len(vel_vals)} != joint_names length {len(joint_names)}"
+            )
+            return False
+
+        unknown = [n for n in joint_names if n not in self.all_joints]
+        if unknown:
+            self.get_logger().error(f"Unknown joint names: {unknown}")
+            return False
+
+        vel_arr = np.zeros(self.n_joints, dtype=float)
+        for name, val in zip(joint_names, vel_vals):
+            idx = self.all_joints.index(name)
+            if name in self.lock_joints:
+                vel_arr[idx] = 0.0
+            else:
+                vel_arr[idx] = float(val)
+
+        np.clip(vel_arr, -self.max_joint_speed, self.max_joint_speed, out=vel_arr)
+
+        with self.trajectory_lock:
+            self._velocity_cmd = vel_arr.copy()
+            self._last_velocity_time = time.time()
+            self._velocity_timed_out = False
+            self._velocity_timeout_override = float(timeout) if timeout is not None else None
+            self._active_velocity_joints = {
+                name for name in joint_names
+                if name not in self.lock_joints
+            }
+
+        return True
+
     def joint_names(self):
         """所有关节名列表（只读）"""
         return list(self.all_joints)
@@ -874,6 +971,32 @@ class RobotController(Node):
             for j in range(self.n_joints)
         ])
 
+        # 速度模式：位置轨迹 -> 速度前馈，_velocity_tick 加实时位置修正
+        if self._control_mode == "velocity":
+            vel_traj = np.diff(trajectory, axis=0) / (1.0 / self.control_hz)
+            np.clip(vel_traj, -self.max_joint_speed, self.max_joint_speed, out=vel_traj)
+            for i, name in enumerate(self.all_joints):
+                if name in self.lock_joints:
+                    vel_traj[:, i] = 0.0
+            pos_traj = trajectory[1:, :]
+            changed = np.any(np.abs(np.diff(trajectory, axis=0)) > 1e-6, axis=0)
+            with self.trajectory_lock:
+                self._velocity_trajectory = vel_traj
+                self._position_trajectory = pos_traj
+                self._velocity_traj_index = 0
+                self._velocity_cmd = vel_traj[0, :].copy()
+                self._last_velocity_time = time.time()
+                self._velocity_timed_out = False
+                self._velocity_timeout_override = duration_sec + 1.0
+                self._active_velocity_joints = {
+                    name for i, name in enumerate(self.all_joints)
+                    if changed[i] and name not in self.lock_joints
+                }
+            if wait:
+                est = len(vel_traj) / self.control_hz
+                time.sleep(est + 0.05)
+            return True
+
         return self.execute_trajectory(
             trajectory,
             wait=wait,
@@ -994,23 +1117,25 @@ class RobotController(Node):
         return changed
 
     def stop(self):
-        """停止当前轨迹播放。
+        """Stop current trajectory / velocity control.
 
-        若 hold_when_idle=True（默认），停止后转为持续保持当前位置（电机不断电，
-        机器人停在停止时刻的实际位置），对齐 pub_arm_command 永不断流的行为；
-        若 hold_when_idle=False，则完全停止发布（真机可能 limp，仅用于调试）。
+        Velocity mode: sets zero velocity, active joints brake once via MODE_POSITION.
+        Position mode: stops trajectory immediately.
         """
-        # 先在锁外读实际位置（避免 trajectory_lock→buffer_lock 与 _state_callback 反向死锁）
-        current = self.get_current_position()
+        if self._control_mode == "velocity":
+            with self.trajectory_lock:
+                self._velocity_cmd = np.zeros(self.n_joints, dtype=float)
+                self._last_velocity_time = time.time()
+                self._velocity_timed_out = False
+            self.get_logger().info("Stop requested (velocity mode -> zero velocity)")
+            return
+
         with self.trajectory_lock:
             self.is_publishing = False
             self.current_index = self.current_trajectory.shape[0]
             self.current_publish_joints = None
             self.current_velocity_trajectory = None
-            # 以实际当前位置作 hold 起点，避免 mid-trajectory 停止后 hold 跳回上一指令点
-            if current is not None:
-                self._hold_position = current.copy()
-        self.get_logger().info(f"Stop requested (hold_when_idle={self.hold_when_idle})")
+        self.get_logger().info("Stop requested (position mode)")
 
     def set_lock_joints(self, joint_names):
         """动态设置锁定关节列表"""
@@ -1073,234 +1198,8 @@ class RobotController(Node):
                 violations.append((name, val, lo, hi))
         return clamped, violations
 
-    def wait_until_position(self, target_position, timeout=5.0, tolerance=0.05, ignored_joints=None):
-        """等待实际关节位置收敛到目标附近。
-
-        execute_trajectory(wait=True) 只表示轨迹点发布完毕；真机实际关节
-        还需要继续收敛。此方法基于 RobotState 检查实际位置误差。
-        """
-        target = np.array(target_position, dtype=float)
-        if target.shape != (self.n_joints,):
-            self.get_logger().error(f"Target shape {target.shape} != ({self.n_joints},)")
-            return False, []
-
-        ignored = set(ignored_joints or [])
-        check_indices = [i for i, name in enumerate(self.all_joints) if name not in ignored]
-        deadline = time.time() + timeout
-        last_pos = None
-
-        while time.time() < deadline:
-            pos = self.get_current_position()
-            if pos is not None:
-                last_pos = pos
-                err = np.abs(pos - target)
-                if check_indices and float(np.max(err[check_indices])) <= tolerance:
-                    return True, []
-            time.sleep(0.05)
-
-        if last_pos is None:
-            return False, [(name, None, float(target[i]), None) for i, name in enumerate(self.all_joints)]
-
-        err = np.abs(last_pos - target)
-        misses = [
-            (self.all_joints[i], float(last_pos[i]), float(target[i]), float(err[i]))
-            for i in check_indices
-            if err[i] > tolerance
-        ]
-        misses.sort(key=lambda item: item[3], reverse=True)
-        return False, misses
-
-    def move_to_pose(self, pose_dict, duration_sec=1.5, wait=True,
-                     unlock_required_joints=True, publish_changed_only=True,
-                     settle_check=True, settle_timeout=None,
-                     settle_tolerance=0.03, max_settle_retries=2,
-                     ignored_joints=None):
-        """按"关节名→角度"字典移动机器人。未指定的关节保持当前位置。
-
-        相比 move_to_position（传整个 17 维向量），这个 API 更方便：
-        只关心你要改的几个关节，其余自动从当前位置读取。
-
-        Args:
-            pose_dict: dict，键=关节名，值=目标弧度
-            duration_sec: 运动持续时间（秒）
-            wait: 是否阻塞等待完成
-            unlock_required_joints: 若目标关节在 lock_joints 中，是否临时解锁
-                                    wait=True 时执行完自动恢复锁定；
-                                    wait=False 时不恢复（无法感知完成时刻）
-            publish_changed_only: True 时仅发布 pose_dict 涉及变化的关节
-            settle_check: wait=True 后是否检查实际关节到位
-            settle_timeout: 单次到位检查超时；None 时按 duration_sec 自动推导
-            settle_tolerance: 到位误差阈值（rad）
-            max_settle_retries: 未到位时补偿重发次数
-            ignored_joints: 到位检查时忽略的关节名列表
-        Returns:
-            bool: True=成功且到位（若启用检查），False=失败
-        """
-        current = self.get_current_position()
-        if current is None:
-            self.get_logger().error("No current position available")
-            return False
-
-        # 校验关节名 + 检测需要解锁的关节
-        target = current.copy()
-        joints_needing_unlock = []
-        for joint_name, angle in pose_dict.items():
-            if joint_name not in self.all_joints:
-                self.get_logger().error(f"Unknown joint: {joint_name}")
-                return False
-            idx = self.all_joints.index(joint_name)
-            target[idx] = float(angle)
-            if joint_name in self.lock_joints:
-                joints_needing_unlock.append(joint_name)
-
-        # 临时解锁（保存原锁定状态以便恢复）
-        original_lock = None
-        if joints_needing_unlock:
-            if unlock_required_joints:
-                original_lock = self.lock_joints.copy()
-                self.get_logger().warning(
-                    f"Temporarily unlocking joints: {joints_needing_unlock}"
-                )
-                self.set_lock_joints(list(self.lock_joints - set(joints_needing_unlock)))
-            else:
-                self.get_logger().warning(
-                    f"Joints {joints_needing_unlock} are locked; their target "
-                    f"values will be silently dropped"
-                )
-
-        target_joint_names = list(pose_dict.keys())
-
-        def log_target_joint_errors(prefix):
-            pos = self.get_current_position()
-            if pos is None:
-                return
-            errors = []
-            for name in target_joint_names:
-                idx = self.all_joints.index(name)
-                actual = float(pos[idx])
-                desired = float(target[idx])
-                errors.append((name, actual, desired, abs(actual - desired)))
-            errors.sort(key=lambda item: item[3], reverse=True)
-            error_text = ", ".join(
-                f"{name}: actual={actual:+.4f}, target={desired:+.4f}, err={err:.4f}"
-                for name, actual, desired, err in errors
-            )
-            self.get_logger().info(f"{prefix}: {error_text}")
-
-        result = self.move_to_position(
-            target,
-            duration_sec=duration_sec,
-            wait=wait,
-            publish_changed_only=publish_changed_only,
-        )
-
-        settled = True
-        if result and wait and settle_check:
-            check_timeout = settle_timeout
-            if check_timeout is None:
-                check_timeout = max(2.0, min(float(duration_sec), 3.0))
-            ignored = set(ignored_joints or [])
-            ignored.update(name for name in self.all_joints if name not in target_joint_names)
-            if not unlock_required_joints:
-                ignored.update(joints_needing_unlock)
-            settled = False
-            for attempt in range(max_settle_retries + 1):
-                arrived, misses = self.wait_until_position(
-                    target,
-                    timeout=check_timeout,
-                    tolerance=settle_tolerance,
-                    ignored_joints=ignored,
-                )
-                log_target_joint_errors(f"Settle check {attempt + 1}/{max_settle_retries + 1}")
-                if arrived:
-                    settled = True
-                    break
-                if attempt >= max_settle_retries:
-                    self.get_logger().warning(
-                        f"Position did not settle before relock: {misses[:5]}"
-                    )
-                    break
-                self.get_logger().warning(
-                    f"Position did not settle, corrective retry {attempt + 1}/{max_settle_retries}: {misses[:5]}"
-                )
-                correction_duration = max(1.0, min(float(duration_sec) * 0.5, 2.0))
-                result = self.move_to_position(
-                    target,
-                    duration_sec=correction_duration,
-                    wait=True,
-                    publish_changed_only=publish_changed_only,
-                )
-                if not result:
-                    settled = False
-                    break
-
-        # 自动恢复锁定（仅 wait=True 时可安全恢复）
-        if original_lock is not None and wait:
-            self.set_lock_joints(list(original_lock))
-
-        return bool(result and settled)
-
-    def move_to_ready_pose(self, duration_sec=None, wait=True, staged=False):
-        """移动到预备姿态（双臂自然下垂的站立位姿）。
-
-        staged=True 时按真机侧安全阶段依次执行，默认 10s；staged=False 保留旧版直达行为，默认 3s。
-        """
-        if duration_sec is None:
-            duration_sec = 20.0 if staged else 3.0
-
-        if not staged:
-            return self.move_to_pose(
-                READY_POSE,
-                duration_sec=duration_sec,
-                wait=wait,
-                unlock_required_joints=True,
-            )
-
-        if not wait:
-            self.get_logger().warning(
-                "move_to_ready_pose(wait=False, staged=True) requested, but staged init runs synchronously for safety"
-            )
-
-        duration_sec = float(duration_sec)
-        if duration_sec < 1.5:
-            self.get_logger().warning(
-                f"Ready pose duration {duration_sec:.2f}s is too short for staged motion; using 1.50s"
-            )
-            duration_sec = 1.5
-
-        pitch_roll_duration = duration_sec * 0.35
-        elbow_yaw_duration = duration_sec * 0.35
-        other_duration = duration_sec * 0.2
-        reset_duration = duration_sec * 0.1
-
-        stages = [
-            ("1a/3 肩 pitch + elbow roll", READY_STAGE_1_PITCH_ROLL_POSE, pitch_roll_duration),
-            ("1b/3 elbow yaw", READY_STAGE_1_ELBOW_YAW_POSE, elbow_yaw_duration),
-            ("2/3 肩 pitch 回到预备姿态", READY_STAGE_2_POSE, other_duration),
-            ("3/3 执行完整 READY_POSE", READY_POSE, reset_duration),
-        ]
-
-        for label, pose, stage_duration in stages:
-            self.get_logger().info(
-                f"Ready pose stage {label}: {stage_duration:.2f}s"
-            )
-            if not self.move_to_pose(
-                pose,
-                duration_sec=stage_duration,
-                wait=True,
-                unlock_required_joints=True,
-            ):
-                self.get_logger().error(f"Ready pose stage failed: {label}")
-                return False
-
-        return True
-
-    def ready_position_vector(self):
-        """返回 READY_POSE 对应的 17 维目标向量。"""
-        return np.array([READY_POSE[name] for name in self.all_joints], dtype=float)
-
-    def move_arm_joints(self, side, joints, duration_sec=1.5, wait=True):
-        """按 7 维关节角移动单侧手臂；不做 Cartesian IK。"""
+    def move_arm_joints(self, side, joints, speed=0.5, wait=True):
+        """Move single-side arm joints. Uses move_joints internally."""
         if side not in ("left", "right"):
             self.get_logger().error(f"Invalid arm side: {side}")
             return False
@@ -1308,21 +1207,141 @@ class RobotController(Node):
         if len(joints) != len(joint_names):
             self.get_logger().error(f"{side} arm expects {len(joint_names)} joints, got {len(joints)}")
             return False
-        return self.move_to_pose(
+        return self.move_joints(
             dict(zip(joint_names, [float(v) for v in joints])),
-            duration_sec=duration_sec,
-            wait=wait,
-            unlock_required_joints=True,
+            speed=speed, wait=wait,
         )
 
-    def move_left_arm_joints(self, joints, duration_sec=1.5, wait=True):
-        return self.move_arm_joints("left", joints, duration_sec=duration_sec, wait=wait)
+    def move_left_arm_joints(self, joints, speed=0.5, wait=True):
+        return self.move_arm_joints("left", joints, speed=speed, wait=wait)
 
-    def move_right_arm_joints(self, joints, duration_sec=1.5, wait=True):
-        return self.move_arm_joints("right", joints, duration_sec=duration_sec, wait=wait)
+    def move_right_arm_joints(self, joints, speed=0.5, wait=True):
+        return self.move_arm_joints("right", joints, speed=speed, wait=wait)
 
     move_left_arm = move_left_arm_joints
     move_right_arm = move_right_arm_joints
+
+    def move_to_ready_pose(self, duration_sec=None, wait=True, staged=True):
+        """Move to ready pose (arms down standing position).
+
+        Args:
+            duration_sec: total duration (seconds), default 3s direct / 20s staged
+            staged: if True, execute 4 safety stages sequentially
+            wait: block until completion
+
+        Uses move_joints internally — works with all control modes.
+        """
+        if duration_sec is None:
+            duration_sec = 20.0 if staged else 3.0
+
+        if not staged:
+            return self.move_to_pose_dict(READY_POSE, duration_sec=duration_sec, wait=wait)
+
+        if not wait:
+            self.get_logger().warning("Staged init requires wait=True, forcing sync")
+            wait = True
+
+        duration_sec = float(duration_sec)
+        if duration_sec < 1.5:
+            duration_sec = 1.5
+
+        stages = [
+            ("1a/4 shoulder pitch + elbow roll",
+             READY_STAGE_1_PITCH_ROLL_POSE, duration_sec * 0.35),
+            ("1b/4 elbow yaw",
+             READY_STAGE_1_ELBOW_YAW_POSE, duration_sec * 0.35),
+            ("2/4 shoulder pitch return",
+             READY_STAGE_2_POSE, duration_sec * 0.2),
+            ("3/4 full READY_POSE",
+             READY_POSE, duration_sec * 0.1),
+        ]
+
+        for label, pose, stage_duration in stages:
+            self.get_logger().info(f"Ready pose {label}: {stage_duration:.1f}s")
+            if not self.move_to_pose_dict(pose, duration_sec=stage_duration, wait=True):
+                self.get_logger().error(f"Ready pose stage failed: {label}")
+                return False
+        return True
+
+    def move_to_home(self, duration_sec=15.0, wait=True):
+        """Move all joints to zero in safe order.
+
+        Stage 1: head                 (independent, safe first)
+        Stage 2: wrists + elbow_yaw   (clear end-effectors)
+        Stage 3: elbow_roll           (fold elbows)
+        Stage 4: shoulders            (lower arms)
+
+        Locked joints are temporarily unlocked.
+        """
+        saved_lock = self.lock_joints.copy()
+
+        try:
+            # Unlock head so we can zero it
+            self.set_lock_joints({"waist_yaw_joint"})
+
+            stages = [
+                ("1/4 head", {
+                    "head_pitch_joint": 0.0, "head_yaw_joint": 0.0,
+                }, duration_sec * 0.15),
+                ("2/4 wrists + elbow_yaw", {
+                    "L_wrist_pitch_joint": 0.0, "L_wrist_roll_joint": 0.0,
+                    "R_wrist_pitch_joint": 0.0, "R_wrist_roll_joint": 0.0,
+                    "L_elbow_yaw_joint": 0.0, "R_elbow_yaw_joint": 0.0,
+                }, duration_sec * 0.3),
+                ("3/4 elbow_roll", {
+                    "L_elbow_roll_joint": 0.0, "R_elbow_roll_joint": 0.0,
+                }, duration_sec * 0.3),
+                ("4/4 shoulders", {
+                    "L_shoulder_pitch_joint": 0.0, "L_shoulder_roll_joint": 0.0,
+                    "L_shoulder_yaw_joint": 0.0,
+                    "R_shoulder_pitch_joint": 0.0, "R_shoulder_roll_joint": 0.0,
+                    "R_shoulder_yaw_joint": 0.0,
+                }, duration_sec * 0.25),
+            ]
+
+            for label, pose, stage_dur in stages:
+                self.get_logger().info(f"Home {label}: {stage_dur:.1f}s")
+                if not self.move_to_pose_dict(pose, duration_sec=stage_dur, wait=True):
+                    self.get_logger().error(f"Home stage failed: {label}")
+                    return False
+            return True
+        finally:
+            self.set_lock_joints(list(saved_lock))
+
+    def move_to_pose_dict(self, pose_dict, duration_sec=1.5, wait=True,
+                          unlock_required_joints=True):
+        """Move joints by {name: angle} dict. Unspecified joints hold position.
+
+        Thin wrapper around move_joints that auto-handles lock-joint unlock.
+        """
+        current = self.get_current_position()
+        if current is None:
+            self.get_logger().error("No current position")
+            return False
+
+        # compute speed so each joint finishes in duration_sec
+        max_dist = 0.0
+        for name, angle in pose_dict.items():
+            if name not in self.all_joints:
+                self.get_logger().error(f"Unknown joint: {name}")
+                return False
+            idx = self.all_joints.index(name)
+            max_dist = max(max_dist, abs(angle - current[idx]))
+
+        speed = max(0.01, max_dist / max(duration_sec, 0.1))
+
+        # temp unlock
+        need_unlock = [n for n in pose_dict if n in self.lock_joints]
+        saved_lock = None
+        if need_unlock and unlock_required_joints:
+            saved_lock = self.lock_joints.copy()
+            self.set_lock_joints(list(self.lock_joints - set(need_unlock)))
+
+        try:
+            return self.move_joints(pose_dict, speed=speed, wait=wait)
+        finally:
+            if saved_lock is not None:
+                self.set_lock_joints(list(saved_lock))
 
     # ========================================================================
     # 单关节粒度的便捷方法与诊断工具
@@ -1352,43 +1371,146 @@ class RobotController(Node):
                 result[name] = None
         return result
 
-    def move_joint(self, joint_name, target_rad, duration_sec=2.0, wait=True):
-        """移动单个身体关节到目标角度，其他关节保持当前位置。
+    # ---- 单关节/多关节统一核心 ----
 
-        等价于 ``move_to_pose({joint_name: target_rad}, ...)``。
-        """
-        return self.move_to_pose(
-            {joint_name: target_rad},
-            duration_sec=duration_sec,
-            wait=wait,
-            unlock_required_joints=True,
-        )
-
-    def shift_joint(self, joint_name, delta_rad, duration_sec=2.0, wait=True):
-        """单个身体关节相对当前位置偏移。
+    def _move_joints_impl(self, items, wait):
+        """Core: build combined target, compute max duration, call move_to_position.
 
         Args:
-            joint_name: 关节名
-            delta_rad: 偏移量（rad），正=正向，负=负向
+            items: list of (joint_name, target_angle, speed)
+            wait: block until completion
+        Returns: bool
         """
+        current = self.get_current_position()
+        if current is None:
+            self.get_logger().error("No current position")
+            return False
+
+        target = current.copy()
+        durations = []
+
+        for name, angle, spd in items:
+            if name not in self.all_joints:
+                self.get_logger().error(f"Unknown joint: {name}")
+                return False
+            idx = self.all_joints.index(name)
+            dist = abs(angle - current[idx])
+            target[idx] = float(angle)
+            durations.append(max(0.1, dist / max(abs(spd), 1e-6)))
+
+        duration = max(durations)
+
+        names_str = ", ".join(
+            f"{n}: {current[self.all_joints.index(n)]:.3f}->{a:.3f}"
+            for n, a, _ in items
+        )
+        self.get_logger().info(
+            f"move_joints: {names_str} | duration={duration:.2f}s"
+        )
+        return self.move_to_position(target, duration_sec=duration, wait=wait,
+                                     publish_changed_only=True)
+
+    def _apply_pvt_gains(self, joint_names, kp, kd):
+        """Temporarily override PVT gains for given joints. Returns (saved_kp, saved_kd)."""
+        saved_kp, saved_kd = {}, {}
+        if kp is not None:
+            if isinstance(kp, dict):
+                for n, v in kp.items():
+                    saved_kp[n] = self._pvt_kp.get(n)
+                    self._pvt_kp[n] = float(v)
+            else:
+                for n in joint_names:
+                    saved_kp[n] = self._pvt_kp.get(n)
+                    self._pvt_kp[n] = float(kp)
+        if kd is not None:
+            if isinstance(kd, dict):
+                for n, v in kd.items():
+                    saved_kd[n] = self._pvt_kd.get(n)
+                    self._pvt_kd[n] = float(v)
+            else:
+                for n in joint_names:
+                    saved_kd[n] = self._pvt_kd.get(n)
+                    self._pvt_kd[n] = float(kd)
+        return saved_kp, saved_kd
+
+    def _restore_pvt_gains(self, saved_kp, saved_kd):
+        """Restore PVT gains after _apply_pvt_gains."""
+        for n, v in saved_kp.items():
+            if v is None: self._pvt_kp.pop(n, None)
+            else: self._pvt_kp[n] = v
+        for n, v in saved_kd.items():
+            if v is None: self._pvt_kd.pop(n, None)
+            else: self._pvt_kd[n] = v
+
+    def move_joint(self, joint_name, target_angle, speed, kp=None, kd=None, wait=True):
+        """Single-joint position+speed control. Works with all modes.
+
+        Args:
+            joint_name: joint name (e.g. "R_elbow_yaw_joint")
+            target_angle: target angle (rad)
+            speed: max speed (rad/s)
+            kp: PVT position gain override (PVT mode only, ignored otherwise)
+            kd: PVT velocity gain override (PVT mode only, ignored otherwise)
+            wait: block until completion
+        Returns: bool
+        """
+        saved_kp, saved_kd = self._apply_pvt_gains([joint_name], kp, kd)
+        try:
+            return self._move_joints_impl([(joint_name, target_angle, speed)], wait=wait)
+        finally:
+            self._restore_pvt_gains(saved_kp, saved_kd)
+
+    def shift_joint(self, joint_name, delta_rad, speed=1.0, wait=True):
+        """Shift single joint by relative delta."""
         current = self.get_joint_position(joint_name)
         if current is None:
             self.get_logger().error(f"Cannot shift {joint_name}: no current position")
             return False
-        target = current + delta_rad
-        if joint_name in BODY_JOINT_LIMITS:
-            lo, hi = BODY_JOINT_LIMITS[joint_name]
-            if target < lo or target > hi:
-                clamped = max(lo, min(hi, target))
-                self.get_logger().warning(
-                    f"{joint_name}: target {target:.4f} rad exceeds limit "
-                    f"[{lo}, {hi}], will be clamped to {clamped:.4f}"
-                )
-        self.get_logger().info(
-            f"Shift {joint_name}: {current:.4f} → {target:.4f} rad "
-            f"(Δ={delta_rad:+.4f} rad, {np.degrees(delta_rad):+.2f}°)"
-        )
-        return self.move_joint(joint_name, target, duration_sec=duration_sec, wait=wait)
+        return self.move_joint(joint_name, current + delta_rad, speed=speed, wait=wait)
+
+    def move_joints(self, targets, speed=None, kp=None, kd=None, wait=True):
+        """Multi-joint position+speed control. Works with all modes.
+
+        All joints start/stop together. Duration = slowest joint.
+
+        Args:
+            targets: {name: angle} or {name: (angle, speed)}
+            speed: uniform speed (rad/s)
+            kp: PVT Kp override - scalar or {name: value} dict
+            kd: PVT Kd override - scalar or {name: value} dict
+            wait: block until completion
+        Returns: bool
+        """
+        if isinstance(targets, (list, tuple)):
+            items = [list(item) for item in targets]
+        elif isinstance(targets, dict):
+            items = []
+            for name, val in targets.items():
+                if isinstance(val, (list, tuple)):
+                    items.append([name, float(val[0]),
+                                  abs(float(val[1])) if len(val) > 1 and val[1] is not None else None])
+                else:
+                    items.append([name, float(val), None])
+            for item in items:
+                if item[2] is None:
+                    if speed is not None:
+                        item[2] = abs(float(speed))
+                    else:
+                        self.get_logger().error(f"No speed for {item[0]}")
+                        return False
+        else:
+            self.get_logger().error("targets must be dict or list")
+            return False
+
+        joint_names = [item[0] for item in items]
+        saved_kp, saved_kd = self._apply_pvt_gains(joint_names, kp, kd)
+        try:
+            return self._move_joints_impl(
+                [(name, angle, spd) for name, angle, spd in items],
+                wait=wait,
+            )
+        finally:
+            self._restore_pvt_gains(saved_kp, saved_kd)
 
     def print_joint_states(self, joint_names=None):
         """格式化打印身体关节的当前状态（含限位和锁定信息）。"""
@@ -1852,20 +1974,95 @@ class RobotController(Node):
         with self.robot_states_buffer_lock:
             self.robot_states_buffer.append(positions)
 
-        # 首次收到状态时种子初始化 hold 位姿，使空闲 hold 从当前实际位姿起步
-        # （之后由 _control_callback 在每次发布时更新为最新指令点）
-        if self._hold_position is None:
-            with self.trajectory_lock:
-                if self._hold_position is None:
-                    self._hold_position = positions.copy()
-
     def _control_callback(self):
-        """500Hz 定时回调：取轨迹点 → 构造 RobotCommand → 发布
+        """500Hz dispatch: route to velocity or position tick based on control mode."""
+        if self._control_mode == "velocity":
+            self._velocity_tick()
+        else:
+            self._position_tick()
 
-        空闲（无轨迹播放）时若 hold_when_idle=True，持续发布 _hold_position 到所有
-        未锁定关节，对齐 pub_arm_command.py 永不断流的行为：避免低层控制器在收不到
-        指令时丢失主动保持 → 漂移，以及恢复发布时的不连续 → 抖动。
+    def _velocity_tick(self):
+        """Velocity mode: control only joints in _active_velocity_joints.
+
+        - |vel| > 0  -> MODE_VELOCITY
+        - |vel| = 0, was moving -> one-shot MODE_POSITION hold (brake)
+        - |vel| = 0, was idle    -> skip
+        - not in active set      -> skip
         """
+        if self._last_velocity_time == 0.0:
+            return
+
+        current = self.get_current_position()
+
+        with self.trajectory_lock:
+            if self._velocity_trajectory is not None and self._velocity_traj_index < len(self._velocity_trajectory):
+                idx = self._velocity_traj_index
+                vel_ff = self._velocity_trajectory[idx, :].copy()
+                if self._position_trajectory is not None and current is not None:
+                    pos_target = self._position_trajectory[idx, :]
+                    pos_err = pos_target - current
+                    vel = vel_ff + self._velocity_kp * pos_err
+                else:
+                    vel = vel_ff
+                np.clip(vel, -self.max_joint_speed, self.max_joint_speed, out=vel)
+                for i, name in enumerate(self.all_joints):
+                    if name in self.lock_joints:
+                        vel[i] = 0.0
+                self._velocity_traj_index += 1
+                self._last_velocity_time = time.time()
+                self._velocity_timed_out = False
+            else:
+                self._velocity_trajectory = None
+                self._position_trajectory = None
+                self._velocity_traj_index = 0
+                timeout = self._velocity_timeout_override if self._velocity_timeout_override is not None else self._velocity_timeout
+                elapsed = time.time() - self._last_velocity_time
+                if elapsed > timeout:
+                    if not self._velocity_timed_out:
+                        self.get_logger().warn(
+                            f"Velocity safety timeout ({elapsed:.3f}s > {timeout:.3f}s), zeroing velocities"
+                        )
+                        self._velocity_timed_out = True
+                    vel = np.zeros(self.n_joints, dtype=float)
+                    self._active_velocity_joints.clear()
+                else:
+                    vel = self._velocity_cmd.copy()
+                    self._velocity_timed_out = False
+
+        cmd = RobotCommand()
+        cmd.header.stamp = self.get_clock().now().to_msg()
+        cmd.header.frame_id = ""
+
+        active = self._active_velocity_joints
+        moving_now = np.abs(vel) >= 1e-9
+        prev_moving = self._velocity_prev_moving
+
+        for idx, name in enumerate(self.all_joints):
+            if name in self.lock_joints:
+                continue
+            if name not in active:
+                continue
+
+            if moving_now[idx]:
+                jc = JointCmd()
+                jc.name = name
+                jc.control_mode = JointCmd.MODE_VELOCITY
+                jc.velocity = float(vel[idx])
+                cmd.joint_cmd.append(jc)
+            elif prev_moving[idx]:
+                jc = JointCmd()
+                jc.name = name
+                jc.control_mode = JointCmd.MODE_POSITION
+                jc.position = float(current[idx]) if current is not None else 0.0
+                cmd.joint_cmd.append(jc)
+
+        self._velocity_prev_moving = moving_now
+
+        if cmd.joint_cmd:
+            self.command_pub.publish(cmd)
+
+    def _position_tick(self):
+        """500Hz timer: take trajectory point -> build RobotCommand -> publish."""
         if self.safety_violation:
             return
 
@@ -1877,7 +2074,6 @@ class RobotController(Node):
         with self.trajectory_lock:
             if self.is_publishing:
                 if self.current_index >= self.current_trajectory.shape[0]:
-                    # 轨迹播放完毕：转入 hold（不断流），本帧即开始保持终点
                     self.is_publishing = False
                     self.current_publish_joints = None
                     self.current_velocity_trajectory = None
@@ -1890,21 +2086,11 @@ class RobotController(Node):
                     if publish_joints is not None:
                         publish_joints = set(publish_joints)
                     self.current_index += 1
-                    # 轨迹进行中：更新 hold 位姿为当前指令点，轨迹结束即自然 hold 在终点
-                    self._hold_position = point.copy()
                     is_active = True
 
-            # 空闲 hold：发布最近一次指令位姿到全部未锁定关节
-            # （忽略 publish_changed_only —— hold 需保持所有关节主动受控）
-            if not is_active and self.hold_when_idle:
-                point = self._hold_position
-                publish_joints = None
-
-        # 既无轨迹、又未启用 hold 或尚无 hold 位姿（未收到状态）→ 本帧不发
         if point is None:
             return
 
-        # 构造并发布 RobotCommand
         cmd = RobotCommand()
         cmd.header.stamp = self.get_clock().now().to_msg()
         cmd.header.frame_id = ""
@@ -1912,16 +2098,13 @@ class RobotController(Node):
         for idx, name in enumerate(self.all_joints):
             if name in self.lock_joints:
                 continue
-            # 轨迹模式尊重 publish_changed_only；hold 模式发布所有未锁定关节
             if is_active and publish_joints is not None and name not in publish_joints:
                 continue
             jc = JointCmd()
             jc.name = name
             if self.use_pvt:
-                # PVT 力位混合（mode=7）：同时下发 pos/vel/effort，v1=Kp, v2=Kd
                 jc.control_mode = JointCmd.CUSTOM_MODE_1
                 jc.position = float(point[idx])
-                # hold 时 velocity=0 纯阻尼（对齐 pub_arm_command）；轨迹时用速度前馈
                 jc.velocity = float(vel_point[idx]) if (is_active and vel_point is not None) else 0.0
                 jc.effort = float(self._pvt_effort.get(name, 0.0))
                 jc.v1 = float(self._pvt_kp.get(name, self._pvt_default_kp))
@@ -2025,53 +2208,47 @@ def cmd_print_state(controller):
 
 
 def cmd_demo(controller):
-    """安全演示：先移动到默认起始位姿，再在右臂 elbow_yaw 上做 ±0.05 rad 的小幅运动"""
-    pos = controller.get_current_position()
-    if pos is None:
-        print("No current position available, abort demo")
+    """Position mode demo: R_elbow_yaw +-0.5 rad roundtrip using move_joint API."""
+    _single_joint_demo(controller, "R_elbow_yaw_joint", delta=0.5, speed=0.5)
+
+
+def cmd_velocity_demo(controller):
+    """Velocity mode demo: R_elbow_yaw +-0.5 rad roundtrip using move_joint API."""
+    _single_joint_demo(controller, "R_elbow_yaw_joint", delta=0.5, speed=0.5)
+
+
+def cmd_pvt_demo(controller):
+    """PVT mode demo: R_elbow_yaw +-0.5 rad roundtrip using move_joint API."""
+    _single_joint_demo(controller, "R_elbow_yaw_joint", delta=0.5, speed=0.5)
+
+
+def _single_joint_demo(controller, joint_name, delta, speed):
+    """Shared single-joint roundtrip demo logic."""
+    if joint_name not in controller.all_joints:
+        print(f"Joint '{joint_name}' not found, abort demo")
         return
 
-    print("\n=== 安全演示：右臂 elbow_yaw 小幅运动 ===")
-
-    # 步骤 0：移动到预备姿态
-    print(f"\n步骤 0: 移动到预备姿态")
-    if not controller.move_to_ready_pose(duration_sec=3.0, wait=True):
-        print("步骤 0 失败：无法到达起始位姿")
-        return
-
-    # 重新读取起始位姿（move_to_pose 完成后的实际位置）
     start_pos = controller.get_current_position()
     if start_pos is None:
-        print("起始位姿读取失败，abort demo")
+        print("No current position, abort")
         return
 
     try:
-        joint_name = "R_elbow_yaw_joint"
-        joint_idx = controller.joint_index(joint_name)
-    except ValueError:
-        print(f"Joint not found, abort demo")
-        return
+        target_angle = start_pos[controller.all_joints.index(joint_name)] + delta
+        print(f"Step 1: {joint_name} +{delta:.1f} rad, speed={speed} rad/s ...")
+        controller.move_joint(joint_name, target_angle, speed=speed, wait=True)
 
-    delta = 0.05  # 0.05 rad ≈ 3°，安全幅度
-    duration = 2.0
+        time.sleep(0.5)
 
-    # 正向小幅运动
-    target1 = start_pos.copy()
-    target1[joint_idx] += delta
-    print(f"\n步骤 1: {joint_name} += {delta} rad，{duration}s")
-    if not controller.move_to_position(target1, duration_sec=duration):
-        print("步骤 1 失败")
-        return
+        start_angle = start_pos[controller.all_joints.index(joint_name)]
+        print(f"Step 2: return to start, speed={speed} rad/s ...")
+        controller.move_joint(joint_name, start_angle, speed=speed, wait=True)
 
-    time.sleep(0.5)
+    finally:
+        controller.stop()
+        time.sleep(0.2)
 
-    # 回到起始位姿
-    print(f"\n步骤 2: 回到起始位姿，{duration}s")
-    if not controller.move_to_position(start_pos, duration_sec=duration):
-        print("步骤 2 失败")
-        return
-
-    print("\n演示完成")
+    print("\nDemo complete.")
 
 
 def cmd_head_test(controller, amplitude, period_sec, cycles, yaw_only, pitch_only):
@@ -2289,9 +2466,9 @@ def _run_joint_cli_actions(controller, cli_args):
                 lo, hi = BODY_JOINT_LIMITS[name]
                 lo_hi = f" (限位 [{lo:.2f}, {hi:.2f}])"
             print(f"  {name} → {angle:+.4f} rad ({np.degrees(angle):+.2f}°){lo_hi}")
+        print(f"速度: {cli_args.speed} rad/s")
         input("\n按回车开始移动（Ctrl+C 取消）...")
-        ok = controller.move_to_pose(pose_dict, duration_sec=cli_args.duration,
-                                     wait=True, unlock_required_joints=True)
+        ok = controller.move_joints(pose_dict, speed=cli_args.speed, wait=True)
         if ok:
             print("✓ 移动完成")
             controller.print_joint_states(list(pose_dict.keys()))
@@ -2312,9 +2489,10 @@ def _run_joint_cli_actions(controller, cli_args):
                       f"(Δ={delta:+.4f} rad, {np.degrees(delta):+.2f}°)")
             else:
                 print(f"  {name}: 无法读取当前位置")
+        print(f"速度: {cli_args.speed} rad/s")
         input("\n按回车开始移动（Ctrl+C 取消）...")
         for name, delta in shift_dict.items():
-            controller.shift_joint(name, delta, duration_sec=cli_args.duration, wait=True)
+            controller.shift_joint(name, delta, speed=cli_args.speed, wait=True)
         print("✓ 偏移完成")
         controller.print_joint_states(list(shift_dict.keys()))
 
@@ -2432,13 +2610,18 @@ def main(args=None):
             "Walker S2 机器人直接控制脚本（SDK 控制器 / JointCmd MODE_POSITION=2）\n\n"
             "示例：\n"
             "  %(prog)s --print-state                     # 查看当前关节状态\n"
-            "  %(prog)s --init                             # 移动到预备姿态\n"
             "  %(prog)s --move R_elbow_yaw_joint=0.5       # 移动单个关节\n"
             "  %(prog)s --shift R_shoulder_pitch_joint=+0.1  # 关节相对偏移\n"
             "  %(prog)s --joints R_elbow_yaw_joint --monitor  # 监控关节实时位置\n"
             "  %(prog)s --hand left --hand-open            # 左手张开\n"
             "  %(prog)s --grip both --grip-move 0.02       # 双侧夹爪移动到 0.02m\n"
-            "  %(prog)s --demo                             # 安全演示\n"
+            "  %(prog)s --init                             # 分4步安全移动到预备姿态（默认）\n"
+            "  %(prog)s --home                             # 手臂关节回零（分3步安全顺序）\n"
+            "  %(prog)s --init --direct-init               # 直达预备姿态（3s）\n"
+            "  %(prog)s --demo                             # 安全演示（位置模式）\n"
+
+            "  %(prog)s --demo --mode velocity             # 速度模式演示\n"
+            "  %(prog)s --demo --mode pvt                   # PVT 模式演示\n"
             "  %(prog)s --interactive                      # 保持运行，供 Python API 调用"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2461,8 +2644,13 @@ def main(args=None):
                       help="禁用关节限位裁剪")
     ctrl.add_argument("--hz", type=int, default=DEFAULT_CONTROL_HZ,
                       help=f"控制发布频率（Hz），默认 {DEFAULT_CONTROL_HZ}")
+    ctrl.add_argument("--mode", choices=["position", "velocity", "pvt"],
+                      default="position",
+                      help="控制模式: position | velocity | pvt (默认 position)")
+    ctrl.add_argument("--velocity-timeout", type=float, default=0.5, metavar="SEC",
+                      help="速度模式安全超时（秒），默认 0.5")
     ctrl.add_argument("--pvt", action="store_true",
-                      help="启用 PVT 力位混合模式 (mode=7)，治手臂抖动（需真机调增益）")
+                      help="PVT 模式 (等价于 --mode pvt，向后兼容)")
     ctrl.add_argument("--pvt-kp", type=float, default=None, metavar="K",
                       help=f"PVT 位置增益 Kp（标量），默认 {_PVT_DEFAULT_KP}")
     ctrl.add_argument("--pvt-kd", type=float, default=None, metavar="K",
@@ -2473,13 +2661,17 @@ def main(args=None):
     actions.add_argument("--print-state", action="store_true",
                          help="打印全部身体关节状态后退出")
     actions.add_argument("--init", action="store_true",
-                         help="移动到预备姿态（双臂自然下垂站立）")
+                         help="移动到预备姿态（默认分4步安全执行，--direct-init 直达）")
     actions.add_argument("--init-duration", type=float, default=None, metavar="SEC",
-                         help="预备姿态时长（秒）；直达默认 3，分段默认 20")
-    actions.add_argument("--staged-init", action="store_true",
-                         help="分段移动到预备姿态（安全，适合大幅运动）")
+                         help="预备姿态总时长（秒），默认20")
+    actions.add_argument("--direct-init", action="store_true",
+                         help="直达预备姿态（不分步，3s），覆盖默认分步行为")
+    actions.add_argument("--home", action="store_true",
+                         help="所有手臂关节回零（分3步安全顺序）")
+    actions.add_argument("--home-duration", type=float, default=None, metavar="SEC",
+                         help="回零总时长（秒），默认15")
     actions.add_argument("--demo", action="store_true",
-                         help="安全演示：右臂 elbow_yaw ±0.05 rad 小幅运动")
+                         help="安全演示：右臂 elbow_yaw +-0.5 rad 往返运动")
     actions.add_argument("--head-test", action="store_true",
                          help="头部周期 sin 运动测试")
     actions.add_argument("--hand-test", action="store_true",
@@ -2569,8 +2761,8 @@ def main(args=None):
 
     # ── 通用参数 ──
     common = parser.add_argument_group("通用参数")
-    common.add_argument("--duration", type=float, default=2.0, metavar="SEC",
-                        help="运动持续时间（秒），默认 2.0")
+    common.add_argument("--speed", type=float, default=0.5, metavar="RAD/S",
+                        help="运动速度 (rad/s)，默认 0.5")
     common.add_argument("--monitor-hz", type=float, default=10.0, metavar="HZ",
                         help="监控刷新频率（Hz），默认 10")
     common.add_argument("--monitor-time", type=float, default=None, metavar="SEC",
@@ -2581,28 +2773,43 @@ def main(args=None):
     rclpy.init(args=ros_args)
 
     lock_joints = None if cli_args.no_lock else DEFAULT_LOCK_JOINTS
+
+    # Resolve control mode: --mode takes priority, --pvt is backward compat
+    control_mode = cli_args.mode
     if cli_args.pvt:
+        control_mode = "pvt"
+
+    if control_mode in ("pvt",):
         print("=" * 64)
-        print("⚠️  PVT (mode=7) 力位混合模式启用：速度前馈 + 可调 Kp/Kd")
-        print(f"    Kp={cli_args.pvt_kp if cli_args.pvt_kp is not None else _PVT_DEFAULT_KP}, "
-              f"Kd={cli_args.pvt_kd if cli_args.pvt_kd is not None else _PVT_DEFAULT_KD}")
-        print("    ⚠️ 增益为保守占位值，必须真机调！先安全位姿 + 小幅运动（如 --demo）。")
-        print("    ⚠️ Kp 太小→手臂下垂；Kp 太大→振荡。建议从容器 config_mc_walker_s2_v1_sps")
-        print("       的 mode=2 增益作参考基线。")
+        kp_str = cli_args.pvt_kp if cli_args.pvt_kp is not None else _PVT_DEFAULT_KP
+        kd_str = cli_args.pvt_kd if cli_args.pvt_kd is not None else _PVT_DEFAULT_KD
+        print(f"PVT (mode=7) enabled: Kp={kp_str}, Kd={kd_str}")
         print("=" * 64)
+
+    # PVT mode: head needs softer gains (low inertia -> oscillation with Kp=200)
+    pvt_kp = cli_args.pvt_kp
+    pvt_kd = cli_args.pvt_kd
+    if control_mode == "pvt":
+        if pvt_kp is None:
+            pvt_kp = {"head_pitch_joint": 50, "head_yaw_joint": 50}
+        if pvt_kd is None:
+            pvt_kd = {"head_pitch_joint": 20, "head_yaw_joint": 20}
+
     controller = RobotController(
         lock_joints=lock_joints,
         enable_safety_check=not cli_args.no_safety,
         enable_limit_check=not cli_args.no_limits,
         control_hz=cli_args.hz,
-        use_pvt=cli_args.pvt,
-        pvt_kp=cli_args.pvt_kp,
-        pvt_kd=cli_args.pvt_kd,
+        control_mode=control_mode,
+        velocity_timeout=cli_args.velocity_timeout,
+        use_pvt=(control_mode == "pvt"),
+        pvt_kp=pvt_kp,
+        pvt_kd=pvt_kd,
     )
 
     executor = SingleThreadedExecutor()
     executor.add_node(controller)
-    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread = threading.Thread(target=executor.spin, daemon=False)
     spin_thread.start()
 
     try:
@@ -2617,24 +2824,44 @@ def main(args=None):
             cmd_print_state(controller)
         elif cli_args.init:
             cmd_print_state(controller)
-            init_mode = "分段" if cli_args.staged_init else "直达"
-            init_duration = cli_args.init_duration
-            if init_duration is None:
-                init_duration = 20.0 if cli_args.staged_init else 3.0
-            print(f"\n=== 移动到预备姿态（{init_mode}，{init_duration:.1f}s）===")
+            staged = not cli_args.direct_init
+            duration = cli_args.init_duration
+            mode = "直达" if cli_args.direct_init else "分步(4段)"
+            print(f"\n=== 预备姿态（{mode}，{duration or 20.0:.0f}s）===")
             input("按回车开始（Ctrl+C 取消）...")
             if controller.move_to_ready_pose(
-                duration_sec=init_duration,
-                staged=cli_args.staged_init,
+                duration_sec=duration, staged=staged,
             ):
-                print("✓ 预备姿态完成")
+                print("Done - ready pose reached")
                 cmd_print_state(controller)
             else:
-                print("✗ 预备姿态失败")
+                print("Failed - ready pose")
+        elif cli_args.home:
+            cmd_print_state(controller)
+            dur = cli_args.home_duration or 15.0
+            print(f"\n=== 回零（分4步，{dur:.0f}s）===")
+            print("  1/4 head")
+            print("  2/4 wrists + elbow_yaw")
+            print("  3/4 elbow_roll")
+            print("  4/4 shoulders")
+            input("按回车开始（Ctrl+C 取消）...")
+            if controller.move_to_home(duration_sec=dur):
+                print("Done - all arm joints at zero")
+                cmd_print_state(controller)
+            else:
+                print("Failed - home")
         elif cli_args.demo:
             cmd_print_state(controller)
-            input("\n按回车开始演示（Ctrl+C 取消）...")
-            cmd_demo(controller)
+            mode_label = {"velocity": "速度模式", "pvt": "PVT 模式"}.get(
+                control_mode, "位置模式")
+            print(f"\n{mode_label}演示：右臂 elbow_yaw +-0.5 rad")
+            input("\n按回车开始（Ctrl+C 取消）...")
+            if control_mode == "velocity":
+                cmd_velocity_demo(controller)
+            elif control_mode == "pvt":
+                cmd_pvt_demo(controller)
+            else:
+                cmd_demo(controller)
         elif cli_args.head_test:
             cmd_print_state(controller)
             cmd_head_test(
@@ -2668,7 +2895,7 @@ def main(args=None):
 
         else:
             cmd_print_state(controller)
-            print("\n用法: --print-state | --init | --demo | --head-test | --hand-test | --interactive\n"
+            print("\n用法: --print-state | --init | --home | --demo | --head-test | --hand-test | --interactive\n"
                   "      --joints J1 J2 --print | --move J=0.5 | --shift J=+0.1 | --monitor\n"
                   "      --hand left --print | --hand-move thumb=0.5 | --hand-open | --hand-wave\n"
                   "      --grip both --grip-print | --grip-move 0.02 | --grip-home | --grip-monitor")
@@ -2679,9 +2906,10 @@ def main(args=None):
     finally:
         controller.stop()
         time.sleep(0.1)
-        executor.remove_node(controller)
+        executor.shutdown(timeout_sec=2.0)
+        spin_thread.join(timeout=3.0)
         controller.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
