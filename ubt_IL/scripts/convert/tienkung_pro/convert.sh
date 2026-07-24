@@ -14,6 +14,8 @@ FPS="${FPS:-15}"
 ROBOT_TYPE="${ROBOT_TYPE:-tienkung}"
 TASK_NAME="${TASK_NAME:-real_pick_place}"
 VCODEC="${VCODEC:-h264}"
+RESAMPLE_FPS="${RESAMPLE_FPS:-}"
+TIMESTAMP_HDF5_KEY="${TIMESTAMP_HDF5_KEY:-}"
 
 python "$SCRIPT_DIR/../common/convert_to_lerobot.py" \
   --config "$CONFIG" \
@@ -24,4 +26,6 @@ python "$SCRIPT_DIR/../common/convert_to_lerobot.py" \
   --robot_type "$ROBOT_TYPE" \
   --task_name "$TASK_NAME" \
   --vcodec "$VCODEC" \
+  ${RESAMPLE_FPS:+--resample-fps "$RESAMPLE_FPS"} \
+  ${TIMESTAMP_HDF5_KEY:+--timestamp-hdf5-key "$TIMESTAMP_HDF5_KEY"} \
   "$@"

@@ -75,15 +75,26 @@
             }
         },
         "revision": null,
-        "use_imagenet_stats": true,
+        "use_imagenet_stats": false,
         "video_backend": "torchcodec",
         "return_uint8": false,
         "streaming": false
     },
     "env": null,
     "policy": {
-        "type": "act",
+        "type": "pi05",
+
+        "paligemma_variant": "gemma_2b",
+        "action_expert_variant": "gemma_300m",
+        "dtype": "bfloat16",
+
         "n_obs_steps": 1,
+        "chunk_size": 50,
+        "n_action_steps": 50,
+
+        "max_state_dim": 32,
+        "max_action_dim": 32,
+
         "input_features": {
             "observation.images.camera_head_right": {
                 "type": "VISUAL",
@@ -116,70 +127,83 @@
                 ]
             }
         },
+
+        "image_resolution": [
+            224,
+            224
+        ],
+
+        "normalization_mapping": {
+            "VISUAL": "IDENTITY",
+            "STATE": "QUANTILES",
+            "ACTION": "QUANTILES"
+        },
+
+        "use_relative_actions": true,
+        "relative_exclude_joints": ["right_grip"],
+        "action_feature_names": null,
+
+        "num_inference_steps": 10,
+        "time_sampling_beta_alpha": 1.5,
+        "time_sampling_beta_beta": 1.0,
+        "time_sampling_scale": 0.999,
+        "time_sampling_offset": 0.001,
+        "min_period": 0.004,
+        "max_period": 4.0,
+
+        "rtc_config": null,
+        "empty_cameras": 0,
+        "tokenizer_max_length": 200,
+
+        "gradient_checkpointing": true,
+        "compile_model": false,
+        "compile_mode": "max-autotune",
+
+        "freeze_vision_encoder": true,
+        "train_expert_only": true,
+
         "device": "cuda",
-        "use_amp": true,
+        "use_amp": false,
         "use_peft": false,
+
         "push_to_hub": false,
-        "repo_id": "local/Walker_S2_pick_merged_30hz_act",
+        "repo_id": "local/Walker_S2_pick_merged_30hz_pi05",
         "private": null,
         "tags": null,
         "license": null,
-        "pretrained_path": "/ubt_IL/model/Walker_S2_pick_merged_30hz_act/checkpoints/last/pretrained_model",
-        "chunk_size": 50,
-        "n_action_steps": 50,
-        "normalization_mapping": {
-            "VISUAL": "MEAN_STD",
-            "STATE": "MEAN_STD",
-            "ACTION": "MEAN_STD"
-        },
-        "vision_backbone": "resnet18",
-        "pretrained_backbone_weights": "ResNet18_Weights.IMAGENET1K_V1",
-        "replace_final_stride_with_dilation": false,
-        "pre_norm": false,
-        "dim_model": 512,
-        "n_heads": 8,
-        "dim_feedforward": 3200,
-        "feedforward_activation": "relu",
-        "n_encoder_layers": 4,
-        "n_decoder_layers": 1,
-        "use_vae": true,
-        "latent_dim": 32,
-        "n_vae_encoder_layers": 4,
-        "temporal_ensemble_coeff": null,
-        "dropout": 0.15,
-        "kl_weight": 10.0,
-        "optimizer_lr": 1e-04,
-        "optimizer_weight_decay": 0.0001,
-        "optimizer_lr_backbone": 1e-05
+        "pretrained_path": "/ubt_IL/model/pi05_base",
+
+        "optimizer_lr": 2.5e-05,
+        "optimizer_betas": [
+            0.9,
+            0.95
+        ],
+        "optimizer_eps": 1e-08,
+        "optimizer_weight_decay": 0.01,
+        "optimizer_grad_clip_norm": 1.0,
+
+        "scheduler_warmup_steps": 1000,
+        "scheduler_decay_steps": 50000,
+        "scheduler_decay_lr": 5e-06
     },
     "reward_model": null,
-    "output_dir": "/ubt_IL/model/Walker_S2_pick_merged_30hz_act",
-    "job_name": "Walker_S2_pick_merged_30hz_act",
-    "resume": true,
+    "output_dir": "/ubt_IL/model/Walker_S2_pick_merged_30hz_pi05",
+    "job_name": "Walker_S2_pick_merged_30hz_pi05",
+    "resume": false,
     "seed": 1000,
     "cudnn_deterministic": false,
     "num_workers": 8,
-    "batch_size": 8,
+    "batch_size": 4,
     "prefetch_factor": 4,
     "persistent_workers": true,
-    "steps": 150000,
-    "eval_freq": 20000,
-    "log_freq": 200,
+    "steps": 200000,
+    "eval_freq": 40000,
+    "log_freq": 100,
     "tolerance_s": 0.0001,
     "save_checkpoint": true,
-    "save_freq": 20000,
+    "save_freq": 40000,
     "use_policy_training_preset": true,
-    "optimizer": {
-        "type": "adamw",
-        "lr": 1e-04,
-        "weight_decay": 0.0001,
-        "grad_clip_norm": 10.0,
-        "betas": [
-            0.9,
-            0.999
-        ],
-        "eps": 1e-08
-    },
+    "optimizer": null,
     "scheduler": null,
     "eval": {
         "n_episodes": 50,

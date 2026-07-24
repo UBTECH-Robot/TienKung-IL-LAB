@@ -232,6 +232,100 @@ def validate_features(features: dict) -> None:
             )
 
 
+def _read_timestamps(ds: h5py.Dataset):
+    """Read HDF5 timestamps, auto-detect ns vs seconds, return float64 relative seconds.
+
+    Returns None on empty dataset, (N,) float64 relative seconds otherwise
+    (first frame always 0.0).
+    """
+    arr = np.array(ds).ravel().astype(np.float64)
+    if len(arr) == 0:
+        return None
+    if arr.max() > 1e15:       # uint64 nanoseconds → seconds
+        arr /= 1e9
+    arr -= arr[0]               # zero-base to first frame
+    return arr
+
+
+def _detect_source_timestamps(
+    file: h5py.File,
+    mapping: dict,
+    user_key: str | None = None,
+):
+    """Auto-detect source timestamps from HDF5 with three-level fallback.
+
+    1. *user_key* (if given)
+    2. Known simulation keys (``observation/timestamp/data``, ``observations/timestamp``)
+    3. Sibling ``timestamp_list`` in the same HDF5 group as any data key in *mapping*
+
+    Returns (N,) float64 array of relative seconds, or None if no timestamps found.
+    """
+    # Level 1: user-specified key
+    if user_key and user_key in file:
+        ts = _read_timestamps(file[user_key])
+        if ts is not None:
+            return ts
+
+    # Level 2: simulation-format keys
+    for key in ("observation/timestamp/data", "observations/timestamp"):
+        if key in file:
+            ts = _read_timestamps(file[key])
+            if ts is not None:
+                return ts
+
+    # Level 3: real-robot format — timestamp_list sibling
+    for field_spec in mapping.values():
+        items = field_spec if isinstance(field_spec, list) else [field_spec]
+        for item in items:
+            hdf5_key = item if isinstance(item, str) else item.get("hdf5_key")
+            if not hdf5_key:
+                continue
+            ts_key = str(Path(hdf5_key).parent / "timestamp_list")
+            if ts_key in file:
+                ts = _read_timestamps(file[ts_key])
+                if ts is not None:
+                    return ts
+
+    return None
+
+
+def _resample_frames(compose_fields, image_fields, src_ts, target_fps):
+    """Resample compose and image fields to *target_fps* using *src_ts* (relative seconds).
+
+    compose_fields:  {key: (parts_list, dtype)}  — each part shape (N, D) or (N,)
+    image_fields:    {key: ndarray (N, H, W, C)}
+
+    Returns ``(new_compose, new_images, M)`` where *M* is the target frame count.
+    State/action vectors use per-dimension linear interpolation (``np.interp``);
+    images use nearest-neighbour frame selection.
+    """
+    duration = src_ts[-1]                     # relative seconds, src_ts[0]==0.0
+    M = max(2, round(duration * target_fps) + 1)
+    target_ts = np.linspace(0.0, duration, M)
+
+    # --- state / action vectors → per-dimension linear interpolation ---
+    new_compose = {}
+    for key, (parts, dtype) in compose_fields.items():
+        new_parts = []
+        for part in parts:                    # (N, D)  or  (N,)
+            is_1d = (part.ndim == 1)
+            src = part if not is_1d else part[:, None]      # → (N, D)
+            out = np.empty((M, src.shape[1]), dtype=np.float64)
+            for d in range(src.shape[1]):
+                out[:, d] = np.interp(target_ts, src_ts,
+                                      src[:, d].astype(np.float64))
+            new_parts.append(out.astype(dtype) if not is_1d else out[:, 0].astype(dtype))
+        new_compose[key] = (new_parts, dtype)  # preserve structure
+
+    # --- images → nearest-neighbour selection ---
+    new_images = {}
+    indices = np.abs(src_ts[:, None] - target_ts[None, :]).argmin(axis=0)
+    for key, arr in image_fields.items():     # (N, H, W, C)
+        new_images[key] = arr[indices]        # → (M, H, W, C)
+
+    return new_compose, new_images, M
+
+
 def initialize_dataset(
     repo_id: str, tgt_path: str, fps: int, robot_type: str, features: dict,
     vcodec: str = "h264",
@@ -266,6 +360,9 @@ def process_episode(
     task_name: str,
     mapping: dict,
     features: dict,
+    resample_fps: float | None = None,
+    timestamp_hdf5_key: str | None = None,
+    source_fps: float = 30,
 ) -> bool:
     """Process single episode from HDF5 into LeRobot dataset frames."""
     try:
@@ -320,6 +417,13 @@ def process_episode(
 
                     image_fields[lerobot_key] = np.stack(images)
 
+            # --- peek timestamps while file is still open ---
+            _src_ts = None
+            if resample_fps is not None:
+                _src_ts = _detect_source_timestamps(
+                    file, mapping, timestamp_hdf5_key,
+                )
+
         num_frames = None
         for parts, _ in compose_fields.values():
             for p in parts:
@@ -341,6 +445,35 @@ def process_episode(
                     f"expected {num_frames}, got {len(arr)} for image"
                 )
                 return False
+
+        # --- frame-rate resampling (optional) ---
+        if resample_fps is not None:
+            if num_frames < 2:
+                logging.info(
+                    f"Skipping resampling for {episode_path.name}: "
+                    f"only {num_frames} frame(s), need at least 2"
+                )
+            else:
+                src_ts = _src_ts
+
+                if src_ts is not None:
+                    if len(src_ts) != num_frames:
+                        logging.warning(
+                            f"Timestamp count ({len(src_ts)}) != frame count "
+                            f"({num_frames}) in {episode_path.name}. "
+                            f"Falling back to uniform --fps={source_fps} spacing."
+                        )
+                        src_ts = None
+
+                if src_ts is None:
+                    src_ts = np.arange(num_frames, dtype=np.float64) / source_fps
+                    logging.info(
+                        f"Using --fps={source_fps} uniform spacing for "
+                        f"{episode_path.name}"
+                    )
+
+                compose_fields, image_fields, num_frames = _resample_frames(
+                    compose_fields, image_fields, src_ts, resample_fps)
 
     except (FileNotFoundError, OSError, KeyError) as e:
         logging.error(f"Skipped {episode_path}: {e}")
@@ -392,6 +525,13 @@ def main():
                         help="Video codec: h264 (default, closest to Pick_up's mp4v), libsvtav1 (av1), hevc, auto. "
                              "Note: mpeg4/mp4v is rejected by lerobot's codec whitelist.")
     parser.add_argument("--stream-video", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--resample-fps", type=float, default=None,
+                        help="Target FPS for resampling. When set, source frames are "
+                             "interpolated to this frame rate. State/action use linear "
+                             "interpolation; images use nearest-neighbour selection.")
+    parser.add_argument("--timestamp-hdf5-key", type=str, default=None,
+                        help="Explicit HDF5 key for per-frame timestamps. "
+                             "Auto-detected from known keys if omitted.")
     args = parser.parse_args()
 
     # Load configuration
@@ -400,10 +540,12 @@ def main():
     validate_features(features)
 
     # Initialize dataset
+    source_fps = args.fps                              # fallback when HDF5 lacks timestamps
+    dataset_fps = round(args.resample_fps) if args.resample_fps else args.fps
     dataset = initialize_dataset(
         repo_id=args.repo_id,
         tgt_path=args.tgt_path,
-        fps=args.fps,
+        fps=dataset_fps,
         robot_type=args.robot_type,
         features=features,
         vcodec=args.vcodec,
@@ -444,7 +586,12 @@ def main():
     success_count = 0
     logging.info(f"Found {len(episode_pairs)} episodes to process...")
     for ep_dir, ep_path in episode_pairs:
-        if process_episode(ep_path, dataset, args.task_name, mapping, features):
+        if process_episode(
+            ep_path, dataset, args.task_name, mapping, features,
+            resample_fps=args.resample_fps,
+            timestamp_hdf5_key=args.timestamp_hdf5_key,
+            source_fps=source_fps,
+        ):
             dataset.save_episode()
             success_count += 1
             logging.info(f"Saved episode: {ep_dir.name} ({success_count}/{len(episode_pairs)})")

@@ -31,6 +31,8 @@ usage() {
     echo "  TASK_NAME   任务名称 (默认: walker_s2_real)"
     echo "  VCODEC      视频编码器 (默认: h264)"
     echo "  HDF5_REL_PATH HDF5 相对于 episode 目录的路径 (默认: hdf5/metadata_aligned.hdf5)"
+    echo "  RESAMPLE_FPS 目标帧率，启用重采样 (默认: 空=不启用)"
+    echo "  TIMESTAMP_HDF5_KEY 时间戳 HDF5 路径 (默认: 空=自动探测)"
     echo ""
     echo "常用选项（透传）："
     echo "  --overwrite        覆盖已有输出数据集"
@@ -41,6 +43,7 @@ usage() {
     echo "  bash convert.sh"
     echo "  CONFIG=configs/walker_s2_real_10d_1RGBD.json bash convert.sh"
     echo "  bash convert.sh --overwrite --save_one true"
+    echo "  RESAMPLE_FPS=30 bash convert.sh --overwrite"
     exit 0
 }
 
@@ -58,6 +61,8 @@ ROBOT_TYPE="${ROBOT_TYPE:-walker_s2}"
 TASK_NAME="${TASK_NAME:-walker_s2_real}"
 VCODEC="${VCODEC:-h264}"
 HDF5_REL_PATH="${HDF5_REL_PATH:-hdf5/metadata_aligned.hdf5}"
+RESAMPLE_FPS="${RESAMPLE_FPS:-}"
+TIMESTAMP_HDF5_KEY="${TIMESTAMP_HDF5_KEY:-}"
 PYTHON_SCRIPT="$SCRIPT_DIR/../common/convert_to_lerobot.py"
 
 # === 校验 ===
@@ -88,4 +93,6 @@ python "$PYTHON_SCRIPT" \
   --task_name "$TASK_NAME" \
   --vcodec "$VCODEC" \
   --hdf5_rel_path "$HDF5_REL_PATH" \
+  ${RESAMPLE_FPS:+--resample-fps "$RESAMPLE_FPS"} \
+  ${TIMESTAMP_HDF5_KEY:+--timestamp-hdf5-key "$TIMESTAMP_HDF5_KEY"} \
   "$@"
